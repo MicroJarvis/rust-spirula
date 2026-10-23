@@ -91,17 +91,30 @@ cooperative. The UI observes events and submits commands. The CLI renders the
 same events as text. GPU work is isolated behind a worker/context so a device
 loss or pipeline error becomes an observable session failure.
 
+## Frozen runtime contracts
+
+Phase 0 freezes the contracts every later crate implements: typed errors and
+stable codes, command/event envelopes, the session state machine and
+cancellation, the GPU resource/shader boundary, and format versioning. They are
+recorded in [docs/phase-0/runtime-contracts.md](phase-0/runtime-contracts.md).
+A crate does not define its own error string, event shape, or schema version;
+it implements the catalog and envelope in that document.
+
 ## Compatibility model
 
 The C++ repository at `/Users/tfjiang/Projects/spirula-studio` is the behavior
 reference. Existing dataset formats, camera conventions, checkpoint metadata,
 and exported assets are preserved through adapters and golden fixtures. Any
 intentional format change requires a versioned migration and a rollback path.
+The pinned commit, toolchain and build/test entry points are recorded in
+[docs/phase-0/reference-baseline.md](phase-0/reference-baseline.md).
 
 ## Testing model
 
 Every feature must pass the narrowest useful tests first, then the complete
 workspace checks. Important categories are pure unit tests, parser and format
 fixtures, CPU/GPU parity, render image tolerances, checkpoint round trips,
-headless application integration tests, and Slint UI behavior tests.
+headless application integration tests, and Slint UI behavior tests. The first
+checksummed fixture set is described in
+[docs/phase-0/fixtures.md](phase-0/fixtures.md).
 

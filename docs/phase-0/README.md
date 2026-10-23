@@ -11,7 +11,7 @@ numbers and status live in [../project-plan.md](../project-plan.md).
 | [subsystem-inventory.md](subsystem-inventory.md) | C++ entry points, call chains, readers/writers, formats, error and cancel paths | P0-F02 | available |
 | [capability-matrix.md](capability-matrix.md) | capability, reference source, compatibility assumption, owner crate, verification and status | P0-F03 | available |
 | [fixtures.md](fixtures.md) | fixture set, golden metadata and checksum conventions | P0-F04 | available |
-| runtime contracts | error codes, events, session state machine, cancellation, GPU and version boundaries | P0-F05 | planned |
+| [runtime-contracts.md](runtime-contracts.md) | error codes, events, session state machine, cancellation, GPU and version boundaries | P0-F05 | available |
 | exit report | Phase 0 acceptance evidence, commands and environment | P0-F06 | planned |
 
 Rows gain a link when the corresponding feature is committed. Fixture files
