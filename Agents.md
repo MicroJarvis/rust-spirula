@@ -14,6 +14,7 @@
 | 运行检查、整理提交或确认变更边界 | [docs/agent/git-workflow.md](docs/agent/git-workflow.md) |
 | 查看跨任务的不可变约束 | [docs/agent/working-rules.md](docs/agent/working-rules.md) |
 | 查看全部 agent 文档入口 | [docs/agent/README.md](docs/agent/README.md) |
+| 执行 Phase 0：参考基线、行为清单、能力矩阵、fixtures 与运行时契约 | [docs/phase-0/README.md](docs/phase-0/README.md) |
 
 ## 技术栈约束
 
