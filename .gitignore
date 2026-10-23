@@ -8,3 +8,7 @@
 /reference-build/
 /artifacts/
 
+
+# Local development worktrees and cargo home (Phase 0)
+/.worktrees/
+/.cargo-home/
