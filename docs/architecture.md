@@ -102,8 +102,8 @@ it implements the catalog and envelope in that document.
 
 ## Compatibility model
 
-The C++ repository at `/Users/tfjiang/Projects/spirula-studio` is the behavior
-reference. Existing dataset formats, camera conventions, checkpoint metadata,
+The C++ reference checkout (`SPIRULA_REFERENCE_REPO`, default
+`../spirula-studio`) is the behavior reference. Existing dataset formats, camera conventions, checkpoint metadata,
 and exported assets are preserved through adapters and golden fixtures. Any
 intentional format change requires a versioned migration and a rollback path.
 The pinned commit, toolchain and build/test entry points are recorded in

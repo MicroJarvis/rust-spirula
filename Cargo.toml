@@ -7,6 +7,7 @@ members = [
     "crates/spirula-train",
     "crates/spirula-ui",
     "crates/spirula-cli",
+    "tools/xtask",
 ]
 resolver = "3"
 
@@ -17,6 +18,7 @@ serde_json = "1.0.154"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 license = "GPL-3.0-or-later"
 authors = ["Spirula Studio contributors"]
 

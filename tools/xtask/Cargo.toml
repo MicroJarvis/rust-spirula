@@ -1,0 +1,17 @@
+[package]
+name = "spirula-xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "spirula-xtask"
+path = "src/main.rs"
+
+[dependencies]
+spirula-io = { path = "../../crates/spirula-io" }

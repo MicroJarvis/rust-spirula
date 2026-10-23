@@ -12,10 +12,10 @@ numbers and status live in [../project-plan.md](../project-plan.md).
 | [capability-matrix.md](capability-matrix.md) | capability, reference source, compatibility assumption, owner crate, verification and status | P0-F03 | available |
 | [fixtures.md](fixtures.md) | fixture set, golden metadata and checksum conventions | P0-F04 | available |
 | [runtime-contracts.md](runtime-contracts.md) | error codes, events, session state machine, cancellation, GPU and version boundaries | P0-F05 | available |
-| exit report | Phase 0 acceptance evidence, commands and environment | P0-F06 | planned |
+| [exit-report.md](exit-report.md) | Phase 0 acceptance evidence, commands and environment | P0-F06 | available |
 
 Rows gain a link when the corresponding feature is committed. Fixture files
-will live under `fixtures/`.
+live under [`fixtures/`](../../fixtures/README.md).
 
 ## Phase 0 exit criteria
 
@@ -28,7 +28,7 @@ The exit criteria from the project plan are:
 - the architecture, capability matrix and the first fixtures can be referenced
   directly by later features.
 
-The verification entry point will be:
+The verification entry point is:
 
 ```bash
 cargo run -p spirula-xtask -- verify

@@ -178,6 +178,13 @@ name = "spirula-ui"
 version = "0.1.0"
 
 [[package]]
+name = "spirula-xtask"
+version = "0.1.0"
+dependencies = [
+ "spirula-io",
+]
+
+[[package]]
 name = "syn"
 version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

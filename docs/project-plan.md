@@ -2,7 +2,7 @@
 
 ## 1. 项目目标
 
-将 `/Users/tfjiang/Projects/spirula-studio` 逐步重构为 Rust 项目：
+将 C++ 参考仓库（`SPIRULA_REFERENCE_REPO`，默认 `../spirula-studio`）逐步重构为 Rust 项目：
 
 - 桌面 UI 使用 Slint；
 - GPU 资源、管线和计算使用 `wgpu`；
@@ -61,7 +61,7 @@ fixture、迁移记录和提交说明都使用同一编号。状态只允许使�
 | P0-F03 | 建立能力矩阵 | 文档 | P0-F02 | 按数据、渲染、训练、UI、CLI 分类；为每项标注源码位置和 owner；定义验证方式与当前状态 | 每项能力有参考源码、输入格式、输出、兼容假设、验证方式和负责人 | 已完成 |
 | P0-F04 | 建立最小兼容 fixtures | `spirula-core`/`spirula-io` | P0-F02, P0-F03 | 制作单相机/小图像样本；制作小 splat/点云/checkpoint；保存 golden 元数据、图像和校验值 | 提供相机、数据集、场景变换、splat、checkpoint、微型渲染样本及 golden 结果 | 已完成 |
 | P0-F05 | 固化运行时契约 | `spirula-core`/架构 | P0-F02, P0-F03 | 定义错误类别和稳定字段；定义命令、事件、状态转换和取消；记录 GPU 资源与 shader 边界 | 定义错误、事件、session 状态、取消、GPU 边界、shader 约定和版本策略 | 已完成 |
-| P0-F06 | 建立验证入口 | workspace | P0-F01–P0-F05 | 提供一条命令运行 fixture 检查；提供文档/状态一致性检查；记录 Phase 0 退出报告 | 提供 fixture 检查、文档状态检查和 Phase 0 验收命令；干净 checkout 可复现 | 当前 |
+| P0-F06 | 建立验证入口 | workspace | P0-F01–P0-F05 | 提供一条命令运行 fixture 检查；提供文档/状态一致性检查；记录 Phase 0 退出报告 | 提供 fixture 检查、文档状态检查和 Phase 0 验收命令；干净 checkout 可复现 | 已完成 |
 
 Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架构/能力矩阵
 和第一批 fixtures 可被其他功能点直接引用。
@@ -70,7 +70,7 @@ Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P1-F01 | 领域错误与稳定 ID | `spirula-core` | P0-F05 | 定义领域错误枚举；分配稳定错误码；保留来源、字段和用户可读信息 | 定义可匹配错误类别、稳定 ID 和显示信息；覆盖非法输入测试 | 未开始 |
+| P1-F01 | 领域错误与稳定 ID | `spirula-core` | P0-F05 | 定义领域错误枚举；分配稳定错误码；保留来源、字段和用户可读信息 | 定义可匹配错误类别、稳定 ID 和显示信息；覆盖非法输入测试 | 当前 |
 | P1-F02 | 配置与版本化序列化 | `spirula-core` | P0-F05, P1-F01 | 定义配置字段和默认值；加入 schema/version；测试缺失、未知和非法字段 | 配置有默认值、校验、版本字段和兼容读取失败语义 | 未开始 |
 | P1-F03 | 取消与进度原语 | `spirula-core` | P0-F05, P1-F01 | 定义取消 token 和检查点；定义进度值与事件载荷；测试重复取消、终止和错误终态 | 定义合作式取消、进度值和事件载荷；测试重复取消和终态 | 未开始 |
 | P1-F04 | 数学、相机与场景基础类型 | `spirula-core` | P0-F04, P1-F01 | 实现向量、矩阵和四元数；实现相机投影与坐标变换；定义场景和 splat 不变量 | 实现变换、投影、坐标约定和场景不变量；与 P0 fixtures 对照 | 未开始 |
@@ -260,5 +260,5 @@ feat(P5-F05): save and resume tiny training run
 feat(P6-F03): add Slint application shell
 ```
 
-当前仓库下一步是 P0-F06：建立验证入口；完成后更新本文件中的状态、
-当前执行点和相关能力矩阵，Phase 0 即进入验收。
+Phase 0 已完成，证据见 `docs/phase-0/exit-report.md`。下一步是 P1-F01：领域错误
+与稳定 ID；完成后更新本文件中的状态、当前执行点和相关能力矩阵。
