@@ -10,8 +10,9 @@ The target architecture uses:
 - WGSL for portable GPU kernels and render shaders.
 
 The migration is intentionally staged. The architecture and compatibility
-contracts are defined before feature work begins. See [Agents.md](Agents.md)
-for the working rules and the complete migration plan, and
+contracts are defined before feature work begins. See
+[docs/project-plan.md](docs/project-plan.md) for the Chinese project plan,
+[Agents.md](Agents.md) for the working rules and execution contract, and
 [docs/architecture.md](docs/architecture.md) for the target architecture.
 
 The C++ repository remains the behavioral reference during migration:
