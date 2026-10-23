@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/spirula-core",
+    "crates/spirula-io",
+    "crates/spirula-gpu",
+    "crates/spirula-render",
+    "crates/spirula-train",
+    "crates/spirula-ui",
+    "crates/spirula-cli",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+authors = ["Spirula Studio contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+

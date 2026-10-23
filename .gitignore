@@ -1,0 +1,10 @@
+/target/
+/.cargo/
+*.swp
+*.swo
+.DS_Store
+
+# Local reference/build material
+/reference-build/
+/artifacts/
+
