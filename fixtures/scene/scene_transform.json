@@ -1,0 +1,640 @@
+{
+  "format": "spirula-scene-transform",
+  "version": 1,
+  "readme": [
+    "p_train = train_from_world.scale * train_from_world.rotation.matrix_3x3 @ p_world + train_from_world.translation, for a column vector p.",
+    "train_from_world is the ACTIVE transform taking a point of the dataset's own frame (world) into the frame the splats were trained in; read passively, it gives a fixed point's train coordinates from its world coordinates.",
+    "world_from_train is its inverse.",
+    "matrix_4x4 acts on column vectors [x, y, z, 1].",
+    "rotation.matrix_3x3 acts on column vectors; quaternion_wxyz is (w, x, y, z) and quaternion_xyzw is (x, y, z, w).",
+    "translation is applied after rotation and scale; translation_before_rotation is the equivalent shift applied first.",
+    "georeference places the world frame on Earth: x east, y north, z up, metres from origin_lat/origin_lon/origin_alt."
+  ],
+  "centering": {
+    "mode": "point-median",
+    "center_world": [
+      4.0,
+      3.0,
+      -0.5
+    ]
+  },
+  "georeference": {
+    "frame": "enu",
+    "origin_lat": 47.6205,
+    "origin_lon": -122.3493,
+    "origin_alt": 42.5,
+    "alt_source": "gps"
+  },
+  "train_from_world": {
+    "scale": 0.5,
+    "translation": [
+      1.5,
+      -2.0,
+      0.25
+    ],
+    "translation_before_rotation": [
+      -4.0,
+      -3.0,
+      0.5
+    ],
+    "rotation": {
+      "matrix_3x3": [
+        [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "matrix_3x3_flat_row_major": [
+        0.0,
+        -1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "matrix_3x3_flat_column_major": [
+        0.0,
+        1.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "quaternion_wxyz": [
+        0.7071067811865476,
+        0.0,
+        0.0,
+        0.7071067811865475
+      ],
+      "quaternion_xyzw": [
+        0.0,
+        0.0,
+        0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axis_angle": {
+        "axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "angle_rad": 1.5707963267948966,
+        "angle_deg": 90.0
+      },
+      "rotation_vector": [
+        0.0,
+        0.0,
+        1.5707963267948966
+      ],
+      "euler": {
+        "intrinsic": {
+          "xyz": {
+            "radians": [
+              0.0,
+              0.0,
+              1.5707963267948966
+            ],
+            "degrees": [
+              0.0,
+              0.0,
+              90.0
+            ]
+          },
+          "xzy": {
+            "radians": [
+              0.0,
+              1.5707963267948966,
+              0.0
+            ],
+            "degrees": [
+              0.0,
+              90.0,
+              0.0
+            ]
+          },
+          "yxz": {
+            "radians": [
+              0.0,
+              0.0,
+              1.5707963267948966
+            ],
+            "degrees": [
+              0.0,
+              0.0,
+              90.0
+            ]
+          },
+          "yzx": {
+            "radians": [
+              0.0,
+              1.5707963267948966,
+              0.0
+            ],
+            "degrees": [
+              0.0,
+              90.0,
+              0.0
+            ]
+          },
+          "zxy": {
+            "radians": [
+              1.5707963267948966,
+              0.0,
+              0.0
+            ],
+            "degrees": [
+              90.0,
+              0.0,
+              0.0
+            ]
+          },
+          "zyx": {
+            "radians": [
+              1.5707963267948966,
+              0.0,
+              0.0
+            ],
+            "degrees": [
+              90.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "extrinsic": {
+          "xyz": {
+            "radians": [
+              0.0,
+              0.0,
+              1.5707963267948966
+            ],
+            "degrees": [
+              0.0,
+              0.0,
+              90.0
+            ]
+          },
+          "xzy": {
+            "radians": [
+              0.0,
+              1.5707963267948966,
+              0.0
+            ],
+            "degrees": [
+              0.0,
+              90.0,
+              0.0
+            ]
+          },
+          "yxz": {
+            "radians": [
+              0.0,
+              0.0,
+              1.5707963267948966
+            ],
+            "degrees": [
+              0.0,
+              0.0,
+              90.0
+            ]
+          },
+          "yzx": {
+            "radians": [
+              0.0,
+              1.5707963267948966,
+              0.0
+            ],
+            "degrees": [
+              0.0,
+              90.0,
+              0.0
+            ]
+          },
+          "zxy": {
+            "radians": [
+              1.5707963267948966,
+              0.0,
+              0.0
+            ],
+            "degrees": [
+              90.0,
+              0.0,
+              0.0
+            ]
+          },
+          "zyx": {
+            "radians": [
+              1.5707963267948966,
+              0.0,
+              0.0
+            ],
+            "degrees": [
+              90.0,
+              0.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "matrix_4x4": [
+      [
+        0.0,
+        -0.5,
+        0.0,
+        1.5
+      ],
+      [
+        0.5,
+        0.0,
+        0.0,
+        -2.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.5,
+        0.25
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "matrix_4x4_flat_row_major": [
+      0.0,
+      -0.5,
+      0.0,
+      1.5,
+      0.5,
+      0.0,
+      0.0,
+      -2.0,
+      0.0,
+      0.0,
+      0.5,
+      0.25,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "matrix_4x4_flat_column_major": [
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      -0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      1.5,
+      -2.0,
+      0.25,
+      1.0
+    ],
+    "matrix_3x4_flat_row_major": [
+      0.0,
+      -0.5,
+      0.0,
+      1.5,
+      0.5,
+      0.0,
+      0.0,
+      -2.0,
+      0.0,
+      0.0,
+      0.5,
+      0.25
+    ]
+  },
+  "world_from_train": {
+    "scale": 2.0,
+    "translation": [
+      4.0,
+      3.0,
+      -0.5
+    ],
+    "translation_before_rotation": [
+      -1.5,
+      2.0,
+      -0.25
+    ],
+    "rotation": {
+      "matrix_3x3": [
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "matrix_3x3_flat_row_major": [
+        0.0,
+        1.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "matrix_3x3_flat_column_major": [
+        0.0,
+        -1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "quaternion_wxyz": [
+        0.7071067811865476,
+        0.0,
+        0.0,
+        -0.7071067811865476
+      ],
+      "quaternion_xyzw": [
+        0.0,
+        0.0,
+        -0.7071067811865476,
+        0.7071067811865476
+      ],
+      "axis_angle": {
+        "axis": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "angle_rad": 1.5707963267948966,
+        "angle_deg": 90.0
+      },
+      "rotation_vector": [
+        0.0,
+        0.0,
+        -1.5707963267948966
+      ],
+      "euler": {
+        "intrinsic": {
+          "xyz": {
+            "radians": [
+              -0.0,
+              -0.0,
+              -1.5707963267948966
+            ],
+            "degrees": [
+              -0.0,
+              -0.0,
+              -90.0
+            ]
+          },
+          "xzy": {
+            "radians": [
+              -0.0,
+              -1.5707963267948966,
+              -0.0
+            ],
+            "degrees": [
+              -0.0,
+              -90.0,
+              -0.0
+            ]
+          },
+          "yxz": {
+            "radians": [
+              -0.0,
+              -0.0,
+              -1.5707963267948966
+            ],
+            "degrees": [
+              -0.0,
+              -0.0,
+              -90.0
+            ]
+          },
+          "yzx": {
+            "radians": [
+              -0.0,
+              -1.5707963267948966,
+              -0.0
+            ],
+            "degrees": [
+              -0.0,
+              -90.0,
+              -0.0
+            ]
+          },
+          "zxy": {
+            "radians": [
+              -1.5707963267948966,
+              -0.0,
+              -0.0
+            ],
+            "degrees": [
+              -90.0,
+              -0.0,
+              -0.0
+            ]
+          },
+          "zyx": {
+            "radians": [
+              -1.5707963267948966,
+              -0.0,
+              -0.0
+            ],
+            "degrees": [
+              -90.0,
+              -0.0,
+              -0.0
+            ]
+          }
+        },
+        "extrinsic": {
+          "xyz": {
+            "radians": [
+              -0.0,
+              -0.0,
+              -1.5707963267948966
+            ],
+            "degrees": [
+              -0.0,
+              -0.0,
+              -90.0
+            ]
+          },
+          "xzy": {
+            "radians": [
+              -0.0,
+              -1.5707963267948966,
+              -0.0
+            ],
+            "degrees": [
+              -0.0,
+              -90.0,
+              -0.0
+            ]
+          },
+          "yxz": {
+            "radians": [
+              -0.0,
+              -0.0,
+              -1.5707963267948966
+            ],
+            "degrees": [
+              -0.0,
+              -0.0,
+              -90.0
+            ]
+          },
+          "yzx": {
+            "radians": [
+              -0.0,
+              -1.5707963267948966,
+              -0.0
+            ],
+            "degrees": [
+              -0.0,
+              -90.0,
+              -0.0
+            ]
+          },
+          "zxy": {
+            "radians": [
+              -1.5707963267948966,
+              -0.0,
+              -0.0
+            ],
+            "degrees": [
+              -90.0,
+              -0.0,
+              -0.0
+            ]
+          },
+          "zyx": {
+            "radians": [
+              -1.5707963267948966,
+              -0.0,
+              -0.0
+            ],
+            "degrees": [
+              -90.0,
+              -0.0,
+              -0.0
+            ]
+          }
+        }
+      }
+    },
+    "matrix_4x4": [
+      [
+        0.0,
+        2.0,
+        0.0,
+        4.0
+      ],
+      [
+        -2.0,
+        0.0,
+        0.0,
+        3.0
+      ],
+      [
+        0.0,
+        0.0,
+        2.0,
+        -0.5
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "matrix_4x4_flat_row_major": [
+      0.0,
+      2.0,
+      0.0,
+      4.0,
+      -2.0,
+      0.0,
+      0.0,
+      3.0,
+      0.0,
+      0.0,
+      2.0,
+      -0.5,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "matrix_4x4_flat_column_major": [
+      0.0,
+      -2.0,
+      0.0,
+      0.0,
+      2.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      2.0,
+      0.0,
+      4.0,
+      3.0,
+      -0.5,
+      1.0
+    ],
+    "matrix_3x4_flat_row_major": [
+      0.0,
+      2.0,
+      0.0,
+      4.0,
+      -2.0,
+      0.0,
+      0.0,
+      3.0,
+      0.0,
+      0.0,
+      2.0,
+      -0.5
+    ]
+  }
+}

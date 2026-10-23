@@ -1,0 +1,112 @@
+{
+  "schema": "spirula-fixtures",
+  "version": 1,
+  "description": "Phase 0 minimal compatibility fixtures",
+  "files": [
+    {
+      "path": "camera/single_camera.json",
+      "bytes": 1144,
+      "sha256": "65e09b22b9958afbd9523267caaa71c57ad3c589d06635a0f1057293f6c53792"
+    },
+    {
+      "path": "checkpoints/tiny-run/config.json",
+      "bytes": 201,
+      "sha256": "e3965610d3ccc8dc7ac458a14dc645f1e48899eab637264a8649ec27e56efbd8"
+    },
+    {
+      "path": "checkpoints/tiny-run/step-000000001.ckpt/splat.ply",
+      "bytes": 688,
+      "sha256": "a25f1c0698ffa9e4e8372f858149a968905b144c3e27fcf7eb484a92ee8c239c"
+    },
+    {
+      "path": "checkpoints/tiny-run/step-000000001.ckpt/state.tar",
+      "bytes": 10240,
+      "sha256": "13936c09989920c5dbaec539b950bf119c195faf3d66def03675bdc337ac0c78"
+    },
+    {
+      "path": "datasets/tiny-colmap/cameras.txt",
+      "bytes": 155,
+      "sha256": "5fe6aaf8ce3c92ce8e17fe9362e3d840f81911dde4860928baf6c32368e8c611"
+    },
+    {
+      "path": "datasets/tiny-colmap/images/tiny.png",
+      "bytes": 8494,
+      "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
+    },
+    {
+      "path": "datasets/tiny-colmap/images.txt",
+      "bytes": 206,
+      "sha256": "1ee640b9e9e44a46af215f1b33b44a313832226745274fd3ff31a2f42547fadf"
+    },
+    {
+      "path": "datasets/tiny-colmap/points3D.txt",
+      "bytes": 271,
+      "sha256": "b8cffe89ded12ffe1d81d92eb27e2b2967ec44058d283d7e5eb8d094407b85e7"
+    },
+    {
+      "path": "golden/camera.json",
+      "bytes": 880,
+      "sha256": "d0a7ad5f9b1207e2e9f93d25877f477f52d6a6fc1ec6ba7e227958333b07f5b7"
+    },
+    {
+      "path": "golden/checkpoint.json",
+      "bytes": 911,
+      "sha256": "8ae7241c2e9e9c74c3e8ec9eb8f47673eda9b8cc7089a85fe85c9c3a215e98c5"
+    },
+    {
+      "path": "golden/dataset.json",
+      "bytes": 1418,
+      "sha256": "53cc034541eb0890650e81da1f519781bd9f08cfeb8338e337df3747b6dba625"
+    },
+    {
+      "path": "golden/render.json",
+      "bytes": 796,
+      "sha256": "ff484c9f9ba0f307a4703b70a8fd24d93b35a6ff2d483213fb02b9898063e693"
+    },
+    {
+      "path": "golden/scene.json",
+      "bytes": 754,
+      "sha256": "2ad76739b1b202cb3370f0cade474ca38a6eaa24c6df2d322516ca177dbae370"
+    },
+    {
+      "path": "golden/splats.json",
+      "bytes": 1410,
+      "sha256": "4e5991a32d1c29f3e24dbc13b6c1f8830936f53cfe6ce890a523275ef219eaf9"
+    },
+    {
+      "path": "render/golden.png",
+      "bytes": 857,
+      "sha256": "7123e7c8199f8966d13208d3ef2fa438a876e0c5f1daf3aa0bf0e642bd63675e"
+    },
+    {
+      "path": "render/golden.ppm",
+      "bytes": 7529,
+      "sha256": "af3e8b9badd67ff11fccde1c9350e3dc170ad4648a6345f9967f7f6a5cd57fca"
+    },
+    {
+      "path": "render/tiny_render.json",
+      "bytes": 1056,
+      "sha256": "56b8c5784a2ff86887e9807268df93ec84ece5cf81cac672826515b2fb966919"
+    },
+    {
+      "path": "scene/scene_transform.json",
+      "bytes": 11516,
+      "sha256": "fdc13fb4a17df81291b5f6d403fbd8dbf9571ab75a7d315650197d506667194e"
+    },
+    {
+      "path": "splats/render_splat.ply",
+      "bytes": 546,
+      "sha256": "f3f3f46fd91a0bfb8021694c5373f7ea4d78b1412a5f9b001f821fe8c5301ba1"
+    },
+    {
+      "path": "splats/seed_points.ply",
+      "bytes": 353,
+      "sha256": "782cb3c4538ed0118ee3f210ec041756c65d842641cb068c43d7b96bbfb672c7"
+    },
+    {
+      "path": "splats/tiny_splat.ply",
+      "bytes": 688,
+      "sha256": "a25f1c0698ffa9e4e8372f858149a968905b144c3e27fcf7eb484a92ee8c239c"
+    }
+  ]
+}

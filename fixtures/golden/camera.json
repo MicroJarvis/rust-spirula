@@ -1,0 +1,62 @@
+{
+  "schema": "spirula-camera-golden",
+  "version": 1,
+  "source": "reference src/core/CameraModel.h:21-50; src/data/CameraMath.h:1-42",
+  "width": 64,
+  "height": 48,
+  "intrinsics": [
+    100.0,
+    100.0,
+    32.0,
+    24.0
+  ],
+  "distortion": {
+    "tier": "OpenCV",
+    "coefficients": [
+      0.1,
+      0.0,
+      0.001,
+      -0.002,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "projection_samples": [
+    {
+      "world": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "pixel": [
+        32.0,
+        24.0
+      ]
+    },
+    {
+      "world": [
+        0.5,
+        -0.25,
+        -2.0
+      ],
+      "pixel": [
+        57.1609375,
+        36.59609375
+      ]
+    },
+    {
+      "world": [
+        -0.8,
+        0.3,
+        -4.0
+      ],
+      "pixel": [
+        11.886624999999999,
+        16.46546875
+      ]
+    }
+  ],
+  "tolerance_px": 1e-09
+}

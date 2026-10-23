@@ -1,0 +1,56 @@
+{
+  "schema": "spirula-render-fixture",
+  "version": 1,
+  "source": "reference src/kernels/raster/RasterizationEval3DFwd_kernel.cuh:234-325; src/data/CameraMath.h:1-42",
+  "camera": {
+    "model": "PINHOLE",
+    "width": 32,
+    "height": 32,
+    "intrinsics": [
+      80.0,
+      80.0,
+      16.0,
+      16.0
+    ],
+    "distortion": {
+      "tier": "None",
+      "coefficients": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "c2w": {
+      "rotation_row_major": [
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1
+      ],
+      "translation": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "scene": "splats/render_splat.ply",
+  "width": 32,
+  "height": 32,
+  "background": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "reference": "single Gaussian splat at (0,0,-2), opacity 0.99, log-scale log(0.2), color (1,0,0); pinhole projection, straight color over black, alpha = opacity * exp(-0.5 * r^2 / sigma^2), sigma = fx * scale / depth = 8 px"
+}

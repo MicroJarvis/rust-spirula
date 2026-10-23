@@ -1,0 +1,51 @@
+{
+  "schema": "spirula-checkpoint-golden",
+  "version": 1,
+  "source": "reference src/engine/EngineCheckpoint.cpp:74-124,309,358; src/core/CheckpointIO.h:5-16",
+  "run_dir": "checkpoints/tiny-run",
+  "checkpoint_dir": "checkpoints/tiny-run/step-000000001.ckpt",
+  "entries": [
+    "state.json",
+    "world.means.npy",
+    "world.opacities.npy"
+  ],
+  "state": {
+    "format_version": 1,
+    "full_resume": 1,
+    "step": 1,
+    "cur_num_splats": 3,
+    "max_num_splats": 8,
+    "num_sh": 0,
+    "sh_degree": 0,
+    "primitive": "3dgs"
+  },
+  "world_means_shape": [
+    3,
+    3
+  ],
+  "world_means": [
+    0.0,
+    0.0,
+    2.0,
+    0.5,
+    0.5,
+    3.0,
+    -0.5,
+    -0.5,
+    4.0
+  ],
+  "world_opacities_shape": [
+    3
+  ],
+  "world_opacities": [
+    1.3862943611198908,
+    0.4054651081081642,
+    2.1972245773362196
+  ],
+  "config_keys": [
+    "data",
+    "preset",
+    "scene_center",
+    "steps"
+  ]
+}

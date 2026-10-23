@@ -1,0 +1,52 @@
+{
+  "schema": "spirula-render-golden",
+  "version": 1,
+  "width": 32,
+  "height": 32,
+  "sample": {
+    "center": {
+      "pixel": [
+        16,
+        16
+      ],
+      "rgb8": [
+        252,
+        0,
+        0
+      ]
+    },
+    "corner": {
+      "pixel": [
+        0,
+        0
+      ],
+      "rgb8": [
+        5,
+        0,
+        0
+      ]
+    },
+    "far_corner": {
+      "pixel": [
+        31,
+        31
+      ],
+      "rgb8": [
+        8,
+        0,
+        0
+      ]
+    }
+  },
+  "depth": {
+    "pixel": [
+      16,
+      16
+    ],
+    "expected": 2.0,
+    "tolerance": 1e-05
+  },
+  "rgb_tolerance": 2,
+  "alpha_tolerance": 1,
+  "formula": "pinhole projection; alpha = opacity*exp(-0.5*r^2/sigma^2), opacity=0.99, sigma = fx*scale/depth; rgb8 = round(255*alpha*color) over black"
+}

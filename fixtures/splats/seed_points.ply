@@ -1,0 +1,15 @@
+ply
+format ascii 1.0
+comment spirula Phase 0 seed point cloud fixture
+element vertex 4
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+0.000000 0.000000 0.000000 255 0 0
+0.500000 0.000000 0.000000 0 255 0
+0.000000 0.500000 0.000000 0 0 255
+-0.500000 -0.500000 0.500000 255 255 0

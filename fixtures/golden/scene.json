@@ -1,0 +1,53 @@
+{
+  "schema": "spirula-scene-golden",
+  "version": 1,
+  "source": "reference src/data/SceneTransform.cpp:110-163,244-331",
+  "scale": 0.5,
+  "translation": [
+    1.5,
+    -2.0,
+    0.25
+  ],
+  "centering_mode": "point-median",
+  "center_world": [
+    4.0,
+    3.0,
+    -0.5
+  ],
+  "samples": [
+    {
+      "world": [
+        1.0,
+        2.0,
+        3.0
+      ],
+      "train": [
+        0.5,
+        -1.5,
+        1.75
+      ]
+    },
+    {
+      "world": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "train": [
+        1.5,
+        -2.0,
+        0.25
+      ]
+    }
+  ],
+  "train_from_world_translation_before_rotation": [
+    -4.0,
+    -3.0,
+    0.5
+  ],
+  "world_from_train_translation_before_rotation": [
+    -1.5,
+    2.0,
+    -0.25
+  ]
+}

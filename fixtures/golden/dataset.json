@@ -1,0 +1,101 @@
+{
+  "schema": "spirula-dataset-golden",
+  "version": 1,
+  "source": "reference src/data/parsers/ColmapParser.cpp:616-795",
+  "cameras": [
+    {
+      "camera_id": 1,
+      "model": "PINHOLE",
+      "width": 64,
+      "height": 48,
+      "params": [
+        100.0,
+        100.0,
+        32.0,
+        24.0
+      ]
+    }
+  ],
+  "images": [
+    {
+      "image_id": 1,
+      "camera_id": 1,
+      "name": "tiny.png",
+      "qvec_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tvec": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "points3d": [
+    {
+      "point3d_id": 1,
+      "xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        255,
+        0,
+        0
+      ],
+      "error": 0.5
+    },
+    {
+      "point3d_id": 2,
+      "xyz": [
+        0.5,
+        0.0,
+        0.0
+      ],
+      "rgb": [
+        0,
+        255,
+        0
+      ],
+      "error": 0.5
+    },
+    {
+      "point3d_id": 3,
+      "xyz": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "rgb": [
+        0,
+        0,
+        255
+      ],
+      "error": 0.5
+    },
+    {
+      "point3d_id": 4,
+      "xyz": [
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "rgb": [
+        255,
+        255,
+        0
+      ],
+      "error": 1.0
+    }
+  ],
+  "image": {
+    "path": "datasets/tiny-colmap/images/tiny.png",
+    "width": 64,
+    "height": 48,
+    "color_type": 2
+  }
+}
