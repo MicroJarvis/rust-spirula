@@ -9,7 +9,7 @@ numbers and status live in [../project-plan.md](../project-plan.md).
 |---|---|---|---|
 | [reference-baseline.md](reference-baseline.md) | pinned C++ commit, toolchain and dependency versions, build/test/failure-log entry points | P0-F01 | available |
 | [subsystem-inventory.md](subsystem-inventory.md) | C++ entry points, call chains, readers/writers, formats, error and cancel paths | P0-F02 | available |
-| capability matrix | capability, reference source, compatibility assumption, owner crate, verification and status | P0-F03 | planned |
+| [capability-matrix.md](capability-matrix.md) | capability, reference source, compatibility assumption, owner crate, verification and status | P0-F03 | available |
 | fixtures | fixture set, golden metadata and checksum conventions | P0-F04 | planned |
 | runtime contracts | error codes, events, session state machine, cancellation, GPU and version boundaries | P0-F05 | planned |
 | exit report | Phase 0 acceptance evidence, commands and environment | P0-F06 | planned |
