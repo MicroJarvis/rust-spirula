@@ -105,7 +105,7 @@ refer to [fixtures.md](fixtures.md).
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
-| C-X-01 | error taxonomy | `runtime_error` everywhere; CLI text | failure | typed error | stable codes, category, retryability, context | P1-F01 | `spirula-core` | 未开始 |
+| C-X-01 | error taxonomy | `runtime_error` everywhere; CLI text | failure | typed error | stable codes, category, retryability, context | P1-F01 | `spirula-core` | 已完成 |
 | C-X-02 | logging and diagnostics | `TrainerCore.cpp:775-779`, `Log.h` | events | text | stable message content for scripts | P6-F02/P9-F05 | `spirula-application` | 未开始 |
 | C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 未开始 |
 | C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | render quality, convergence, memory, startup, checkpoint size | P9-F02 | workspace | 未开始 |
@@ -126,8 +126,9 @@ refer to [fixtures.md](fixtures.md).
 
 ## Gaps recorded by this matrix
 
-- No Rust capability is implemented yet; every row is `未开始`. This is
-  expected at Phase 0 and must be updated as features land.
+- `C-X-01` is implemented in `spirula-core` (P1-F01): the 26-code catalog,
+  categories, retryability, context keys, CLI text and exit codes. Every
+  other row remains `未开始` and must be updated as those features land.
 - The reference's `config.json` and checkpoint have no validated version
   field; `C-X-03` records the intentional divergence (add versions, keep a
   compatibility reader).

@@ -102,6 +102,36 @@ structured/event form the same error serializes as:
 
 `source` chains are logged locally and never serialized.
 
+### 1.4 P1-F01 binding decisions
+
+`spirula-core` implements this section. These choices fill details the catalog
+left open; they do not add or renumber codes.
+
+- `user_action` had no members. The closed set is `correct_input`,
+  `check_permissions`, `retry`, `recreate_device`, `use_complete_checkpoint`
+  and `report_defect`. Variants are append-only. `ErrorCode::suggested_user_action`
+  returns one only when the catalog meaning implies it (`SP-INP-001`
+  through `SP-INP-004`, `SP-IO-002`, the five retryable codes, `SP-GPU-002`,
+  `SP-CKPT-002`, `SP-CKPT-003`, `SP-INT-001`). Other codes suggest nothing. The field is
+  omitted from event JSON unless a caller sets it.
+- `retryable` on an error starts at the catalog value. `with_retryable`
+  refines that one error and does not change `ErrorCode::retryable`.
+- `message` must contain non-whitespace text. Empty messages are rejected.
+  Display and the CLI line use `message`; they do not embed the code unless
+  the code form below is requested.
+- Context accepts only the twelve stable keys. A second insert of the same
+  key fails. Values are opaque strings, including empty. Event JSON emits
+  present keys in the key order listed in section 1.1, not insertion order.
+- `source` is a local `std::error::Error` chain. Event JSON never includes it.
+- Event JSON fields, in order, are `code`, `category`, `message`, `retryable`,
+  `context`, then optional `user_action`.
+- Core does not read `SPIRULA_ERROR_CODES`. `cli_stderr_line(show_code)`
+  formats the stderr contract; the CLI adapter owns the environment variable.
+- Exit `2` applies to category `input` only when no session exists yet.
+  Category `canceled` (`SP-CAN-001`) uses exit `130` at either stage. Every
+  other failure uses exit `1`. Exit `0` is success and is not an error value.
+  SIGINT shares exit `130` but is not itself a catalog code.
+
 ## 2. Commands
 
 One session owns all business state. UI and CLI submit commands and render

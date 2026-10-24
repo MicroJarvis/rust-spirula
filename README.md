@@ -30,6 +30,7 @@ and fixtures with:
 cargo run -p spirula-xtask -- verify
 ```
 
-The next feature is P1-F01 (domain errors and stable IDs) in
+P1-F01 (domain errors and stable IDs) is implemented in `spirula-core`.
+The next feature is P1-F02 (versioned configuration) in
 [docs/project-plan.md](docs/project-plan.md).
 
