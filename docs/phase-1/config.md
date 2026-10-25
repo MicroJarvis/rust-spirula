@@ -63,7 +63,9 @@ These differences are intentional. They do not add flags or renumber errors.
   `\r`, `\t`, and `\u00XX` stay valid and decode to those characters.
 - An empty JSON string is a valid closed choice only when the reference
   default is empty (`FieldSpec::empty_is_unset`). `data_format: ""` stays
-  valid; `scene_center: ""` does not. `null` on every string field stores an
+  valid; `scene_center: ""` does not. That restriction is only for closed
+  choices. Free, free-form and path fields accept `""` even when their
+  reference default is nonempty. `null` on every string field stores an
   empty string and stays valid, including `scene_center: null`.
 - Writers encode every empty string as `null`. `TrainConfig::validate`,
   `to_current_json`, and `to_preserved_json` accept that encoding, so a

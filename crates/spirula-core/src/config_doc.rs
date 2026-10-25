@@ -45,9 +45,11 @@ impl TrainConfig {
     /// Reject nonempty closed choices the reader would reject.
     ///
     /// An empty string is the canonical JSON `null` encoding and is writable
-    /// for every string field. An explicit empty JSON string is still a read
-    /// error unless the field's reference default is empty. `None` optionals
-    /// stay valid.
+    /// for every string field. The explicit empty-string read restriction
+    /// applies only to closed choices: `""` is rejected unless that choice's
+    /// reference default is empty. Free, free-form and path fields accept an
+    /// empty string even when their reference default is nonempty. `None`
+    /// optionals stay valid.
     pub fn validate(&self) -> Result<(), DomainError> {
         crate::config_bind::validate_fields(self)
     }
