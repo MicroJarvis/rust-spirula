@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::config::{FieldType, TRAIN_CONFIG_FIELD_COUNT, TRAIN_CONFIG_FIELDS, TrainConfig};
 use crate::config_bind::{assign_field, canonical_field};
+use crate::config_value::{LexemeInteger, lexeme_integer};
 use crate::json_doc::{
     JsonKind, JsonNumber, JsonValue, parse_json, quote_json, shape_error, version_error,
 };
@@ -41,9 +42,20 @@ pub struct UnknownField {
 }
 
 impl TrainConfig {
+    /// Reject closed choices the reader would reject.
+    ///
+    /// Empty strings stay valid for free, free-form, and path fields, and for
+    /// closed sets whose reference default is empty. `None` optionals stay valid.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        crate::config_bind::validate_fields(self)
+    }
+
     /// Current document: `schema_version` 1 and every field in table order.
-    pub fn to_current_json(&self) -> String {
-        write_current(self, &[])
+    ///
+    /// Returns the same error the reader would return for an invalid closed choice.
+    pub fn to_current_json(&self) -> Result<String, DomainError> {
+        self.validate()?;
+        Ok(write_current(self, &[]))
     }
 }
 
@@ -115,12 +127,13 @@ impl LoadedTrainConfig {
 
     /// Save without inserting untouched defaults or a missing `schema_version`.
     ///
-    /// An unchanged config returns the original text. Edited fields that were
-    /// absent are appended in table order. Unknown values are copied from the
-    /// source text.
-    pub fn to_preserved_json(&self) -> String {
+    /// An unchanged valid config returns the original text. Edited fields that
+    /// were absent are appended in table order. Unknown values are copied from
+    /// the source text. An invalid closed choice is not written.
+    pub fn to_preserved_json(&self) -> Result<String, DomainError> {
+        self.config.validate()?;
         if self.config.same_values(&self.baseline) {
-            return self.source.clone();
+            return Ok(self.source.clone());
         }
         let mut out = String::from("{");
         let mut first = true;
@@ -153,11 +166,11 @@ impl LoadedTrainConfig {
         }
         out.push('}');
         out.push('\n');
-        out
+        Ok(out)
     }
 
     /// Explicit migration text. Does not write a file.
-    pub fn to_current_json(&self) -> String {
+    pub fn to_current_json(&self) -> Result<String, DomainError> {
         let unknown: Vec<(&str, &str)> = self
             .entries
             .iter()
@@ -166,7 +179,8 @@ impl LoadedTrainConfig {
                 _ => None,
             })
             .collect();
-        write_current(&self.config, &unknown)
+        self.config.validate()?;
+        Ok(write_current(&self.config, &unknown))
     }
 }
 
@@ -245,17 +259,39 @@ fn push_entry(out: &mut String, first: &mut bool, key: &str, raw: &str) {
 }
 
 fn read_version(value: &JsonValue) -> Result<u64, DomainError> {
-    match value.kind {
-        JsonKind::Number(JsonNumber::Finite(number))
-            if number.is_finite() && number.fract() == 0.0 && number == 1.0 =>
-        {
-            Ok(1)
+    let JsonKind::Number(JsonNumber::Finite(_)) = value.kind else {
+        return Err(shape_error("schema_version", "integer", value.actual()));
+    };
+    match lexeme_integer(value.raw()) {
+        LexemeInteger::Fits(1) => Ok(1),
+        LexemeInteger::Fits(_) | LexemeInteger::TooWide => Err(version_error(value.raw())),
+        LexemeInteger::NotInteger => Err(shape_error("schema_version", "integer", value.raw())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LoadedTrainConfig;
+    use crate::config::{TRAIN_CONFIG_FIELDS, TrainConfig};
+    use crate::config_bind::{canonical_field, fill_probe};
+
+    #[test]
+    fn nondefault_assignments_cover_every_field() {
+        let defaults = TrainConfig::default();
+        defaults.validate().unwrap();
+        let mut config = TrainConfig::default();
+        fill_probe(&mut config);
+        config.validate().unwrap();
+        assert_eq!(TRAIN_CONFIG_FIELDS.len(), 251);
+        for spec in TRAIN_CONFIG_FIELDS {
+            let now = canonical_field(&config, spec.name).expect(spec.name);
+            let before = canonical_field(&defaults, spec.name).expect(spec.name);
+            assert_ne!(now, before, "{}", spec.name);
         }
-        JsonKind::Number(JsonNumber::Finite(number))
-            if number.is_finite() && number.fract() == 0.0 =>
-        {
-            Err(version_error(value.raw()))
-        }
-        _ => Err(shape_error("schema_version", "integer", value.actual())),
+        let text = config.to_current_json().unwrap();
+        let loaded = LoadedTrainConfig::parse(&text).unwrap();
+        assert!(loaded.config.same_values(&config));
+        assert_eq!(loaded.to_preserved_json().unwrap(), text);
+        assert_eq!(loaded.to_current_json().unwrap(), text);
     }
 }

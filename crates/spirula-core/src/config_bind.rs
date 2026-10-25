@@ -1,11 +1,12 @@
 //! Assign and emit the 251 reference fields by name.
 
 use crate::DomainError;
-use crate::config::TrainConfig;
+use crate::config::{TrainConfig, field_spec};
 use crate::config_value::{
     Take, canonical_bool, canonical_f32, canonical_i32, canonical_opt_bool, canonical_opt_f32,
-    canonical_opt_i32, canonical_string, canonical_vec3_f, canonical_vec3_i, take_bool, take_f32,
-    take_i32, take_opt_bool, take_opt_f32, take_opt_i32, take_string, take_vec3_f, take_vec3_i,
+    canonical_opt_i32, canonical_string, canonical_vec3_f, canonical_vec3_i, check_choice,
+    take_bool, take_f32, take_i32, take_opt_bool, take_opt_f32, take_opt_i32, take_string,
+    take_vec3_f, take_vec3_i,
 };
 use crate::json_doc::JsonValue;
 
@@ -1677,5 +1678,516 @@ pub(crate) fn canonical_field(config: &TrainConfig, name: &str) -> Option<String
             Some(canonical_bool(config.use_per_splat_bias_correction))
         }
         _ => None,
+    }
+}
+
+pub(crate) fn validate_fields(config: &TrainConfig) -> Result<(), DomainError> {
+    check_choice(field_spec("data").expect("data"), &config.data)?;
+    check_choice(field_spec("resume").expect("resume"), &config.resume)?;
+    check_choice(
+        field_spec("output_dir_prefix").expect("output_dir_prefix"),
+        &config.output_dir_prefix,
+    )?;
+    check_choice(
+        field_spec("output_dir_name").expect("output_dir_name"),
+        &config.output_dir_name,
+    )?;
+    check_choice(
+        field_spec("lpips_checkpoints").expect("lpips_checkpoints"),
+        &config.lpips_checkpoints,
+    )?;
+    check_choice(
+        field_spec("data_format").expect("data_format"),
+        &config.data_format,
+    )?;
+    check_choice(
+        field_spec("image_dir").expect("image_dir"),
+        &config.image_dir,
+    )?;
+    check_choice(field_spec("mask_dir").expect("mask_dir"), &config.mask_dir)?;
+    check_choice(
+        field_spec("depth_dir").expect("depth_dir"),
+        &config.depth_dir,
+    )?;
+    check_choice(
+        field_spec("normal_dir").expect("normal_dir"),
+        &config.normal_dir,
+    )?;
+    check_choice(
+        field_spec("colmap_recon_dir").expect("colmap_recon_dir"),
+        &config.colmap_recon_dir,
+    )?;
+    check_choice(
+        field_spec("metashape_xml").expect("metashape_xml"),
+        &config.metashape_xml,
+    )?;
+    check_choice(
+        field_spec("metashape_ply").expect("metashape_ply"),
+        &config.metashape_ply,
+    )?;
+    check_choice(
+        field_spec("metashape_psx").expect("metashape_psx"),
+        &config.metashape_psx,
+    )?;
+    check_choice(
+        field_spec("seed_pointcloud").expect("seed_pointcloud"),
+        &config.seed_pointcloud,
+    )?;
+    check_choice(field_spec("init_ply").expect("init_ply"), &config.init_ply)?;
+    check_choice(
+        field_spec("partition").expect("partition"),
+        &config.partition,
+    )?;
+    check_choice(
+        field_spec("roi_region").expect("roi_region"),
+        &config.roi_region,
+    )?;
+    check_choice(
+        field_spec("downscale_rounding_mode").expect("downscale_rounding_mode"),
+        &config.downscale_rounding_mode,
+    )?;
+    check_choice(
+        field_spec("progressive_resolution_schedule").expect("progressive_resolution_schedule"),
+        &config.progressive_resolution_schedule,
+    )?;
+    check_choice(
+        field_spec("progressive_splat_budget_schedule").expect("progressive_splat_budget_schedule"),
+        &config.progressive_splat_budget_schedule,
+    )?;
+    check_choice(
+        field_spec("eval_mode").expect("eval_mode"),
+        &config.eval_mode,
+    )?;
+    check_choice(
+        field_spec("warp_face_fit").expect("warp_face_fit"),
+        &config.warp_face_fit,
+    )?;
+    check_choice(
+        field_spec("exif_orientation").expect("exif_orientation"),
+        &config.exif_orientation,
+    )?;
+    check_choice(
+        field_spec("orientation_method").expect("orientation_method"),
+        &config.orientation_method,
+    )?;
+    check_choice(
+        field_spec("center_method").expect("center_method"),
+        &config.center_method,
+    )?;
+    check_choice(
+        field_spec("scene_center").expect("scene_center"),
+        &config.scene_center,
+    )?;
+    check_choice(
+        field_spec("train_frame").expect("train_frame"),
+        &config.train_frame,
+    )?;
+    check_choice(
+        field_spec("primitive").expect("primitive"),
+        &config.primitive,
+    )?;
+    check_choice(
+        field_spec("background_mode").expect("background_mode"),
+        &config.background_mode,
+    )?;
+    check_choice(
+        field_spec("random_init").expect("random_init"),
+        &config.random_init,
+    )?;
+    check_choice(
+        field_spec("random_init_distribution").expect("random_init_distribution"),
+        &config.random_init_distribution,
+    )?;
+    check_choice(
+        field_spec("random_init_center").expect("random_init_center"),
+        &config.random_init_center,
+    )?;
+    check_choice(
+        field_spec("random_init_spread").expect("random_init_spread"),
+        &config.random_init_spread,
+    )?;
+    check_choice(field_spec("quality").expect("quality"), &config.quality)?;
+    check_choice(
+        field_spec("distraction_robustness").expect("distraction_robustness"),
+        &config.distraction_robustness,
+    )?;
+    check_choice(
+        field_spec("dead_criterion").expect("dead_criterion"),
+        &config.dead_criterion,
+    )?;
+    check_choice(
+        field_spec("densify_score_mode").expect("densify_score_mode"),
+        &config.densify_score_mode,
+    )?;
+    check_choice(
+        field_spec("densify_loss_map_mode").expect("densify_loss_map_mode"),
+        &config.densify_loss_map_mode,
+    )?;
+    check_choice(
+        field_spec("densify_accum_mode").expect("densify_accum_mode"),
+        &config.densify_accum_mode,
+    )?;
+    check_choice(
+        field_spec("perceptual_loss").expect("perceptual_loss"),
+        &config.perceptual_loss,
+    )?;
+    check_choice(
+        field_spec("view_sampling").expect("view_sampling"),
+        &config.view_sampling,
+    )?;
+    check_choice(
+        field_spec("floater_suppression").expect("floater_suppression"),
+        &config.floater_suppression,
+    )?;
+    check_choice(
+        field_spec("bilagrid_type").expect("bilagrid_type"),
+        &config.bilagrid_type,
+    )?;
+    check_choice(
+        field_spec("ppisp_param_type").expect("ppisp_param_type"),
+        &config.ppisp_param_type,
+    )?;
+    check_choice(
+        field_spec("image_color_transfer").expect("image_color_transfer"),
+        &config.image_color_transfer,
+    )?;
+    check_choice(
+        field_spec("image_color_gamut").expect("image_color_gamut"),
+        &config.image_color_gamut,
+    )?;
+    check_choice(
+        field_spec("splat_color_transfer").expect("splat_color_transfer"),
+        &config.splat_color_transfer,
+    )?;
+    check_choice(
+        field_spec("splat_color_gamut").expect("splat_color_gamut"),
+        &config.splat_color_gamut,
+    )?;
+    check_choice(
+        field_spec("point_color_transfer").expect("point_color_transfer"),
+        &config.point_color_transfer,
+    )?;
+    check_choice(
+        field_spec("point_color_gamut").expect("point_color_gamut"),
+        &config.point_color_gamut,
+    )?;
+    check_choice(
+        field_spec("cache_images").expect("cache_images"),
+        &config.cache_images,
+    )?;
+    check_choice(
+        field_spec("optimizer_offload").expect("optimizer_offload"),
+        &config.optimizer_offload,
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn fill_probe(config: &mut TrainConfig) {
+    config.data = probe_string("data", &config.data);
+    config.resume = probe_string("resume", &config.resume);
+    config.output_dir_prefix = probe_string("output_dir_prefix", &config.output_dir_prefix);
+    config.output_dir_name = probe_string("output_dir_name", &config.output_dir_name);
+    config.num_iterations = probe_i32(config.num_iterations);
+    config.steps_per_save = probe_i32(config.steps_per_save);
+    config.save_only_latest_checkpoint = !config.save_only_latest_checkpoint;
+    config.save_full_checkpoint = !config.save_full_checkpoint;
+    config.save_eval_images = !config.save_eval_images;
+    config.eval_lpips = !config.eval_lpips;
+    config.lpips_checkpoints = probe_string("lpips_checkpoints", &config.lpips_checkpoints);
+    config.log_performance = !config.log_performance;
+    config.viewer_port = probe_i32(config.viewer_port);
+    config.disable_viewer = !config.disable_viewer;
+    config.keep_viewer_alive = !config.keep_viewer_alive;
+    config.data_format = probe_string("data_format", &config.data_format);
+    config.image_dir = probe_string("image_dir", &config.image_dir);
+    config.mask_dir = probe_string("mask_dir", &config.mask_dir);
+    config.load_masks = !config.load_masks;
+    config.apply_loss_for_mask = Some(!config.apply_loss_for_mask.unwrap_or(false));
+    config.flip_mask = !config.flip_mask;
+    config.mask_boundary_offset = probe_f32(config.mask_boundary_offset);
+    config.depth_dir = probe_string("depth_dir", &config.depth_dir);
+    config.normal_dir = probe_string("normal_dir", &config.normal_dir);
+    config.load_depths = !config.load_depths;
+    config.load_normals = !config.load_normals;
+    config.depth_unit_scale_factor = probe_f32(config.depth_unit_scale_factor);
+    config.colmap_recon_dir = probe_string("colmap_recon_dir", &config.colmap_recon_dir);
+    config.metashape_xml = probe_string("metashape_xml", &config.metashape_xml);
+    config.metashape_ply = probe_string("metashape_ply", &config.metashape_ply);
+    config.metashape_psx = probe_string("metashape_psx", &config.metashape_psx);
+    config.seed_pointcloud = probe_string("seed_pointcloud", &config.seed_pointcloud);
+    config.init_ply = probe_string("init_ply", &config.init_ply);
+    config.init_ply_add_points = !config.init_ply_add_points;
+    config.partition = probe_string("partition", &config.partition);
+    config.partition_part = probe_i32(config.partition_part);
+    config.roi_region = probe_string("roi_region", &config.roi_region);
+    config.roi_outside_weight = probe_f32(config.roi_outside_weight);
+    config.roi_outside_opacity_decay = probe_f32(config.roi_outside_opacity_decay);
+    config.roi_splat_samples = probe_i32(config.roi_splat_samples);
+    config.roi_mask_pixels = !config.roi_mask_pixels;
+    config.train_resolution_divisor = probe_f32(config.train_resolution_divisor);
+    config.downscale_rounding_mode =
+        probe_string("downscale_rounding_mode", &config.downscale_rounding_mode);
+    config.progressive_resolution = !config.progressive_resolution;
+    config.progressive_resolution_start = probe_i32(config.progressive_resolution_start);
+    config.progressive_resolution_full_at = probe_f32(config.progressive_resolution_full_at);
+    config.progressive_resolution_schedule = probe_string(
+        "progressive_resolution_schedule",
+        &config.progressive_resolution_schedule,
+    );
+    config.progressive_splat_budget = !config.progressive_splat_budget;
+    config.progressive_splat_budget_schedule = probe_string(
+        "progressive_splat_budget_schedule",
+        &config.progressive_splat_budget_schedule,
+    );
+    config.eval_mode = probe_string("eval_mode", &config.eval_mode);
+    config.eval_interval = probe_i32(config.eval_interval);
+    config.train_split_fraction = probe_f32(config.train_split_fraction);
+    config.validation_fraction = probe_f32(config.validation_fraction);
+    config.warp_to_pinhole = !config.warp_to_pinhole;
+    config.warp_spherical_to_pinhole = !config.warp_spherical_to_pinhole;
+    config.warp_face_fit = probe_string("warp_face_fit", &config.warp_face_fit);
+    config.warp_back_face = !config.warp_back_face;
+    config.deblur_training_images = !config.deblur_training_images;
+    config.exif_orientation = probe_string("exif_orientation", &config.exif_orientation);
+    config.orientation_method = probe_string("orientation_method", &config.orientation_method);
+    config.center_method = probe_string("center_method", &config.center_method);
+    config.auto_scale_poses = !config.auto_scale_poses;
+    config.outlier_threshold = probe_f32(config.outlier_threshold);
+    config.scene_center = probe_string("scene_center", &config.scene_center);
+    config.scene_center_threshold = probe_f32(config.scene_center_threshold);
+    config.relative_scale = Some(probe_f32(config.relative_scale.unwrap_or(0.0)));
+    config.train_frame = probe_string("train_frame", &config.train_frame);
+    config.primitive = probe_string("primitive", &config.primitive);
+    config.sh_degree = probe_i32(config.sh_degree);
+    config.sb_lobes = probe_i32(config.sb_lobes);
+    config.sh_degree_warmup_every = probe_i32(config.sh_degree_warmup_every);
+    config.background_mode = probe_string("background_mode", &config.background_mode);
+    config.background_color[0] = probe_f32(config.background_color[0]);
+    config.background_sh_degree = probe_i32(config.background_sh_degree);
+    config.background_noise_warmup = probe_i32(config.background_noise_warmup);
+    config.background_noise_pre_warmup = probe_f32(config.background_noise_pre_warmup);
+    config.background_match_luminance = !config.background_match_luminance;
+    config.scale_init = Some(probe_f32(config.scale_init.unwrap_or(0.0)));
+    config.opacity_init = Some(probe_f32(config.opacity_init.unwrap_or(0.0)));
+    config.suppress_initial_scales = !config.suppress_initial_scales;
+    config.random_init = probe_string("random_init", &config.random_init);
+    config.random_init_fraction = probe_f32(config.random_init_fraction);
+    config.random_init_distribution =
+        probe_string("random_init_distribution", &config.random_init_distribution);
+    config.random_init_center = probe_string("random_init_center", &config.random_init_center);
+    config.random_init_spread = probe_string("random_init_spread", &config.random_init_spread);
+    config.random_init_std = probe_f32(config.random_init_std);
+    config.use_camera_optimizer = !config.use_camera_optimizer;
+    config.quality = probe_string("quality", &config.quality);
+    config.cap_max = probe_i32(config.cap_max);
+    config.distraction_robustness =
+        probe_string("distraction_robustness", &config.distraction_robustness);
+    config.min_init_fraction = probe_f32(config.min_init_fraction);
+    config.growth_factor = probe_f32(config.growth_factor);
+    config.min_opacity = probe_f32(config.min_opacity);
+    config.dead_criterion = probe_string("dead_criterion", &config.dead_criterion);
+    config.refine_every = probe_i32(config.refine_every);
+    config.refine_start_iter = probe_i32(config.refine_start_iter);
+    config.refine_stop_num_iter = probe_i32(config.refine_stop_num_iter);
+    config.refine_stop_iter = probe_i32(config.refine_stop_iter);
+    config.noise_lr = probe_f32(config.noise_lr);
+    config.noise_lr_final = probe_f32(config.noise_lr_final);
+    config.use_revised_densification = !config.use_revised_densification;
+    config.densify_score_mode = probe_string("densify_score_mode", &config.densify_score_mode);
+    config.densify_score_blend_world_grad = probe_f32(config.densify_score_blend_world_grad);
+    config.densify_loss_map_mode =
+        probe_string("densify_loss_map_mode", &config.densify_loss_map_mode);
+    config.densify_robust_edge_aware_quantile =
+        probe_f32(config.densify_robust_edge_aware_quantile);
+    config.densify_nms_falloff = probe_f32(config.densify_nms_falloff);
+    config.densify_loss_map_normalize = !config.densify_loss_map_normalize;
+    config.densify_loss_map_clip_quantile = probe_f32(config.densify_loss_map_clip_quantile);
+    config.densify_loss_map_power = probe_f32(config.densify_loss_map_power);
+    config.densify_accum_mode = probe_string("densify_accum_mode", &config.densify_accum_mode);
+    config.densify_score_power = probe_f32(config.densify_score_power);
+    config.densify_score_clip_quantile = probe_f32(config.densify_score_clip_quantile);
+    config.densify_final_score_power = probe_f32(config.densify_final_score_power);
+    config.densify_learned_score = !config.densify_learned_score;
+    config.densify_oversize_split_fraction = probe_f32(config.densify_oversize_split_fraction);
+    config.densify_oversize_score_blend = probe_f32(config.densify_oversize_score_blend);
+    config.use_long_axis_split = !config.use_long_axis_split;
+    config.long_axis_split_opacity_k[0] = probe_f32(config.long_axis_split_opacity_k[0]);
+    config.max_split_fraction = probe_f32(config.max_split_fraction);
+    config.split_weight_by_renders = !config.split_weight_by_renders;
+    config.dead_after_epochs = probe_f32(config.dead_after_epochs);
+    config.max_screen_size = probe_f32(config.max_screen_size);
+    config.max_screen_size_clip_hardness = probe_f32(config.max_screen_size_clip_hardness);
+    config.max_screen_size_penalty = probe_f32(config.max_screen_size_penalty);
+    config.max_world_size = probe_f32(config.max_world_size);
+    config.ssim_lambda = probe_f32(config.ssim_lambda);
+    config.perceptual_loss = probe_string("perceptual_loss", &config.perceptual_loss);
+    config.l1_weight = probe_f32(config.l1_weight);
+    config.l2_weight = probe_f32(config.l2_weight);
+    config.l1_weight_y = probe_f32(config.l1_weight_y);
+    config.l2_weight_y = probe_f32(config.l2_weight_y);
+    config.l2_weight_u = probe_f32(config.l2_weight_u);
+    config.l2_weight_v = probe_f32(config.l2_weight_v);
+    config.loss_scale_min_pixels = probe_i32(config.loss_scale_min_pixels);
+    config.num_loss_scales = probe_i32(config.num_loss_scales);
+    config.alpha_loss_weight = probe_f32(config.alpha_loss_weight);
+    config.alpha_loss_weight_under = probe_f32(config.alpha_loss_weight_under);
+    config.loss_saturation_threshold = probe_f32(config.loss_saturation_threshold);
+    config.loss_luminance_normalization = probe_f32(config.loss_luminance_normalization);
+    config.view_sampling = probe_string("view_sampling", &config.view_sampling);
+    config.view_deficit_power = probe_f32(config.view_deficit_power);
+    config.view_deficit_max_ratio = probe_f32(config.view_deficit_max_ratio);
+    config.floater_suppression = probe_string("floater_suppression", &config.floater_suppression);
+    config.depth_distortion_reg = probe_f32(config.depth_distortion_reg);
+    config.normal_distortion_reg = probe_f32(config.normal_distortion_reg);
+    config.rgb_distortion_reg = probe_f32(config.rgb_distortion_reg);
+    config.distortion_reg_warmup = probe_i32(config.distortion_reg_warmup);
+    config.normal_reg_weight = probe_f32(config.normal_reg_weight);
+    config.normal_reg_warmup = probe_i32(config.normal_reg_warmup);
+    config.alpha_reg_weight = probe_f32(config.alpha_reg_weight);
+    config.alpha_reg_warmup = probe_i32(config.alpha_reg_warmup);
+    config.reg_warmup_length = probe_i32(config.reg_warmup_length);
+    config.depth_supervision_weight = probe_f32(config.depth_supervision_weight);
+    config.normal_supervision_weight = probe_f32(config.normal_supervision_weight);
+    config.input_depth_is_ray_depth = Some(!config.input_depth_is_ray_depth.unwrap_or(false));
+    config.supervision_warmup = probe_i32(config.supervision_warmup);
+    config.mean_median_depth_weight = probe_f32(config.mean_median_depth_weight);
+    config.median_depth_normal_reg_weight = probe_f32(config.median_depth_normal_reg_weight);
+    config.median_normal_supervision_weight = probe_f32(config.median_normal_supervision_weight);
+    config.median_render_normal_reg_weight = probe_f32(config.median_render_normal_reg_weight);
+    config.median_warmup = probe_i32(config.median_warmup);
+    config.opacity_reg = probe_f32(config.opacity_reg);
+    config.reg_rendered_only = !config.reg_rendered_only;
+    config.scale_reg = probe_f32(config.scale_reg);
+    config.opacity_reg_decay_power = probe_f32(config.opacity_reg_decay_power);
+    config.scale_reg_decay_power = probe_f32(config.scale_reg_decay_power);
+    config.opacity_decay = probe_f32(config.opacity_decay);
+    config.scale_decay = probe_f32(config.scale_decay);
+    config.erank_reg = probe_f32(config.erank_reg);
+    config.erank_reg_s3 = probe_f32(config.erank_reg_s3);
+    config.scale_regularization_weight = probe_f32(config.scale_regularization_weight);
+    config.max_gauss_ratio = probe_f32(config.max_gauss_ratio);
+    config.dc_reg = probe_f32(config.dc_reg);
+    config.sh_reg = probe_f32(config.sh_reg);
+    config.overexposure_reg = probe_f32(config.overexposure_reg);
+    config.quat_norm_reg = probe_f32(config.quat_norm_reg);
+    config.use_bilateral_grid = !config.use_bilateral_grid;
+    config.bilagrid_type = probe_string("bilagrid_type", &config.bilagrid_type);
+    config.bilagrid_shape[0] = probe_i32(config.bilagrid_shape[0]);
+    config.bilagrid_tv_loss_weight = probe_f32(config.bilagrid_tv_loss_weight);
+    config.color_shift_reg_weight = probe_f32(config.color_shift_reg_weight);
+    config.color_shift_reg_ema_period = probe_i32(config.color_shift_reg_ema_period);
+    config.use_bilateral_grid_for_geometry = !config.use_bilateral_grid_for_geometry;
+    config.bilagrid_shape_geometry[0] = probe_i32(config.bilagrid_shape_geometry[0]);
+    config.bilagrid_tv_loss_weight_geometry = probe_f32(config.bilagrid_tv_loss_weight_geometry);
+    config.use_adagrad_bilagrid_optim = !config.use_adagrad_bilagrid_optim;
+    config.use_ppisp = !config.use_ppisp;
+    config.ppisp_param_type = probe_string("ppisp_param_type", &config.ppisp_param_type);
+    config.ppisp_exposure_from_exif = !config.ppisp_exposure_from_exif;
+    config.ppisp_exposure_arithmetic_mean = !config.ppisp_exposure_arithmetic_mean;
+    config.apply_ppisp_before_bilagrid = !config.apply_ppisp_before_bilagrid;
+    config.apply_ppisp_before_color_space = !config.apply_ppisp_before_color_space;
+    config.use_adagrad_ppisp_optim = !config.use_adagrad_ppisp_optim;
+    config.ppisp_reg_exposure_mean = probe_f32(config.ppisp_reg_exposure_mean);
+    config.ppisp_reg_color_mean = probe_f32(config.ppisp_reg_color_mean);
+    config.ppisp_reg_vig_center = probe_f32(config.ppisp_reg_vig_center);
+    config.ppisp_reg_vig_non_pos = probe_f32(config.ppisp_reg_vig_non_pos);
+    config.ppisp_reg_vig_channel_var = probe_f32(config.ppisp_reg_vig_channel_var);
+    config.ppisp_reg_crf_channel_var = probe_f32(config.ppisp_reg_crf_channel_var);
+    config.bilagrid_adagrad_lr = probe_f32(config.bilagrid_adagrad_lr);
+    config.bilagrid_adagrad_depth_lr = probe_f32(config.bilagrid_adagrad_depth_lr);
+    config.bilagrid_adagrad_normal_lr = probe_f32(config.bilagrid_adagrad_normal_lr);
+    config.ppisp_adagrad_lr = probe_f32(config.ppisp_adagrad_lr);
+    config.bilagrid_lr = probe_f32(config.bilagrid_lr);
+    config.bilagrid_lr_final = Some(probe_f32(config.bilagrid_lr_final.unwrap_or(0.0)));
+    config.bilagrid_lr_warmup = probe_i32(config.bilagrid_lr_warmup);
+    config.bilagrid_depth_lr = probe_f32(config.bilagrid_depth_lr);
+    config.bilagrid_depth_lr_final = Some(probe_f32(config.bilagrid_depth_lr_final.unwrap_or(0.0)));
+    config.bilagrid_depth_lr_warmup = probe_i32(config.bilagrid_depth_lr_warmup);
+    config.bilagrid_normal_lr = probe_f32(config.bilagrid_normal_lr);
+    config.bilagrid_normal_lr_final =
+        Some(probe_f32(config.bilagrid_normal_lr_final.unwrap_or(0.0)));
+    config.bilagrid_normal_lr_warmup = probe_i32(config.bilagrid_normal_lr_warmup);
+    config.ppisp_lr = probe_f32(config.ppisp_lr);
+    config.ppisp_lr_final = Some(probe_f32(config.ppisp_lr_final.unwrap_or(0.0)));
+    config.ppisp_lr_warmup = probe_i32(config.ppisp_lr_warmup);
+    config.image_color_is_linear = Some(!config.image_color_is_linear.unwrap_or(false));
+    config.image_color_transfer =
+        probe_string("image_color_transfer", &config.image_color_transfer);
+    config.image_color_gamut = probe_string("image_color_gamut", &config.image_color_gamut);
+    config.splat_color_is_linear = Some(!config.splat_color_is_linear.unwrap_or(false));
+    config.splat_color_transfer =
+        probe_string("splat_color_transfer", &config.splat_color_transfer);
+    config.splat_color_gamut = probe_string("splat_color_gamut", &config.splat_color_gamut);
+    config.point_color_is_linear = Some(!config.point_color_is_linear.unwrap_or(false));
+    config.point_color_transfer =
+        probe_string("point_color_transfer", &config.point_color_transfer);
+    config.point_color_gamut = probe_string("point_color_gamut", &config.point_color_gamut);
+    config.cache_images = probe_string("cache_images", &config.cache_images);
+    config.max_batch_per_epoch = probe_i32(config.max_batch_per_epoch);
+    config.min_renders_per_refine = probe_f32(config.min_renders_per_refine);
+    config.render_quantile = probe_f32(config.render_quantile);
+    config.max_train_batch_size = probe_i32(config.max_train_batch_size);
+    config.split_batch = !config.split_batch;
+    config.use_fused_proj_bwd_optim = !config.use_fused_proj_bwd_optim;
+    config.packed = !config.packed;
+    config.quantization_level = probe_i32(config.quantization_level);
+    config.bin_tile_size = probe_i32(config.bin_tile_size);
+    config.preallocate_splat_tensors = !config.preallocate_splat_tensors;
+    config.optimizer_offload = probe_string("optimizer_offload", &config.optimizer_offload);
+    config.use_bvh = !config.use_bvh;
+    config.means_lr = probe_f32(config.means_lr);
+    config.means_lr_final = Some(probe_f32(config.means_lr_final.unwrap_or(0.0)));
+    config.scales_lr = probe_f32(config.scales_lr);
+    config.scales_lr_final = Some(probe_f32(config.scales_lr_final.unwrap_or(0.0)));
+    config.quats_lr = probe_f32(config.quats_lr);
+    config.opacities_lr = probe_f32(config.opacities_lr);
+    config.features_dc_lr = probe_f32(config.features_dc_lr);
+    config.features_sh_lr = probe_f32(config.features_sh_lr);
+    config.features_sb_lr = probe_f32(config.features_sb_lr);
+    config.background_dc_lr = probe_f32(config.background_dc_lr);
+    config.background_sh_lr = probe_f32(config.background_sh_lr);
+    config.max_steps = Some(probe_i32(config.max_steps.unwrap_or(0)));
+    config.use_scale_agnostic_mean = !config.use_scale_agnostic_mean;
+    config.use_per_splat_bias_correction = !config.use_per_splat_bias_correction;
+}
+
+#[cfg(test)]
+fn probe_string(name: &str, current: &str) -> String {
+    let spec = field_spec(name).expect("known field");
+    match spec.choice_kind {
+        crate::config::ChoiceKind::Closed(choices) => choices
+            .iter()
+            .copied()
+            .find(|choice| *choice != current)
+            .expect("closed set has another token")
+            .to_owned(),
+        crate::config::ChoiceKind::Free
+        | crate::config::ChoiceKind::FreeForm
+        | crate::config::ChoiceKind::Path => {
+            if current == "probe" {
+                "probe-2".to_owned()
+            } else {
+                "probe".to_owned()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn probe_i32(value: i32) -> i32 {
+    if value == i32::MAX {
+        value - 1
+    } else {
+        value + 1
+    }
+}
+
+#[cfg(test)]
+fn probe_f32(value: f32) -> f32 {
+    if value.is_finite() && value != 1.5 {
+        1.5
+    } else {
+        2.5
     }
 }

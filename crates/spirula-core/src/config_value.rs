@@ -174,7 +174,7 @@ pub(crate) fn canonical_vec3_f(value: &[f32; 3]) -> String {
     )
 }
 
-fn check_choice(spec: &FieldSpec, value: &str) -> Result<(), DomainError> {
+pub(crate) fn check_choice(spec: &FieldSpec, value: &str) -> Result<(), DomainError> {
     let ChoiceKind::Closed(choices) = spec.choice_kind else {
         return Ok(());
     };
@@ -197,14 +197,147 @@ fn as_f32(number: JsonNumber) -> f32 {
 }
 
 fn exact_i32(name: &str, raw: &str, number: JsonNumber) -> Result<i32, DomainError> {
-    let JsonNumber::Finite(value) = number else {
+    if !matches!(number, JsonNumber::Finite(_)) {
         return Err(shape_error(name, "integer", raw));
+    }
+    match lexeme_integer(raw) {
+        LexemeInteger::Fits(value) if (i32::MIN as i128..=i32::MAX as i128).contains(&value) => {
+            Ok(value as i32)
+        }
+        LexemeInteger::Fits(_) | LexemeInteger::TooWide => Err(range_error(name, raw)),
+        LexemeInteger::NotInteger => Err(shape_error(name, "integer", raw)),
+    }
+}
+
+/// Exact integer carried by a JSON number lexeme.
+///
+/// `f64` rounds `1.0000000000000001` to `1`, so integrality is decided from
+/// the decimal digits and exponent, not from [`f64::fract`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LexemeInteger {
+    NotInteger,
+    Fits(i128),
+    TooWide,
+}
+
+pub(crate) fn lexeme_integer(raw: &str) -> LexemeInteger {
+    let Some((negative, mut digits, mut scale)) = decimal_parts(raw) else {
+        return LexemeInteger::NotInteger;
     };
-    if !value.is_finite() || value.fract() != 0.0 {
-        return Err(shape_error(name, "integer", raw));
+    while digits.len() > 1 && digits.ends_with('0') && scale > i64::MIN {
+        digits.pop();
+        scale -= 1;
     }
-    if value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
-        return Err(range_error(name, raw));
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return LexemeInteger::Fits(0);
     }
-    Ok(value as i32)
+    if scale > 0 {
+        return LexemeInteger::NotInteger;
+    }
+    if scale == i64::MIN {
+        return LexemeInteger::TooWide;
+    }
+    let extra = (-scale) as usize;
+    if trimmed.len().saturating_add(extra) > 40 {
+        return LexemeInteger::TooWide;
+    }
+    let mut text = String::with_capacity(trimmed.len() + extra);
+    text.push_str(trimmed);
+    text.extend(std::iter::repeat_n('0', extra));
+    let Ok(magnitude) = text.parse::<i128>() else {
+        return LexemeInteger::TooWide;
+    };
+    let signed = if negative { -magnitude } else { magnitude };
+    LexemeInteger::Fits(signed)
+}
+
+enum Exponent {
+    Value(i64),
+    PositiveHuge,
+    NegativeHuge,
+}
+
+fn decimal_parts(raw: &str) -> Option<(bool, String, i64)> {
+    if raw.is_empty() {
+        return None;
+    }
+    let (negative, rest) = match raw.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, raw),
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let (body, exponent) = match rest.find(['e', 'E']) {
+        Some(index) => (&rest[..index], Some(&rest[index + 1..])),
+        None => (rest, None),
+    };
+    if body.is_empty() {
+        return None;
+    }
+    let (int_part, frac_part) = match body.split_once('.') {
+        Some((int_part, frac_part)) => (int_part, frac_part),
+        None => (body, ""),
+    };
+    if int_part.is_empty()
+        || (frac_part.is_empty() && body.contains('.'))
+        || !int_part.bytes().all(|byte| byte.is_ascii_digit())
+        || !frac_part.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let exponent = match exponent {
+        None => Exponent::Value(0),
+        Some(text) => parse_exponent(text)?,
+    };
+    let mut digits = String::with_capacity(int_part.len() + frac_part.len());
+    digits.push_str(int_part);
+    digits.push_str(frac_part);
+    Some((
+        negative,
+        digits,
+        scale_from(frac_part.len() as i64, exponent),
+    ))
+}
+
+fn parse_exponent(text: &str) -> Option<Exponent> {
+    if text.is_empty() {
+        return None;
+    }
+    let (negative, digits) = if let Some(rest) = text.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = text.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, text)
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if digits.len() > 18 {
+        return Some(if negative {
+            Exponent::NegativeHuge
+        } else {
+            Exponent::PositiveHuge
+        });
+    }
+    let value: i64 = digits.parse().ok()?;
+    Some(if negative {
+        Exponent::Value(-value)
+    } else {
+        Exponent::Value(value)
+    })
+}
+
+fn scale_from(fraction_len: i64, exponent: Exponent) -> i64 {
+    match exponent {
+        Exponent::PositiveHuge => i64::MIN,
+        Exponent::NegativeHuge => i64::MAX,
+        Exponent::Value(exponent) => match fraction_len.checked_sub(exponent) {
+            Some(scale) => scale,
+            None if exponent > 0 => i64::MIN,
+            None => i64::MAX,
+        },
+    }
 }

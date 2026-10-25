@@ -1,7 +1,7 @@
 use spirula_core::{
-    ChoiceKind, ErrorCode, FieldType, JsonKind, JsonNumber, LoadedTrainConfig,
+    ChoiceKind, ContextKey, ErrorCode, FieldType, JsonKind, JsonNumber, LoadedTrainConfig,
     TRAIN_CONFIG_FIELD_COUNT, TRAIN_CONFIG_FIELDS, TRAIN_CONFIG_SCHEMA_VERSION, TrainConfig,
-    field_catalog_json, field_spec,
+    field_catalog_json, field_spec, parse_json,
 };
 use std::path::PathBuf;
 
@@ -56,7 +56,7 @@ fn read(path: &str) -> String {
 #[test]
 fn golden_catalog_and_defaults_cover_all_251_fields() {
     let catalog = field_catalog_json();
-    let defaults = TrainConfig::default().to_current_json();
+    let defaults = TrainConfig::default().to_current_json().unwrap();
     assert_eq!(read("config/catalog.json"), catalog);
     assert_eq!(read("config/defaults.json"), defaults);
 
@@ -64,7 +64,7 @@ fn golden_catalog_and_defaults_cover_all_251_fields() {
     assert_eq!(loaded.schema_version(), Some(TRAIN_CONFIG_SCHEMA_VERSION));
     assert!(loaded.unknown_fields().is_empty());
     assert!(loaded.config.same_values(&TrainConfig::default()));
-    assert_eq!(loaded.to_preserved_json(), defaults);
+    assert_eq!(loaded.to_preserved_json().unwrap(), defaults);
     assert_eq!(TRAIN_CONFIG_FIELDS.len(), 251);
     assert_eq!(TRAIN_CONFIG_FIELD_COUNT, 251);
 
@@ -121,7 +121,7 @@ fn legacy_checkpoint_config_roundtrips_without_rewriting() {
             ("steps".to_owned(), "1".to_owned()),
         ]
     );
-    assert_eq!(loaded.to_preserved_json(), original);
+    assert_eq!(loaded.to_preserved_json().unwrap(), original);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 }
 
@@ -130,7 +130,7 @@ fn preserved_save_keeps_unknowns_and_edits_to_missing_fields() {
     let original = read("checkpoints/tiny-run/config.json");
     let mut loaded = LoadedTrainConfig::parse(&original).unwrap();
     loaded.config.num_iterations = 4;
-    let saved = loaded.to_preserved_json();
+    let saved = loaded.to_preserved_json().unwrap();
     assert!(!saved.contains("schema_version"));
     assert!(saved.contains("\"preset\":\"3dgs\""));
     assert!(saved.contains("\"steps\":1"));
@@ -143,7 +143,7 @@ fn preserved_save_keeps_unknowns_and_edits_to_missing_fields() {
     assert_eq!(again.config.data, "fixtures/datasets/tiny-colmap");
     assert_eq!(again.unknown_fields().len(), 2);
 
-    let migrated = loaded.to_current_json();
+    let migrated = loaded.to_current_json().unwrap();
     let current = LoadedTrainConfig::parse(&migrated).unwrap();
     assert_eq!(current.schema_version(), Some(1));
     assert_eq!(current.config.num_iterations, 4);
@@ -161,10 +161,10 @@ fn nested_unknown_values_and_infinity_strings_survive() {
     assert_eq!(loaded.config.resume, "Infinity");
     assert!(loaded.config.outlier_threshold.is_infinite());
     assert!(loaded.config.outlier_threshold.is_sign_positive());
-    assert_eq!(loaded.to_preserved_json(), text);
+    assert_eq!(loaded.to_preserved_json().unwrap(), text);
 
     loaded.config.viewer_port = 9;
-    let saved = loaded.to_preserved_json();
+    let saved = loaded.to_preserved_json().unwrap();
     let again = LoadedTrainConfig::parse(&saved).unwrap();
     assert_eq!(again.config.resume, "Infinity");
     assert_eq!(again.config.viewer_port, 9);
@@ -284,6 +284,137 @@ fn nonfinite_tokens_roundtrip_and_nan_matches() {
     );
     assert!(loaded.config.max_world_size.is_nan());
     assert!(loaded.config.means_lr.is_infinite());
-    let saved = loaded.to_preserved_json();
+    let saved = loaded.to_preserved_json().unwrap();
     assert_eq!(saved, text);
+}
+
+#[test]
+fn unescaped_controls_are_rejected_and_escapes_are_kept() {
+    for text in [
+        "{\"data\":\"a\nb\"}",
+        "{\"data\":\"a\u{0}b\"}",
+        "{\"data\":\"a\u{1f}b\"}",
+        "{\"extra\":\"\u{1}b\"}",
+    ] {
+        let error = parse_json(text).expect_err(text);
+        assert_eq!(error.code(), ErrorCode::MalformedRecord, "{text:?}");
+        let error = LoadedTrainConfig::parse(text).expect_err(text);
+        assert_eq!(error.code(), ErrorCode::MalformedRecord, "{text:?}");
+    }
+    let loaded = LoadedTrainConfig::parse(r#"{"data":"a\nb\u0000c\u001Fd"}"#).unwrap();
+    assert_eq!(loaded.config.data, "a\nb\u{0}c\u{1f}d");
+    let again = LoadedTrainConfig::parse(&loaded.to_current_json().unwrap()).unwrap();
+    assert_eq!(again.config.data, loaded.config.data);
+}
+
+#[test]
+fn integer_lexemes_do_not_use_rounded_f64() {
+    let malformed = [
+        r#"{"num_iterations":1.0000000000000001}"#,
+        r#"{"num_iterations":0.99999999999999995}"#,
+        r#"{"num_iterations":2147483647.0000000000000001}"#,
+        r#"{"num_iterations":2147483646.999999999999999}"#,
+        r#"{"num_iterations":-2147483648.0000000000000001}"#,
+        r#"{"num_iterations":10000000000000001e-16}"#,
+        r#"{"num_iterations":21474836470.000000000000001e-1}"#,
+        r#"{"num_iterations":15.000000000000001e1}"#,
+        r#"{"num_iterations":15e-1}"#,
+        r#"{"schema_version":1.0000000000000001}"#,
+        r#"{"schema_version":0.99999999999999995}"#,
+        r#"{"schema_version":10000000000000001e-16}"#,
+        r#"{"schema_version":2.0000000000000001}"#,
+    ];
+    for text in malformed {
+        let error = LoadedTrainConfig::parse(text).expect_err(text);
+        assert_eq!(error.code(), ErrorCode::MalformedRecord, "{text}");
+    }
+    let out_of_range = [
+        r#"{"num_iterations":2147483648}"#,
+        r#"{"num_iterations":-2147483649}"#,
+        r#"{"num_iterations":21474836480e-1}"#,
+        r#"{"num_iterations":-21474836490e-1}"#,
+        r#"{"num_iterations":1e10}"#,
+        r#"{"num_iterations":2147483647e1}"#,
+        r#"{"bilagrid_shape":[21474836480e-1,0,0]}"#,
+    ];
+    for text in out_of_range {
+        let error = LoadedTrainConfig::parse(text).expect_err(text);
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{text}");
+    }
+    for text in [
+        r#"{"schema_version":2}"#,
+        r#"{"schema_version":1e1}"#,
+        r#"{"schema_version":10e0}"#,
+        r#"{"schema_version":-1}"#,
+        r#"{"schema_version":9007199254740993}"#,
+    ] {
+        let error = LoadedTrainConfig::parse(text).expect_err(text);
+        assert_eq!(error.code(), ErrorCode::UnsupportedVersion, "{text}");
+    }
+    for text in [
+        r#"{"schema_version":1.0}"#,
+        r#"{"schema_version":1e0}"#,
+        r#"{"schema_version":1e+0}"#,
+        r#"{"schema_version":10e-1}"#,
+        r#"{"schema_version":100e-2}"#,
+        r#"{"schema_version":1.000}"#,
+    ] {
+        let loaded = LoadedTrainConfig::parse(text).unwrap();
+        assert_eq!(loaded.schema_version(), Some(1), "{text}");
+    }
+    let accepted = [
+        (r#"{"num_iterations":2147483647}"#, 2147483647),
+        (r#"{"num_iterations":-2147483648}"#, -2147483648),
+        (r#"{"num_iterations":2147483647.0}"#, 2147483647),
+        (r#"{"num_iterations":-2147483648.0}"#, -2147483648),
+        (r#"{"num_iterations":21474836470e-1}"#, 2147483647),
+        (r#"{"num_iterations":-21474836480e-1}"#, -2147483648),
+        (r#"{"num_iterations":1.5e1}"#, 15),
+        (r#"{"num_iterations":1500e-2}"#, 15),
+        (r#"{"num_iterations":1.000}"#, 1),
+        (r#"{"num_iterations":-0.0}"#, 0),
+    ];
+    for (text, expected) in accepted {
+        let loaded = LoadedTrainConfig::parse(text).unwrap();
+        assert_eq!(loaded.config.num_iterations, expected, "{text}");
+    }
+    let shape =
+        LoadedTrainConfig::parse(r#"{"bilagrid_shape":[1.5e1,-2147483648,10e-1]}"#).unwrap();
+    assert_eq!(shape.config.bilagrid_shape, [15, i32::MIN, 1]);
+}
+
+#[test]
+#[allow(clippy::field_reassign_with_default)] // the regression is a mutation after construction
+fn writers_reject_invalid_closed_choices_and_keep_empty_compatibility() {
+    let mut config = TrainConfig::default();
+    config.quality = "typo".to_owned();
+    let error = config.to_current_json().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::UnsupportedVersion);
+    assert_eq!(error.context_value(ContextKey::Field), Some("quality"));
+
+    let mut loaded = LoadedTrainConfig::parse(r#"{"quality":"low"}"#).unwrap();
+    loaded.config.quality = "typo".to_owned();
+    assert!(loaded.to_preserved_json().is_err());
+    assert!(loaded.to_current_json().is_err());
+
+    config.quality = "ultra".to_owned();
+    config.data.clear();
+    config.data_format.clear();
+    config.scene_center = "none".to_owned();
+    config.apply_loss_for_mask = None;
+    let text = config.to_current_json().unwrap();
+    assert!(text.contains("\"quality\":\"ultra\""));
+    assert!(text.contains("\"data\":null"));
+    assert!(text.contains("\"data_format\":null"));
+    let loaded = LoadedTrainConfig::parse(&text).unwrap();
+    assert_eq!(loaded.config.quality, "ultra");
+    assert_eq!(loaded.config.data, "");
+    assert_eq!(loaded.config.data_format, "");
+    assert_eq!(loaded.config.apply_loss_for_mask, None);
+
+    config.scene_center.clear();
+    let error = config.validate().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::UnsupportedVersion);
+    assert_eq!(error.context_value(ContextKey::Field), Some("scene_center"));
+    assert!(config.to_current_json().is_err());
 }

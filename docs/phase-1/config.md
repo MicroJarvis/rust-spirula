@@ -43,17 +43,31 @@ These differences are intentional. They do not add flags or renumber errors.
 
 | condition | code | reference |
 |---|---|---|
-| malformed JSON, wrong shape, non-integral int, duplicate root key, null or non-integer `schema_version` | `SP-FMT-002` | coerce, or throw an untyped `runtime_error` for arrays |
+| malformed JSON, wrong shape, non-integral int, duplicate root key, null or non-integer `schema_version`, unescaped U+0000..U+001F in a string | `SP-FMT-002` | coerce, or throw an untyped `runtime_error` for arrays |
 | integer outside `i32` | `SP-INP-003` | cast through `double` |
-| closed choice not in its set | `SP-FMT-003` | accept any string |
-| `schema_version` other than 1 | `SP-FMT-003` | field does not exist |
+| closed choice not in its set, including a value assigned in memory and then written | `SP-FMT-003` | accept any string |
+| `schema_version` other than the exact integer 1 | `SP-FMT-003` | field does not exist |
 
 - Missing `schema_version` is legacy and stays accepted. There is no
   deprecation date.
 - `schema_version: 1` is the current document. The integer must be exact.
+- Integer fields and `schema_version` use the numeric lexeme. A value is an
+  integer when its decimal digits and exponent place it on an integer,
+  including `1.0`, `1e0`, and `10e-1`. `1.0000000000000001` is not an integer,
+  even though `f64` rounds it to `1`. The same rule covers exponent
+  cancellation such as `21474836470e-1`. An exact integer outside `i32` is
+  `SP-INP-003`. An exact integer other than 1 in `schema_version` is
+  `SP-FMT-003`.
+- JSON strings reject raw U+0000 through U+001F. The escapes `\b`, `\f`, `\n`,
+  `\r`, `\t`, and `\u00XX` stay valid and decode to those characters.
 - An empty string is a valid closed choice only when the reference default is
   empty (`FieldSpec::empty_is_unset`). `data_format: ""` stays valid;
   `scene_center: ""` does not.
+- `TrainConfig::validate` checks every closed choice on the typed value.
+  `to_current_json` and `to_preserved_json` return `Result` and call it, so a
+  public field assignment cannot persist a document the reader rejects.
+  Free, free-form, and path strings, including empty, stay writable. `None`
+  optionals stay writable and are still emitted as `null`.
 - Free, free-form and path strings are not enum-checked.
 - No extra numeric domain ranges. The reference table does not define them.
 - Float fields accept finite numbers and the three non-finite tokens. They
@@ -81,8 +95,8 @@ rename or replace files. Backup and atomic replacement belong to P1-F05.
 - If the typed values still match the loaded values, save returns the original
   text unchanged.
 - Promoting a document to the current form is explicit: `schema_version` 1,
-  every known field, then the preserved unknown keys. That call returns text.
-  It does not rewrite a file.
+  every known field, then the preserved unknown keys. That call returns text
+  when `validate` succeeds. It does not rewrite a file.
 
 The Phase 0 checkpoint `config.json` is a legacy compatibility input. Readers
 accept it as written. Nothing in this feature changes that file so a test can

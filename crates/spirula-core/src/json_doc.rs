@@ -314,6 +314,9 @@ impl<'a> Parser<'a> {
                     .map_err(|_| parse_error(self.index, "invalid UTF-8 in string"));
             }
             if byte != b'\\' {
+                if byte <= 0x1F {
+                    return Err(parse_error(self.index - 1, "unescaped control character"));
+                }
                 out.push(byte);
                 continue;
             }

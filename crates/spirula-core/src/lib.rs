@@ -3,7 +3,9 @@
 //! This crate must remain independent of Slint, `wgpu`, filesystem formats,
 //! and application process state. P1-F01 owns the error catalog. P1-F02 owns
 //! the training-config table and document API described in
-//! `docs/phase-1/config.md`.
+//! `docs/phase-1/config.md`. Writers call [`TrainConfig::validate`] and
+//! return [`DomainError`] instead of emitting a closed choice the reader
+//! rejects.
 
 mod config;
 mod config_bind;
