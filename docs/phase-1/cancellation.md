@@ -49,7 +49,8 @@ These fill the section 3 and section 5 sketches. They do not add error codes.
   `source` stays local and is omitted from that copy.
 - `ProgressPublisher` is the publication boundary for one piece of work. It
   keeps the latest valid snapshot and exactly one terminal outcome. It
-  checks that closure before validating the payload, so a late or duplicate
-  publication returns `SP-SESS-001` even when the payload is malformed, and
-  the first outcome stays in place. It does not assign `seq`, coalesce
+  checks that closure before validating the payload, under the publication
+  lock. A late `step` past `total_steps`, or a second `Canceled` with a blank
+  checkpoint, returns `SP-SESS-001` rather than `SP-INP-003` or `SP-INP-001`,
+  and the first outcome stays in place. It does not assign `seq`, coalesce
   under backpressure, or change session state.

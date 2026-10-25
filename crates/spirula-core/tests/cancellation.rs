@@ -233,6 +233,45 @@ fn publisher_keeps_one_terminal_and_rejects_late_progress() {
 }
 
 #[test]
+fn malformed_late_progress_and_second_terminal_stay_closed() {
+    let publisher = ProgressPublisher::new();
+    publisher
+        .publish_terminal(TerminalOutcome::Completed { step: 1 })
+        .unwrap();
+    let late_progress = publisher
+        .publish_progress(ProgressSnapshot {
+            step: 5,
+            total_steps: Some(4),
+            splats: 0,
+            elapsed_ms: 0,
+            eta_ms: None,
+            metrics: Vec::new(),
+        })
+        .unwrap_err();
+    assert_eq!(late_progress.code(), ErrorCode::InvalidState);
+    assert_eq!(
+        late_progress.context_value(ContextKey::Field),
+        Some("progress")
+    );
+    let late_terminal = publisher
+        .publish_terminal(TerminalOutcome::Canceled {
+            step: 1,
+            reason: CancelReason::User,
+            saved_checkpoint: Some(" ".to_owned()),
+        })
+        .unwrap_err();
+    assert_eq!(late_terminal.code(), ErrorCode::InvalidState);
+    assert_eq!(
+        late_terminal.context_value(ContextKey::Field),
+        Some("terminal")
+    );
+    assert_eq!(
+        publisher.outcome(),
+        Some(OutcomeView::Completed { step: 1 })
+    );
+}
+
+#[test]
 fn failed_outcome_keeps_event_fields_and_rejects_cancellation() {
     let source = std::io::Error::other("local disk");
     let failure = DomainError::try_new(ErrorCode::ReadFailed, "disk")

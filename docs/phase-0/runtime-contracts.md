@@ -332,7 +332,9 @@ are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
   action; `source` stays local. `Failed` with `SP-CAN-001` is `SP-INP-001`
   and does not close publication. Closure is checked before payload
   validation, so a late or duplicate publication returns `SP-SESS-001`
-  even when the payload is malformed, and the first outcome stays.
+  even when the payload is malformed. That includes progress whose `step`
+  exceeds `total_steps` and a second `Canceled` with a blank checkpoint.
+  The first outcome stays.
 
 ## 6. GPU boundary
 
