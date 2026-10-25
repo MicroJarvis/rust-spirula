@@ -23,7 +23,7 @@ pub use event::{
 };
 pub use ids::{CommandId, RunId, SessionId};
 pub use limits::SessionLimits;
-pub use notify::Subscription;
-pub use session::ApplicationService;
+pub use notify::{SubscribeError, Subscription};
+pub use session::{ApplicationService, SubscribeHandoffError};
 pub use state::SessionState;
 pub use worker::{FakeWorkerBehavior, StallGate, WorkerEvent};

@@ -14,6 +14,8 @@ pub struct DropCounters {
     pub notification: u64,
     pub stale_worker: u64,
     pub worker_mailbox: u64,
+    pub subscriber_disconnect: u64,
+    pub subscribe_rejected: u64,
 }
 
 /// Canonical run/command outcome. Event-visible via core [`OutcomeView`].

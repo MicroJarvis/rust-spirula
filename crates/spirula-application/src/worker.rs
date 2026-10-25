@@ -20,6 +20,9 @@ pub enum FakeWorkerBehavior {
     Succeed,
     Fail,
     Panic,
+    /// On cancel with save requested: emit `Canceled` and mark save failed.
+    /// Owner must keep `Canceled` and publish `Warning` (§5), not session `Failed`.
+    CancelSaveFail,
 }
 
 /// Optional stall: hold inside a step without advancing, still heartbeat/cancel.
@@ -97,6 +100,8 @@ pub enum WorkerEvent {
         command_id: CommandId,
         outcome: TerminalOutcome,
         checkpoint_label: Option<String>,
+        /// Save-on-cancel attempted and failed. Owner keeps `Canceled` + Warning.
+        save_failed: bool,
     },
 }
 
@@ -185,7 +190,7 @@ fn worker_loop(
                     )
                     .is_err()
                     {
-                        finish_canceled(&result_tx, run_id, command_id, 0, &cancel, None);
+                        finish_canceled(&result_tx, run_id, command_id, 0, &cancel, None, false);
                         return;
                     }
                     match *behavior.lock().expect("behavior") {
@@ -205,10 +210,11 @@ fn worker_loop(
                                     command_id,
                                     outcome: TerminalOutcome::Failed { error: err },
                                     checkpoint_label: None,
+                                    save_failed: false,
                                 },
                             );
                         }
-                        FakeWorkerBehavior::Succeed => {
+                        FakeWorkerBehavior::Succeed | FakeWorkerBehavior::CancelSaveFail => {
                             forward_result(
                                 &result_tx,
                                 WorkerEvent::LoadDone {
@@ -233,6 +239,7 @@ fn worker_loop(
                             command_id,
                             outcome: TerminalOutcome::Failed { error: err },
                             checkpoint_label: None,
+                            save_failed: false,
                         },
                     );
                 }
@@ -274,6 +281,7 @@ fn worker_loop(
                             command_id,
                             outcome: TerminalOutcome::Failed { error: err },
                             checkpoint_label: None,
+                            save_failed: false,
                         },
                     );
                 }
@@ -327,8 +335,21 @@ fn run_probe(
         )
         .is_err()
         {
-            let label = save_on_cancel.then(|| format!("probe-stop-{step}"));
-            finish_canceled(result_tx, run_id, command_id, step, &cancel, label);
+            let save_failed = save_on_cancel
+                && matches!(
+                    *behavior.lock().expect("behavior"),
+                    FakeWorkerBehavior::CancelSaveFail
+                );
+            let label = (save_on_cancel && !save_failed).then(|| format!("probe-stop-{step}"));
+            finish_canceled(
+                result_tx,
+                run_id,
+                command_id,
+                step,
+                &cancel,
+                label,
+                save_failed,
+            );
             return;
         }
 
@@ -368,10 +389,11 @@ fn run_probe(
                     command_id,
                     outcome: TerminalOutcome::Failed { error: err },
                     checkpoint_label: None,
+                    save_failed: false,
                 },
             );
         }
-        FakeWorkerBehavior::Succeed => {
+        FakeWorkerBehavior::Succeed | FakeWorkerBehavior::CancelSaveFail => {
             forward_result(
                 result_tx,
                 WorkerEvent::RunTerminal {
@@ -379,6 +401,7 @@ fn run_probe(
                     command_id,
                     outcome: TerminalOutcome::Completed { step },
                     checkpoint_label: None,
+                    save_failed: false,
                 },
             );
         }
@@ -442,9 +465,14 @@ fn finish_canceled(
     step: u64,
     cancel: &CancelToken,
     checkpoint_label: Option<String>,
+    save_failed: bool,
 ) {
     let reason = cancel.reason().unwrap_or(CancelReason::User);
-    let saved = checkpoint_label.clone();
+    let saved = if save_failed {
+        None
+    } else {
+        checkpoint_label.clone()
+    };
     forward_result(
         result_tx,
         WorkerEvent::RunTerminal {
@@ -455,7 +483,8 @@ fn finish_canceled(
                 reason,
                 saved_checkpoint: saved,
             },
-            checkpoint_label,
+            checkpoint_label: if save_failed { None } else { checkpoint_label },
+            save_failed,
         },
     );
 }

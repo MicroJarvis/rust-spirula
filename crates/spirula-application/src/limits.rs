@@ -12,7 +12,10 @@ pub struct SessionLimits {
     pub worker_result_queue_capacity: usize,
     pub control_history_capacity: usize,
     pub control_history_max_bytes: usize,
+    /// Per-subscriber notification queue capacity.
     pub notification_queue_capacity: usize,
+    /// Hard cap on concurrent live subscribers (global fanout cardinality).
+    pub max_subscribers: usize,
     pub progress_max_bytes: usize,
     pub log_message_max_bytes: usize,
     pub log_tail_capacity: usize,
@@ -27,6 +30,8 @@ pub struct SessionLimits {
     pub cancel_poll_interval: Duration,
     /// Nominal delay per fake step; sliced by [`Self::cancel_poll_interval`].
     pub worker_step_delay: Duration,
+    /// Owner join / worker drain deadline on service drop.
+    pub teardown_deadline: Duration,
 }
 
 impl Default for SessionLimits {
@@ -38,6 +43,7 @@ impl Default for SessionLimits {
             control_history_capacity: 64,
             control_history_max_bytes: 256 * 1024,
             notification_queue_capacity: 16,
+            max_subscribers: 32,
             progress_max_bytes: 4 * 1024,
             log_message_max_bytes: 2 * 1024,
             log_tail_capacity: 32,
@@ -50,6 +56,7 @@ impl Default for SessionLimits {
             heartbeat_interval: Duration::from_secs(1),
             cancel_poll_interval: Duration::from_millis(50),
             worker_step_delay: Duration::from_millis(10),
+            teardown_deadline: Duration::from_secs(2),
         }
     }
 }
@@ -62,6 +69,7 @@ impl SessionLimits {
             cancel_poll_interval: Duration::from_millis(5),
             worker_step_delay: Duration::from_millis(1),
             notification_queue_capacity: 2,
+            max_subscribers: 4,
             command_queue_capacity: 2,
             worker_progress_queue_capacity: 4,
             worker_result_queue_capacity: 4,
@@ -74,6 +82,7 @@ impl SessionLimits {
             error_message_max_bytes: 128,
             context_value_max_bytes: 64,
             error_event_max_bytes: 256,
+            teardown_deadline: Duration::from_millis(500),
             ..Self::default()
         }
     }

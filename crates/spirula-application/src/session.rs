@@ -17,6 +17,7 @@ use crate::event::{
 use crate::history::ControlHistory;
 use crate::ids::{CommandId, IdGen, RunId, SessionId};
 use crate::limits::SessionLimits;
+use crate::notify::SubscribeError;
 use crate::notify::{Notifier, Subscription};
 use crate::state::SessionState;
 use crate::worker::{FakeWorkerBehavior, StallGate, WorkerEvent, WorkerHandle, WorkerRequest};
@@ -290,7 +291,7 @@ impl ApplicationService {
                         "pause",
                     );
                 }
-                complete_immediate(
+                complete_control(
                     &mut st,
                     &self.shared.notifier,
                     id,
@@ -318,7 +319,7 @@ impl ApplicationService {
                         "resume",
                     );
                 }
-                complete_immediate(
+                complete_control(
                     &mut st,
                     &self.shared.notifier,
                     id,
@@ -338,7 +339,7 @@ impl ApplicationService {
                     },
                 );
                 transition(&mut st, &self.shared.notifier, SessionState::Idle, "reset");
-                complete_immediate(
+                complete_control(
                     &mut st,
                     &self.shared.notifier,
                     id,
@@ -390,11 +391,46 @@ impl ApplicationService {
 
     /// Subscribe and snapshot under one lock so the live stream boundary
     /// matches the returned snapshot seq.
-    pub fn subscribe(&self) -> Option<(Subscription, Snapshot)> {
-        let st = self.shared.state.lock().expect("state");
-        let sub = self.shared.notifier.subscribe()?;
+    pub fn subscribe(&self) -> Result<(Subscription, Snapshot), SubscribeError> {
+        let mut st = self.shared.state.lock().expect("state");
+        match self.shared.notifier.subscribe() {
+            Ok(sub) => {
+                let snap = st.snapshot();
+                Ok((sub, snap))
+            }
+            Err(SubscribeError::SubscriberLimit) => {
+                st.drops.subscribe_rejected = st.drops.subscribe_rejected.saturating_add(1);
+                Err(SubscribeError::SubscriberLimit)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Atomic subscribe + control replay from the snapshot cursor.
+    ///
+    /// Under one lock: register the subscriber, take the snapshot, then replay
+    /// retained control events with `seq > snapshot.seq` is empty by
+    /// construction; callers combine `replay` with the live `Subscription` so
+    /// no retained control event after the cursor is lost to a publication race.
+    pub fn subscribe_and_replay(
+        &self,
+    ) -> Result<(Subscription, Snapshot, ReplayOutcome), SubscribeHandoffError> {
+        let mut st = self.shared.state.lock().expect("state");
+        let sub = match self.shared.notifier.subscribe() {
+            Ok(sub) => sub,
+            Err(SubscribeError::SubscriberLimit) => {
+                st.drops.subscribe_rejected = st.drops.subscribe_rejected.saturating_add(1);
+                return Err(SubscribeHandoffError::Subscribe(
+                    SubscribeError::SubscriberLimit,
+                ));
+            }
+            Err(e) => return Err(SubscribeHandoffError::Subscribe(e)),
+        };
         let snap = st.snapshot();
-        Some((sub, snap))
+        let replay = st
+            .history
+            .replay_control_after(snap.cursor.seq, snap.clone());
+        Ok((sub, snap, replay))
     }
 
     pub fn replay(&self, cursor: EventCursor) -> Result<ReplayOutcome, CursorError> {
@@ -405,7 +441,13 @@ impl ApplicationService {
 
     pub fn command_result(&self, id: CommandId) -> CommandResult {
         let st = self.shared.state.lock().expect("state");
-        st.history.command_result(id, st.active_command)
+        if st.active_command == Some(id)
+            || st.stop_owner == Some(id)
+            || (st.shutdown_owner == Some(id) && !st.shutdown_done)
+        {
+            return CommandResult::Pending;
+        }
+        st.history.command_result(id, None)
     }
 
     /// Inject a worker event (tests: stale/late runs). Progress uses try_send;
@@ -468,11 +510,57 @@ impl ApplicationService {
 
 impl Drop for ApplicationService {
     fn drop(&mut self) {
+        // Unstick paused/stalled workers, request shutdown cancel, then drain.
+        self.shared.stall.set_stalled(false);
+        {
+            let st = self.shared.state.lock().expect("state");
+            *st.pause.lock().expect("pause") = false;
+            let _ = st.cancel.request(CancelReason::Shutdown);
+        }
         let _ = self.submit(Command::new(CommandPayload::Shutdown));
+        let deadline = {
+            self.shared
+                .state
+                .lock()
+                .expect("state")
+                .limits
+                .teardown_deadline
+        };
         if let Some(handle) = self.owner.lock().expect("owner").take() {
-            let _ = handle.join();
+            let start = Instant::now();
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    break;
+                }
+                if start.elapsed() >= deadline {
+                    // Force-fail any still-pending identities so nothing stays Pending.
+                    let mut st = self.shared.state.lock().expect("state");
+                    force_teardown_terminals(&mut st, &self.shared.notifier);
+                    // Detach: owner may still exit; avoid blocking Drop forever.
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        } else {
+            let mut st = self.shared.state.lock().expect("state");
+            force_teardown_terminals(&mut st, &self.shared.notifier);
+        }
+        // Drop the worker handle inside shared (joins worker thread).
+        // Replace with a fresh channel pair is unnecessary; dropping Shared
+        // after this struct's fields... worker lives in Arc<Shared>. Clear it:
+        // We cannot move out of Arc easily; WorkerHandle::drop on Arc drop is OK
+        // if we joined owner. Request worker shutdown explicitly:
+        if let Ok(w) = self.shared.worker.lock() {
+            w.send(WorkerRequest::Shutdown);
         }
     }
+}
+
+/// Errors from [`ApplicationService::subscribe_and_replay`].
+#[derive(Debug)]
+pub enum SubscribeHandoffError {
+    Subscribe(SubscribeError),
 }
 
 fn validate_cursor(st: &State, cursor: EventCursor) -> Result<(), CursorError> {
@@ -526,8 +614,8 @@ fn admit_stop(st: &mut State, notifier: &Arc<Notifier>, payload: &CommandPayload
                 command: payload.clone(),
             },
         );
-        // No second terminal — coalesced no-op completes immediately as Completed.
-        complete_immediate(st, notifier, id, RunOutcome::Completed { step: 0 });
+        // Coalesced Stop: own terminal; must not overwrite the run outcome.
+        complete_control(st, notifier, id, RunOutcome::Completed { step: 0 });
         return SubmitOutcome::Accepted { id };
     }
 
@@ -583,8 +671,9 @@ fn admit_shutdown(st: &mut State, notifier: &Arc<Notifier>) -> SubmitOutcome {
                 command: CommandPayload::Shutdown,
             },
         );
-        // Coalesced: no second ShutdownComplete — immediate Completed for duplicate.
-        complete_immediate(st, notifier, id, RunOutcome::Completed { step: 0 });
+        // Coalesced Shutdown: own Completed terminal; ShutdownComplete stays unique
+        // to `shutdown_owner`.
+        complete_control(st, notifier, id, RunOutcome::Completed { step: 0 });
         let _ = existing;
         return SubmitOutcome::Accepted { id };
     }
@@ -717,7 +806,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
         },
     );
     if st.shutdown_done || st.phase == SessionState::Closed {
-        complete_immediate(
+        finish_active(
             &mut st,
             &shared.notifier,
             id,
@@ -726,6 +815,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 reason: CancelReason::Shutdown,
                 saved_checkpoint: None,
             },
+            None,
         );
         return;
     }
@@ -812,7 +902,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 });
         }
         other => {
-            complete_immediate(
+            finish_active(
                 &mut st,
                 &shared.notifier,
                 id,
@@ -823,6 +913,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                         other.name(),
                     ),
                 },
+                None,
             );
         }
     }
@@ -914,6 +1005,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
         WorkerEvent::RunTerminal {
             outcome,
             checkpoint_label,
+            save_failed,
             ..
         } => {
             let mut outcome = outcome_from_terminal(outcome);
@@ -922,24 +1014,49 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                     error: bound_error(error, &st.limits),
                 };
             }
-            let checkpoint = match &outcome {
-                RunOutcome::Canceled {
-                    step,
-                    saved_checkpoint,
-                    ..
-                } => checkpoint_label
-                    .or_else(|| saved_checkpoint.clone())
-                    .map(|label| (*step, label)),
-                _ => None,
-            };
-            if let Some((step, label)) = checkpoint {
+            // §5 save-on-cancel failure: keep Canceled + Warning; do not take §4
+            // Stopping/save-failed → Failed (that path is for explicit Save).
+            if save_failed {
+                if let RunOutcome::Canceled { step, reason, .. } = &outcome {
+                    outcome = RunOutcome::Canceled {
+                        step: *step,
+                        reason: *reason,
+                        saved_checkpoint: None,
+                    };
+                }
+                let warn = DomainError::try_new(
+                    ErrorCode::WriteFailed,
+                    "save-on-cancel failed; previous checkpoint remains intact",
+                )
+                .expect("message");
+                let warn = bound_error(&warn, &st.limits);
                 publish_control(
                     &mut st,
                     &shared.notifier,
                     Some(command_id),
                     Some(run_id),
-                    Event::CheckpointSaved { step, label },
+                    Event::Warning { error: warn },
                 );
+            } else {
+                let checkpoint = match &outcome {
+                    RunOutcome::Canceled {
+                        step,
+                        saved_checkpoint,
+                        ..
+                    } => checkpoint_label
+                        .or_else(|| saved_checkpoint.clone())
+                        .map(|label| (*step, label)),
+                    _ => None,
+                };
+                if let Some((step, label)) = checkpoint {
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(command_id),
+                        Some(run_id),
+                        Event::CheckpointSaved { step, label },
+                    );
+                }
             }
             let next = match &outcome {
                 RunOutcome::Failed { .. } => SessionState::Failed,
@@ -954,8 +1071,9 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             transition(&mut st, &shared.notifier, next, "run_terminal");
             finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
             // Stop is a separate accepted command: exactly one terminal of its own.
+            // Must not overwrite `last_outcome` (run terminal above).
             if let Some(stop_id) = st.stop_owner.take() {
-                complete_immediate(
+                complete_control(
                     &mut st,
                     &shared.notifier,
                     stop_id,
@@ -987,15 +1105,17 @@ fn finish_active(
     st.active_run = None;
     st.active_payload = None;
     st.latest_progress = None;
+    *st.pause.lock().expect("pause") = false;
 }
 
-fn complete_immediate(
+/// Terminal for Pause/Resume/Stop/Shutdown no-ops. Does **not** update
+/// `last_outcome` (that tracks the active run / probe only).
+fn complete_control(
     st: &mut State,
     notifier: &Arc<Notifier>,
     command_id: CommandId,
     outcome: RunOutcome,
 ) {
-    st.last_outcome = Some(outcome.clone());
     publish_control(
         st,
         notifier,
@@ -1003,6 +1123,40 @@ fn complete_immediate(
         None,
         Event::Completed { outcome },
     );
+}
+
+fn force_teardown_terminals(st: &mut State, notifier: &Arc<Notifier>) {
+    if let Some(id) = st.active_command.take() {
+        let outcome = RunOutcome::Canceled {
+            step: 0,
+            reason: CancelReason::Shutdown,
+            saved_checkpoint: None,
+        };
+        st.last_outcome = Some(outcome.clone());
+        let run_id = st.active_run.take();
+        publish_control(st, notifier, Some(id), run_id, Event::Completed { outcome });
+        st.active_payload = None;
+        st.latest_progress = None;
+    }
+    if let Some(stop_id) = st.stop_owner.take() {
+        complete_control(
+            st,
+            notifier,
+            stop_id,
+            RunOutcome::Canceled {
+                step: 0,
+                reason: CancelReason::Shutdown,
+                saved_checkpoint: None,
+            },
+        );
+    }
+    st.pending_stop = None;
+    if !st.shutdown_done {
+        if st.shutdown_owner.is_none() {
+            st.shutdown_owner = Some(CommandId::new(st.ids.next()));
+        }
+        finish_shutdown(st, notifier);
+    }
 }
 
 fn finish_shutdown(st: &mut State, notifier: &Arc<Notifier>) {

@@ -305,6 +305,7 @@ fn late_run_terminal_after_completion_is_stale() {
         command_id: run,
         outcome: TerminalOutcome::Completed { step: 99 },
         checkpoint_label: None,
+        save_failed: false,
     })
     .ok();
     assert!(app.wait_until(Duration::from_secs(1), |s| {
@@ -371,7 +372,10 @@ fn shutdown_is_last_event_and_closes_notify() {
     }
     assert!(saw_shutdown);
     assert!(last_was_shutdown);
-    assert!(app.subscribe().is_none());
+    assert!(matches!(
+        app.subscribe(),
+        Err(spirula_application::SubscribeError::Closed)
+    ));
 }
 
 #[test]
@@ -387,4 +391,144 @@ fn result_expiration_reports_expired() {
     wait_ready(&app);
     assert!(matches!(app.command_result(b), CommandResult::Ready(_)));
     assert!(matches!(app.command_result(a), CommandResult::Expired));
+}
+
+#[test]
+fn max_subscribers_rejects_global_fanout() {
+    let mut limits = SessionLimits::for_test();
+    limits.max_subscribers = 2;
+    let app = ApplicationService::start(limits);
+    let _a = app.subscribe().expect("a");
+    let _b = app.subscribe().expect("b");
+    assert!(matches!(
+        app.subscribe(),
+        Err(spirula_application::SubscribeError::SubscriberLimit)
+    ));
+    assert!(app.snapshot().drops.subscribe_rejected > 0);
+}
+
+#[test]
+fn pause_does_not_overwrite_run_last_outcome() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "a".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let after_load = app.snapshot().last_outcome.clone();
+    assert!(matches!(after_load, Some(OutcomeView::Completed { .. })));
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 30 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let pause = accept(&app, CommandPayload::Pause);
+    wait_terminal(&app, pause);
+    // Run still active; pause terminal must not replace the probe last_outcome.
+    assert!(matches!(app.command_result(run), CommandResult::Pending));
+    assert_eq!(
+        format!("{:?}", app.snapshot().last_outcome),
+        format!("{after_load:?}")
+    );
+    let _ = app.submit(Command::new(CommandPayload::Stop { save: false }));
+    let run_env = wait_terminal(&app, run);
+    match run_env.event {
+        Event::Completed {
+            outcome: OutcomeView::Canceled { .. },
+        } => {}
+        other => panic!("expected canceled run, got {other:?}"),
+    }
+    match &app.snapshot().last_outcome {
+        Some(OutcomeView::Canceled { .. }) => {}
+        other => panic!("last_outcome must be run cancel, got {other:?}"),
+    }
+}
+
+#[test]
+fn save_on_cancel_failure_keeps_canceled_with_warning() {
+    let app = service();
+    app.set_worker_behavior(FakeWorkerBehavior::CancelSaveFail);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "a".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 40 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let stop = accept(&app, CommandPayload::Stop { save: true });
+    let run_env = wait_terminal(&app, run);
+    wait_terminal(&app, stop);
+    match run_env.event {
+        Event::Completed {
+            outcome:
+                OutcomeView::Canceled {
+                    saved_checkpoint: None,
+                    ..
+                },
+        } => {}
+        other => panic!("§5 requires Canceled without new checkpoint, got {other:?}"),
+    }
+    assert_eq!(app.snapshot().state, SessionState::Ready);
+    match &app.snapshot().last_outcome {
+        Some(OutcomeView::Canceled { .. }) => {}
+        other => panic!("must not become Failed: {other:?}"),
+    }
+}
+
+#[test]
+fn subscribe_and_replay_handoff_keeps_control_events() {
+    let mut limits = SessionLimits::for_test();
+    limits.notification_queue_capacity = 64;
+    limits.control_history_capacity = 64;
+    let app = ApplicationService::start(limits);
+    let load = accept(
+        &app,
+        CommandPayload::ProbeLoad {
+            label: "pre".into(),
+        },
+    );
+    wait_terminal(&app, load);
+    wait_ready(&app);
+
+    let (sub, snap, replay) = app.subscribe_and_replay().expect("handoff");
+    match &replay {
+        ReplayOutcome::ControlEvents(events) => {
+            assert!(events.iter().all(|e| e.seq > snap.seq) || events.is_empty());
+        }
+        ReplayOutcome::ResyncRequired { .. } => panic!("fresh subscribe should not resync"),
+    }
+
+    // Publish more control after handoff registration.
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 2 });
+    wait_terminal(&app, run);
+    wait_ready(&app);
+
+    let mut live_control = Vec::new();
+    while let Ok(env) = sub.recv_timeout(Duration::from_millis(20)) {
+        if env.event.is_control() {
+            live_control.push(env);
+        }
+    }
+    assert!(
+        live_control
+            .iter()
+            .any(|e| matches!(e.event, Event::CommandAccepted { .. })),
+        "live handoff must see post-snapshot control; got {live_control:?}"
+    );
+
+    // Retained history from the handoff cursor must include the run terminal
+    // (no lost control between atomic subscribe and later replay).
+    match app.replay(snap.cursor).expect("replay") {
+        ReplayOutcome::ControlEvents(events) => {
+            assert!(
+                events.iter().any(
+                    |e| matches!(e.event, Event::Completed { .. }) && e.command_id == Some(run)
+                ),
+                "retained control after cursor must include run terminal: {events:?}"
+            );
+        }
+        ReplayOutcome::ResyncRequired { .. } => panic!("history should still retain events"),
+    }
+}
+
+trait EventIsControl {
+    fn is_control(&self) -> bool;
+}
+impl EventIsControl for Event {
+    fn is_control(&self) -> bool {
+        !matches!(self, Event::Progress(_) | Event::Log { .. })
+    }
 }

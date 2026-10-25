@@ -59,8 +59,14 @@ tests do not imply a real trainer. Display maps it as `training`.
   pending `Stop` identity and one pending `Shutdown` identity
   (`Option<CommandId>` each), plus the shared `CancelToken`. They are not
   stored in an unbounded deque. A repeated `Stop`/`Shutdown` while one is
-  already pending or draining is an accepted idempotent no-op (same or new
-  id coalesced; only the first accepted id owns the eventual terminal).
+  already pending or draining is an accepted idempotent no-op (new id still
+  accepted; each id gets its own terminal; only `shutdown_owner` emits
+  `ShutdownComplete`).
+- **Run vs control lifecycles are separate.** `active_command` / `RunId` /
+  `last_outcome` track the mutating probe only. Every accepted
+  `Pause` / `Resume` / `Stop` / `Shutdown` / coalesced no-op also receives
+  exactly one canonical terminal for **its** `command_id` and must not
+  overwrite the probe's `last_outcome`.
 - Those control paths stay responsive when the work queue, progress slot, or
   notify queues are full.
 - At most one mutating probe is in flight. A second mutating probe is
@@ -103,11 +109,13 @@ Additional structure bounds:
 | `worker_result_queue_capacity` | 8 (terminals/load; owner drains first) |
 | `control_history_capacity` | 64 |
 | `control_history_max_bytes` | 256 KiB |
-| `notification_queue_capacity` | 16 |
+| `notification_queue_capacity` | 16 (per subscriber) |
+| `max_subscribers` | 32 (global fanout cardinality) |
 | `log_tail_capacity` | 32 |
 | `result_retention` | 32 |
 | `pending_stop_slots` | 1 (fixed) |
 | `pending_shutdown_slots` | 1 (fixed) |
+| `teardown_deadline` | 2s |
 
 Control history is a bounded ring (count **and** bytes). There is no
 unbounded control deque.
@@ -129,14 +137,30 @@ unbounded control deque.
     terminals (never a fabricated gap fill).
   - Otherwise replay returns retained control events with `seq > cursor.seq`
     (progress/log absences are intentional).
-- `subscribe()` returns `(Subscription, Snapshot)` under the owner lock so
-  the subscription boundary matches the snapshot `seq`. Concurrent
-  snapshot/replay/subscribe cannot observe a newer live stream against an
-  older snapshot without an explicit resync path.
-- `command_result(id)` → `Pending` | `Ready` | `Expired` | `Unknown`.
-- Every accepted command produces exactly one canonical terminal with its
-  `command_id`: `Completed { outcome }` or `ShutdownComplete`. `Failed` is
-  only a `RunOutcome` / `TerminalOutcome` payload.
+- `subscribe()` / `subscribe_and_replay()` register the subscriber and take
+  the snapshot under the owner lock so the live stream boundary matches the
+  snapshot `seq`. `subscribe_and_replay` also returns the control
+  `ReplayOutcome` from that cursor in the same critical section, so retained
+  control events are not lost between replay and live handoff. A cursor older
+  than retained history still yields `ResyncRequired` (not progress gaps).
+- New subscribers beyond `max_subscribers` are rejected
+  (`SubscribeError::SubscriberLimit`); count is global, not only per-queue.
+- `command_result(id)` → `Pending` | `Ready` | `Expired` | `Unknown`. Pending
+  covers the active probe **and** outstanding `stop_owner` /
+  `shutdown_owner` identities.
+- Every accepted command produces exactly one canonical terminal for its
+  `command_id`: `Completed { outcome }` or `ShutdownComplete` (shutdown owner
+  only). `Failed` is only a `RunOutcome` / `TerminalOutcome` payload.
+
+### Save-failure vs cancel (§4 vs §5)
+
+Runtime-contracts §4 lists `Stopping | save failed | Failed`. §5 states that
+save-on-cancel failure keeps the run `Canceled` with a `Warning` and leaves
+the previous checkpoint intact. **P1-F07 binding:** §5 wins for
+`Stop{save}` / cancel-driven save. The fake probe emits `Canceled` +
+`Warning` (`SP-IO-004`) and returns the session to `Ready`. The §4 `Failed`
+transition is reserved for a future **explicit Save** command failure after
+entering `Saving`, not for cancel save-on-stop. Tests cover the cancel path.
 
 ### Progress, log, diagnostics
 
@@ -146,10 +170,23 @@ unbounded control deque.
   (default 50ms, and always ≤ heartbeat). A long `worker_step_delay` is
   sliced into poll intervals so a stalled step still meets both deadlines.
   Final progress is published before the terminal.
-- Notification fanout: bounded per-subscriber queues, `try_send` only; full
-  queues drop and count. Workers never wait on them.
+- Notification fanout: bounded **subscriber count** (`max_subscribers`) and
+  bounded per-subscriber queues; `try_send` only; full queues drop and count.
+  Workers never wait on them.
 - After `ShutdownComplete`, notification channels close. Snapshot/history
   remain queryable until the service is dropped.
+
+### Teardown and worker failure
+
+- `ApplicationService` drop: clear stall/pause, request `CancelReason::Shutdown`,
+  submit `Shutdown`, join the owner within `teardown_deadline`, then force
+  terminals for any still-pending probe/stop/shutdown so nothing stays
+  `Pending`. The worker receives `Shutdown` and is joined via `WorkerHandle`.
+- Worker panic (caught at the fake-worker boundary) or result-channel
+  disconnect publishes `Failed { Internal }` for the active probe and clears
+  pause; no detached paused worker remains.
+- Last-client / closed notify: further `subscribe` returns
+  `SubscribeError::Closed`.
 
 ### Diagnostics policy (honest)
 
