@@ -43,9 +43,13 @@ These fill the section 3 and section 5 sketches. They do not add error codes.
   saved_checkpoint }`, or `Failed { error }`. The canceled reason keeps
   `Superseded` so the token reason is not rewritten. The checkpoint is a
   path string, not a `PathBuf`, because this crate does not touch files.
-  A blank path is `SP-INP-001`.
+  A blank path is `SP-INP-001`. `Failed` carrying `SP-CAN-001` is also
+  `SP-INP-001` and does not close the publisher. The observable failure
+  keeps code, message, context, retryable override, and user action.
+  `source` stays local and is omitted from that copy.
 - `ProgressPublisher` is the publication boundary for one piece of work. It
-  keeps the latest valid snapshot and exactly one terminal outcome. Progress
-  after that outcome, and a second terminal outcome, return `SP-SESS-001`
-  and leave the first outcome in place. It does not assign `seq`, coalesce
+  keeps the latest valid snapshot and exactly one terminal outcome. It
+  checks that closure before validating the payload, so a late or duplicate
+  publication returns `SP-SESS-001` even when the payload is malformed, and
+  the first outcome stays in place. It does not assign `seq`, coalesce
   under backpressure, or change session state.

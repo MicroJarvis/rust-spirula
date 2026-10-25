@@ -578,6 +578,11 @@ impl DomainError {
         self.code.retryable()
     }
 
+    /// Set by [`Self::with_retryable`]. `None` means the catalog default.
+    pub const fn retryable_override(&self) -> Option<bool> {
+        self.retryable_override
+    }
+
     pub const fn user_action(&self) -> Option<UserAction> {
         self.user_action
     }
@@ -626,6 +631,18 @@ impl DomainError {
     pub fn with_user_action(mut self, action: UserAction) -> Self {
         self.user_action = Some(action);
         self
+    }
+
+    /// Event-visible copy. The local [`Self::source`] chain is omitted.
+    pub fn without_source(&self) -> Self {
+        Self {
+            code: self.code,
+            message: self.message.clone(),
+            context: self.context.clone(),
+            retryable_override: self.retryable_override,
+            user_action: self.user_action,
+            source: None,
+        }
     }
 
     /// Attach a local cause. It is not copied into the event JSON.

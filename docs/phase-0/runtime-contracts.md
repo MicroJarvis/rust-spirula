@@ -327,9 +327,12 @@ are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
   (`SP-INP-003`). Metric names are unique and non-blank (`SP-INP-001`);
   metric values are finite (`SP-INP-003`).
 - A terminal outcome is `Completed`, `Canceled`, or `Failed`. `Canceled`
-  keeps `Superseded`. The checkpoint path is a string. Publishing progress
-  after a terminal outcome, or a second terminal outcome, returns
-  `SP-SESS-001` and keeps the first outcome.
+  keeps `Superseded`. The checkpoint path is a string. `Failed` keeps the
+  event-visible error, including context, retryable override, and user
+  action; `source` stays local. `Failed` with `SP-CAN-001` is `SP-INP-001`
+  and does not close publication. Closure is checked before payload
+  validation, so a late or duplicate publication returns `SP-SESS-001`
+  even when the payload is malformed, and the first outcome stays.
 
 ## 6. GPU boundary
 

@@ -1,10 +1,11 @@
+use std::error::Error as StdError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
 use spirula_core::{
     CancelReason, CancelToken, ContextKey, DomainError, ErrorCode, OutcomeView, ProgressMetric,
-    ProgressPublisher, ProgressSnapshot, TerminalOutcome,
+    ProgressPublisher, ProgressSnapshot, TerminalOutcome, UserAction,
 };
 
 fn snapshot(
@@ -210,13 +211,12 @@ fn publisher_keeps_one_terminal_and_rejects_late_progress() {
             .publish_terminal(TerminalOutcome::Completed { step: 1 })
             .is_err()
     );
-    assert_eq!(
-        failed.outcome(),
-        Some(OutcomeView::Failed {
-            code: ErrorCode::DecodeFailed,
-            message: "bad image".to_owned(),
-        })
-    );
+    let OutcomeView::Failed { error } = failed.outcome().unwrap() else {
+        panic!("expected failure");
+    };
+    assert_eq!(error.code(), ErrorCode::DecodeFailed);
+    assert_eq!(error.message(), "bad image");
+    assert!(StdError::source(&error).is_none());
 
     let blank_path = ProgressPublisher::new()
         .publish_terminal(TerminalOutcome::Canceled {
@@ -230,4 +230,118 @@ fn publisher_keeps_one_terminal_and_rejects_late_progress() {
         blank_path.context_value(ContextKey::Field),
         Some("checkpoint")
     );
+}
+
+#[test]
+fn failed_outcome_keeps_event_fields_and_rejects_cancellation() {
+    let source = std::io::Error::other("local disk");
+    let failure = DomainError::try_new(ErrorCode::ReadFailed, "disk")
+        .unwrap()
+        .with_context(ContextKey::Path, "ckpt")
+        .unwrap()
+        .with_retryable(false)
+        .with_user_action(UserAction::Retry)
+        .with_source(source);
+    assert!(StdError::source(&failure).is_some());
+    let publisher = ProgressPublisher::new();
+    publisher
+        .publish_terminal(TerminalOutcome::Failed { error: failure })
+        .unwrap();
+    let OutcomeView::Failed { error } = publisher.outcome().unwrap() else {
+        panic!("expected failure");
+    };
+    assert_eq!(error.code(), ErrorCode::ReadFailed);
+    assert_eq!(error.message(), "disk");
+    assert_eq!(error.context_value(ContextKey::Path), Some("ckpt"));
+    assert_eq!(error.retryable_override(), Some(false));
+    assert!(!error.retryable());
+    assert!(error.catalog_retryable());
+    assert_eq!(error.user_action(), Some(UserAction::Retry));
+    assert!(StdError::source(&error).is_none());
+
+    let open = ProgressPublisher::new();
+    let rejected = open
+        .publish_terminal(TerminalOutcome::Failed {
+            error: DomainError::try_new(ErrorCode::Canceled, "cooperative cancellation completed")
+                .unwrap(),
+        })
+        .unwrap_err();
+    assert_eq!(rejected.code(), ErrorCode::InvalidArgument);
+    assert!(open.outcome().is_none());
+    open.publish_terminal(TerminalOutcome::Completed { step: 1 })
+        .unwrap();
+    assert_eq!(open.outcome(), Some(OutcomeView::Completed { step: 1 }));
+}
+
+#[test]
+fn concurrent_publication_reports_closure_before_payload_errors() {
+    let publisher = ProgressPublisher::new();
+    let start = Arc::new(Barrier::new(4));
+    let mut handles = Vec::new();
+    for step in 1..4 {
+        let publisher = publisher.clone();
+        let start = start.clone();
+        handles.push(thread::spawn(move || {
+            start.wait();
+            publisher.publish_terminal(TerminalOutcome::Completed { step })
+        }));
+    }
+    let progress_publisher = publisher.clone();
+    let progress_start = start.clone();
+    handles.push(thread::spawn(move || {
+        progress_start.wait();
+        progress_publisher.publish_progress(snapshot(1, Some(4), Vec::new()).unwrap())
+    }));
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    let successes = results.iter().filter(|result| result.is_ok()).count();
+    assert!((1..=2).contains(&successes));
+    for result in results.iter().filter_map(|result| result.as_ref().err()) {
+        assert_eq!(result.code(), ErrorCode::InvalidState);
+    }
+    let winner = publisher.outcome();
+    assert!(matches!(winner, Some(OutcomeView::Completed { .. })));
+
+    let late_start = Arc::new(Barrier::new(3));
+    let malformed_progress = ProgressSnapshot {
+        step: 9,
+        total_steps: Some(1),
+        splats: 0,
+        elapsed_ms: 0,
+        eta_ms: None,
+        metrics: Vec::new(),
+    };
+    let progress_publisher = publisher.clone();
+    let progress_start = late_start.clone();
+    let blank_publisher = publisher.clone();
+    let blank_start = late_start.clone();
+    let cancel_publisher = publisher.clone();
+    let cancel_start = late_start.clone();
+    let late = [
+        thread::spawn(move || {
+            progress_start.wait();
+            progress_publisher.publish_progress(malformed_progress)
+        }),
+        thread::spawn(move || {
+            blank_start.wait();
+            blank_publisher.publish_terminal(TerminalOutcome::Canceled {
+                step: 1,
+                reason: CancelReason::User,
+                saved_checkpoint: Some(" ".to_owned()),
+            })
+        }),
+        thread::spawn(move || {
+            cancel_start.wait();
+            cancel_publisher.publish_terminal(TerminalOutcome::Failed {
+                error: DomainError::try_new(ErrorCode::Canceled, "stop").unwrap(),
+            })
+        }),
+    ];
+    for handle in late {
+        let error = handle.join().unwrap().unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidState);
+    }
+    assert_eq!(publisher.outcome(), winner);
 }

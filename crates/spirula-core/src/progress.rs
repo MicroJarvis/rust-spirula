@@ -110,8 +110,11 @@ pub enum TerminalOutcome {
     },
 }
 
-/// Observable copy of a published outcome. `Failed` keeps code and message.
-#[derive(Clone, Debug, PartialEq)]
+/// Observable copy of a published outcome.
+///
+/// `Failed` carries the event-visible error: code, message, context,
+/// retryable override, and user action. The local source chain is omitted.
+#[derive(Debug)]
 pub enum OutcomeView {
     Completed {
         step: u64,
@@ -122,9 +125,52 @@ pub enum OutcomeView {
         saved_checkpoint: Option<String>,
     },
     Failed {
-        code: ErrorCode,
-        message: String,
+        error: DomainError,
     },
+}
+
+impl Clone for OutcomeView {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Completed { step } => Self::Completed { step: *step },
+            Self::Canceled {
+                step,
+                reason,
+                saved_checkpoint,
+            } => Self::Canceled {
+                step: *step,
+                reason: *reason,
+                saved_checkpoint: saved_checkpoint.clone(),
+            },
+            Self::Failed { error } => Self::Failed {
+                error: error.without_source(),
+            },
+        }
+    }
+}
+
+impl PartialEq for OutcomeView {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Completed { step: left }, Self::Completed { step: right }) => left == right,
+            (
+                Self::Canceled {
+                    step: left_step,
+                    reason: left_reason,
+                    saved_checkpoint: left_path,
+                },
+                Self::Canceled {
+                    step: right_step,
+                    reason: right_reason,
+                    saved_checkpoint: right_path,
+                },
+            ) => left_step == right_step && left_reason == right_reason && left_path == right_path,
+            (Self::Failed { error: left }, Self::Failed { error: right }) => {
+                same_published_error(left, right)
+            }
+            _ => false,
+        }
+    }
 }
 
 struct PublisherInner {
@@ -155,21 +201,21 @@ impl ProgressPublisher {
     }
 
     pub fn publish_progress(&self, snapshot: ProgressSnapshot) -> Result<(), DomainError> {
-        snapshot.validate()?;
         let mut guard = self.lock();
         if guard.outcome.is_some() {
             return Err(closed_error("progress"));
         }
+        snapshot.validate()?;
         guard.latest = Some(snapshot);
         Ok(())
     }
 
     pub fn publish_terminal(&self, outcome: TerminalOutcome) -> Result<(), DomainError> {
-        validate_outcome(&outcome)?;
         let mut guard = self.lock();
         if guard.outcome.is_some() {
             return Err(closed_error("terminal"));
         }
+        validate_outcome(&outcome)?;
         guard.outcome = Some(outcome);
         Ok(())
     }
@@ -202,13 +248,30 @@ fn outcome_view(outcome: &TerminalOutcome) -> OutcomeView {
             saved_checkpoint: saved_checkpoint.clone(),
         },
         TerminalOutcome::Failed { error } => OutcomeView::Failed {
-            code: error.code(),
-            message: error.message().to_owned(),
+            error: error.without_source(),
         },
     }
 }
 
+fn same_published_error(left: &DomainError, right: &DomainError) -> bool {
+    left.code() == right.code()
+        && left.message() == right.message()
+        && left.context() == right.context()
+        && left.retryable_override() == right.retryable_override()
+        && left.user_action() == right.user_action()
+}
+
 fn validate_outcome(outcome: &TerminalOutcome) -> Result<(), DomainError> {
+    if let TerminalOutcome::Failed { error } = outcome
+        && error.code() == ErrorCode::Canceled
+    {
+        return Err(argument_error(
+            "outcome",
+            "non-cancel failure",
+            error.code().as_str(),
+            "cancellation is not a failed outcome",
+        ));
+    }
     if let TerminalOutcome::Canceled {
         saved_checkpoint: Some(path),
         ..
