@@ -37,3 +37,10 @@ lenses, scene files, and splat files stay in P3. Checkpoint bundle markers
 stay in P5-F05. The next feature is P1-F06 in
 [docs/project-plan.md](docs/project-plan.md).
 
+
+The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
+planned early session/CLI delivery, differentiable rendering, resource budgets,
+validated execution plans, full-state resume and packaging. Detailed acceptance
+is indexed in [development gates](docs/development-gates.md). These are pending
+features; the implementation status above remains authoritative. Brush is an
+offline reference and does not change the Rust/Slint/wgpu/WGSL runtime stack.

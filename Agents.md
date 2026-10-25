@@ -13,6 +13,8 @@
 | 判断功能或性能是否可以完成 | [docs/agent/feature-definition-of-done.md](docs/agent/feature-definition-of-done.md) |
 | 运行检查、整理提交或确认变更边界 | [docs/agent/git-workflow.md](docs/agent/git-workflow.md) |
 | 查看跨任务的不可变约束 | [docs/agent/working-rules.md](docs/agent/working-rules.md) |
+| 拆分训练/渲染功能、资源预算、恢复与早期交付 | [docs/development-gates.md](docs/development-gates.md) |
+| 查看 OOOSplat / Brush 参考来源和采纳决策 | [docs/research/ooosplat-brush-review.md](docs/research/ooosplat-brush-review.md) |
 | 查看全部 agent 文档入口 | [docs/agent/README.md](docs/agent/README.md) |
 | 执行 Phase 0：参考基线、行为清单、能力矩阵、fixtures 与运行时契约 | [docs/phase-0/README.md](docs/phase-0/README.md) |
 

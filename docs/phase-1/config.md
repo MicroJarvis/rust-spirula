@@ -124,3 +124,13 @@ rename or replace files.
 The Phase 0 checkpoint `config.json` is a legacy compatibility input. Readers
 accept it as written. Fixture files under `fixtures/` are not rewritten by
 these APIs.
+
+## Planned execution validation
+
+The compatibility reader above remains unchanged. P5-F08 adds a separate
+capability-validated `TrainPlan`; accepting any of the 251 fields does not
+mean its algorithm is implemented. Finite numeric ranges, unsupported-option
+errors, resource/capability checks and resolved digest belong to that layer.
+P4-F01 applies the same principle to render requests; P6-F03 only exposes
+implemented options. Acceptance is in
+[development-gates.md](../development-gates.md).

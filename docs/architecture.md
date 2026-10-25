@@ -21,9 +21,11 @@ spirula-cli ──────┼──> spirula-application (planned)
 ```
 
 The current skeleton keeps the future crate boundaries visible. An
-`spirula-application` orchestration crate may be introduced when the first
-end-to-end slice needs it; it must own sessions, commands, cancellation, and
-progress events so the UI and CLI do not duplicate business logic.
+`spirula-application` orchestration crate is introduced by P1-F07 before GPU
+preview. It owns application sessions, admission, cancellation, snapshots and
+events. P1-F09 supplies the early CLI; P6-F01 integrates the full business
+services. `spirula-train` owns step scheduling, not a second application state
+machine. This is planned work, not an existing service.
 
 ## Responsibilities
 
@@ -44,20 +46,27 @@ tested with fixtures and golden files. It owns no GPU resources.
 
 Adapter/device selection, queue and command submission, buffer and texture
 lifetimes, shader loading, pipeline cache, synchronization, readback, and GPU
-diagnostics. `wgpu` types must stop at this boundary or at a deliberately
-reviewed render interface.
+diagnostics. Public `wgpu` types stop at this boundary. Render/train consume
+narrow typed wrappers with context/generation validation. P2-F03/P2-F04 prove
+upload→compute→readback and P4-F02 proves resource sharing before expanding
+the interface. A change to this boundary requires updating the runtime
+contract and this document together; there is no implicit render exception.
 
 ### `spirula-render`
 
 GPU-independent scene/render contracts plus GPU implementations for Gaussian
-splat projection, sorting, rasterization, compositing, depth, and preview
-readback. The render API consumes domain data and submits work through
+splat projection, sorting, rasterization, compositing, depth, preview
+readback, saved training-forward state and hand-written raster/projection
+VJPs. P4-F07 through P4-F10 own differentiable rendering and gradient checks.
+The render API consumes domain data and submits work through
 `spirula-gpu`.
 
 ### `spirula-train`
 
 Training session state, step scheduling, loss computation, optimizer state,
-densification, evaluation, stop/save/resume, and progress reporting. It calls
+densification, evaluation, stop/save/resume, and progress reporting. P5-F08
+resolves compatible config into a capability-validated executable `TrainPlan`;
+legacy field acceptance does not imply implemented training behavior. It calls
 render and GPU services through explicit interfaces and never knows about
 Slint widgets.
 
@@ -88,8 +97,12 @@ densification. Shader layouts and numeric precision are recorded as contracts.
 The application owns one session state machine. Commands enter through a
 bounded channel, workers publish typed progress/events, and cancellation is
 cooperative. The UI observes events and submits commands. The CLI renders the
-same events as text. GPU work is isolated behind a worker/context so a device
-loss or pipeline error becomes an observable session failure.
+same events as text. Control history, snapshot cursors and bounded
+notifications isolate slow consumers; source sequence gaps and resync are
+explicit. A cancellation mailbox remains responsive under full queues. GPU
+work is isolated behind a worker/context so device loss or a pipeline error
+becomes an observable session failure. Resource accounting and per-stage
+measurements start in P1-F08 and continue in each slice, before P9 aggregation.
 
 ## Frozen runtime contracts
 
@@ -103,8 +116,8 @@ training-config document in the same crate. P1-F05 implements atomic publish,
 orphan recovery, the temp harness, and config filesystem save/migration in
 `spirula-io` ([docs/phase-1/atomic.md](phase-1/atomic.md)); checkpoint bundle
 markers stay in P5-F05. P1-F03 implements the cooperative cancel token and
-progress/terminal payloads in `spirula-core`; session orchestration stays in
-P5-F01 and P6-F01. The primitive contract is
+progress/terminal payloads in `spirula-core`; the application owner starts in
+P1-F07, training scheduling stays in P5-F01, and full integration in P6-F01. The primitive contract is
 [docs/phase-1/cancellation.md](phase-1/cancellation.md). P1-F04 adds the CPU
 math, pinhole projection, similarity, and splat value checks in
 [docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other lenses stay
@@ -130,3 +143,19 @@ headless application integration tests, and Slint UI behavior tests. The first
 checksummed fixture set is described in
 [docs/phase-0/fixtures.md](phase-0/fixtures.md).
 
+## Execution and evidence gates
+
+[Development gates](development-gates.md) define per-feature acceptance for
+forward/backward gradients, executable capabilities, resource budgets,
+Slint presentation copies, full-state resume, early CLI packages and external
+tool provenance. [OOOSplat / Brush review](research/ooosplat-brush-review.md)
+records the pinned sources and accepted lessons. The stack remains Rust /
+Slint / wgpu / WGSL; Brush is a development reference, not a runtime engine.
+The C++ checkout remains the compatibility authority.
+
+P6-F07 is an early presentation spike after P2, measuring renderer/backend,
+texture/thread ownership, readback fallback and bytes copied per frame.
+P2-F07 packages the minimal CLI; P4-F06/P5-F07 add real workflow samples.
+P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
+versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
+All these capabilities remain pending until their feature evidence is recorded.

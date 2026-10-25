@@ -34,11 +34,13 @@ CLI ────────────┼──> application/session
 | `spirula-train` | 训练会话、loss、优化器、densification、评估、停止、保存和恢复 |
 | `spirula-ui` | Slint 组件、视图状态、命令绑定、验证反馈和事件订阅 |
 | `spirula-cli` | 命令行参数、进程入口和共享应用服务的 CLI 展示层 |
-| `spirula-application`（后续加入） | 统一会话状态机、命令、取消、进度和 UI/CLI 编排 |
+| `spirula-application`（P1-F07 加入） | 统一会话状态机、命令、取消、进度和 UI/CLI 编排 |
 
 核心层不得依赖 UI、GPU 或操作系统；GPU 细节停留在 `spirula-gpu` 边界；UI 不直接解析数据集、创建 GPU pipeline 或实现训练规则。
 
 详细依赖边界见 [`docs/architecture.md`](architecture.md)。
+实施细节、资源预算和恢复门禁按需读取 [development-gates.md](development-gates.md)；
+外部技术来源与采纳范围见 [OOOSplat / Brush 审查](research/ooosplat-brush-review.md)。
 
 ## 3. 功能点编号与状态
 
@@ -50,7 +52,8 @@ fixture、迁移记录和提交说明都使用同一编号。状态只允许使�
 每个功能点都要明确：归属 crate、前置功能、输入输出或公共 API、正常和
 失败行为、测试/fixture、文档变更以及完成门禁。“细分范围”列是实现清单，
 每个分号分隔项都必须在代码、测试或记录中留下证据。下表是当前基线；`当前` 表示
-下一项工作，完成后要把下一项改为 `当前`。
+下一项工作，完成后要把下一项改为 `当前`。Phase 为归属分组，执行遵循前置
+依赖和第 4 节；允许提前执行后续 Phase 的验证切片，既有编号不得重排或复用。
 
 ### Phase 0：基线与架构
 
@@ -76,23 +79,28 @@ Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架
 | P1-F04 | 数学、相机与场景基础类型 | `spirula-core` | P0-F04, P1-F01 | 实现向量、矩阵和四元数；实现相机投影与坐标变换；定义场景和 splat 不变量 | 实现变换、投影、坐标约定和场景不变量；与 P0 fixtures 对照 | 已完成 |
 | P1-F05 | 原子文件与 fixture harness | `spirula-io` | P0-F04, P1-F01 | 实现临时文件命名与原子替换；处理损坏和中断写入；提供可复用临时目录 fixture harness | 临时文件加原子替换；损坏、并发失败和恢复路径有测试 | 已完成 |
 | P1-F06 | workspace 基础检查 | workspace | P0-F06 | 固定 fmt/check/test/clippy 命令；固定 lint 与 feature 组合；检查 CLI 仅作入口适配 | 固化 lint、格式化、测试和本地检查命令；CLI 不含隐藏业务逻辑 | 当前 |
+| P1-F07 | 最小 headless application/session | `spirula-application`（新增） | P1-F03, P1-F06 | 唯一应用 owner；有界命令和可恢复控制事件历史；快照/游标、取消控制通道和 fake worker；区分 run identity 与迟到事件 | 无训练/GPU 依赖的状态机测试；满队列与慢订阅不阻塞 worker；每个接受命令恰有一个终态 | 未开始 |
+| P1-F08 | 资源与性能记录基础设施 | workspace | P1-F06 | 定义版本化测量结果、fixture/配置 hash 和环境字段；记录分配字节、阶段耗时、采样来源和预算；后续 GPU 指标声明不可用原因 | CPU 微型样本可生成和回读结果；已核算字节与系统峰值分开；形成后续逐功能基线模板 | 未开始 |
+| P1-F09 | 最小 CLI 会话入口 | `spirula-cli`/application | P1-F07 | help/能力与已接入命令；共享 command/event 映射；SIGINT 与退出码；fake worker 验证，真实预览/训练分别由 P4-F06/P5-F07 接入 | 子进程测试命令拒绝、取消、终态和错误码；未接入命令显式不可用；入口无业务编排 | 未开始 |
 
-Phase 1 退出条件：P1-F01 至 P1-F06 通过 workspace 检查，核心契约可被后续
-IO、GPU、渲染和训练功能复用。
+Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU 的
+共享会话/CLI 骨架和测量入口；真实渲染、训练和完整 UI 仍由后续功能接入。
 
 ### Phase 2：wgpu 基础层
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter 和 backend；声明必需 feature/limit；实现无可用设备时的候选诊断 | 按 feature/limit 选择 adapter；不可用时返回可操作错误 | 未开始 |
-| P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01 | 创建 instance、adapter、device、queue；定义所有权和释放顺序；覆盖 device lost 与重建 | 定义创建、关闭、device lost 和资源所有权；覆盖失败路径 | 未开始 |
-| P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02 | 定义 buffer/texture 用途和标签；实现 staging 与同步；验证最小上传和 readback round-trip | 定义资源标签、staging、同步和 readback 契约；提供最小 round-trip | 未开始 |
-| P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F02 | 定义 WGSL 文件加载和版本；固定 bind group/uniform layout；生成可解释的 pipeline key 与编译错误 | WGSL 加载、uniform/layout、pipeline key 和编译错误可诊断 | 未开始 |
+| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter/backend；区分 required/optional feature/limit；声明 subgroup、f16、timestamp 与梯度累加能力和回退 | 记录真实设备/driver/limits；缺少必需能力有稳定错误；可选能力回退有测试 | 未开始 |
+| P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01, P1-F07 | 创建 instance/adapter/device/queue；资源所有权、context identity/generation；由应用 owner 决定 device lost 后重建 | 创建/关闭/失败可观察；旧 generation handle 拒绝复用；应用状态只由同一 owner 更新 | 未开始 |
+| P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 未开始 |
+| P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F03 | WGSL 版本和 bind/uniform layout；pipeline key/错误；以真实 compute 验证窄资源封装与 shader 接口 | layout/对齐及缓存失效可测；编译失败带位置；与 P2-F03 共同证明 GPU 边界可执行 | 未开始 |
 | P2-F05 | GPU 错误与诊断事件 | `spirula-gpu` | P2-F02–P2-F04 | 包裹 error scope 和提交错误；把 device lost 转成 typed error；发布带资源标签的诊断事件 | error scope、设备丢失和提交失败转为 typed error/event | 未开始 |
 | P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；编写最小 surface smoke test；记录设备、backend 和跳过原因 | 无窗口 compute 测试和最小 surface 测试在支持设备上可复现 | 未开始 |
+| P2-F07 | 最小 CLI 包与隔离启动 | workspace/CI | P2-F06, P1-F09 | 从干净 checkout 构建可携带 CLI 包；记录版本/hash/运行库；在无源码隔离目录运行 help/能力诊断及微型 GPU smoke | 包内入口可启动；真实设备 smoke 或明确硬件缺失；P4-F06/P5-F07 继续加入真实业务样本 | 未开始 |
 
-Phase 2 退出条件：P2-F01 至 P2-F06 在目标开发机通过；不支持的 adapter、
-shader 错误和 device lost 均有稳定错误信息。
+Phase 2 退出条件：P2-F01 至 P2-F07 有真实设备或不可用证据，目标开发机
+compute/surface smoke 通过，窄资源封装与最小 CLI 包可运行；不支持的 adapter、
+shader 错误和 device lost 均有稳定错误。随后提前执行 P6-F07 显示路径验证。
 
 ### Phase 3：数据与场景兼容
 
@@ -104,53 +112,62 @@ shader 错误和 device lost 均有稳定错误信息。
 | P3-F04 | Nerfstudio/Metashape 适配 | `spirula-io` | P3-F03 | 识别 Nerfstudio/Metashape 版本；映射相机和图像字段；记录缺失字段、默认值和格式差异 | 兼容读取并记录格式差异、缺失字段和迁移策略 | 未开始 |
 | P3-F05 | 点云、场景变换与区域 | `spirula-core`/`spirula-io` | P1-F04, P3-F01 | 读取点云属性；应用场景平移/旋转/缩放；验证区域边界、序列化和非法输入不改原文件 | 变换、区域和不变量可序列化；非法输入不改变原文件 | 未开始 |
 | P3-F06 | splat 场景格式 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 定义 splat 属性布局和精度；加入版本与校验；验证空场景、极值和兼容读取 | 定义 splat 属性、版本、校验和兼容读取；与最小 fixture 对照 | 未开始 |
-| P3-F07 | checkpoint 元数据读取 | `spirula-io` | P1-F02, P1-F05 | 读取 checkpoint header 和版本；校验必需块与完整性；为旧版本和损坏文件返回恢复前置条件 | 识别旧 checkpoint 版本、完整性和恢复前置条件；损坏文件可诊断 | 未开始 |
+| P3-F07 | checkpoint 元数据读取 | `spirula-io` | P1-F02, P1-F05 | 读取 header/schema；校验块长度/hash及恢复前提；区分模型初始化、完整训练恢复与损坏；保留旧格式读取 | 旧版本及缺块错误稳定；模型 PLY 不误报为完整 resume；P5-F05 补齐新 bundle 读取 | 未开始 |
+| P3-F08 | 有界训练数据加载与缓存 | `spirula-io` | P3-F02, P3-F03, P1-F08 | 解码并发/在途字节/packed cache/预取预算；分辨率感知解码；定义采样顺序、取消和预取排空/重建 | 高分辨率与缓存满样本不越预算；失败不 panic；相同采样状态可重建顺序；记录吞吐和内存 | 未开始 |
 
-Phase 3 退出条件：P3-F01 至 P3-F07 的参考 fixtures 可加载，兼容格式有明确
+Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
 
-### Phase 4：渲染 MVP
+### Phase 4：渲染与可微内核
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P4-F01 | 渲染场景与相机接口 | `spirula-render` | P2-F06, P3-F06, P1-F04 | 定义 scene/camera/render request；定义图像、深度和统计输出；实现可比较的 CPU reference 入口 | 定义渲染输入、相机、输出图像和误差容限；提供 CPU reference 入口 | 未开始 |
-| P4-F02 | splat 上传与资源绑定 | `spirula-render`/`spirula-gpu` | P4-F01, P2-F03 | 把 splat 属性上传到 GPU；建立 bind group 和资源标签；测试空场景、重用和释放 | 将场景上传 GPU，资源布局和生命周期可诊断 | 未开始 |
-| P4-F03 | 投影与 tile/bin 构建 | `spirula-render` | P4-F01–P4-F02 | 实现屏幕投影；计算 tile/bin 覆盖；比较 CPU/GPU 中间 buffer 与边界样本 | CPU reference 与 headless GPU 结果在记录容限内一致 | 未开始 |
-| P4-F04 | 排序与光栅化 | `spirula-render` | P4-F03 | 实现深度键和排序规则；实现光栅化覆盖；测试同深度、越界、空输入和确定性 | 深度/顺序规则、边界和空场景有确定性测试 | 未开始 |
+| P4-F01 | 渲染场景与相机接口 | `spirula-render` | P2-F06, P3-F01, P3-F06, P1-F04 | scene/camera/render request 和 CPU reference；固定参数化/坐标/色彩/SH/阈值；校验渲染能力与有效选项 | 版本化数值契约和 GPU f32 容差；不支持项显式拒绝；CPU f64 数学门禁单独保留 | 未开始 |
+| P4-F02 | splat 上传与资源绑定 | `spirula-render`/`spirula-gpu` | P4-F01, P2-F03, P2-F04 | 上传布局/对齐和 bind group；验证 render/train 共享资源的窄接口；空场景、重用、失效 handle 和释放 | 布局有中间 buffer 对照；共享资源无隐藏 host copy；资源生命周期和分配字节可诊断 | 未开始 |
+| P4-F03 | 投影与 tile/bin 构建 | `spirula-render` | P4-F01, P4-F02 | 投影/裁剪和 tile 覆盖；交点数溢出/预算预检；scan 与 CPU 中间 buffer 比较；大 footprint 压力样本 | 数值在容差内；空输入/边界/超预算有稳定结果；记录交点峰值、scratch 和同步耗时 | 未开始 |
+| P4-F04 | 排序与光栅化 | `spirula-render` | P4-F03 | 深度键和稳定 radix 排序；非整块/重复键/空输入；光栅覆盖、scratch 和高重叠压力；能力回退 | 同深度顺序和边界明确；CPU/确定性样本对照通过；记录分阶段耗时和资源峰值 | 未开始 |
 | P4-F05 | 合成与深度 | `spirula-render` | P4-F04 | 实现颜色/透明度合成；实现深度写入和清除；用 golden 图像与误差容限验收 | 颜色、透明度、深度和异常输入有 golden 图像或数值验收 | 未开始 |
-| P4-F06 | readback 与预览输出 | `spirula-render`/`spirula-gpu` | P4-F05, P2-F03 | 实现 GPU readback 和图像封装；接入取消与资源回收；验证 headless 预览和提交失败 | headless API 生成稳定预览，错误和取消不会泄漏资源 | 未开始 |
+| P4-F06 | readback 与预览输出 | `spirula-render`/application/CLI | P4-F05, P2-F03, P1-F09 | readback/图像封装；经共享 application 接入 CLI 真实微型预览；取消/错误/资源回收；更新最小 CLI 包样本 | headless CLI 预览稳定；可取消且无资源泄漏；记录端到端时间和拷贝成本；隔离包可复现 | 未开始 |
+| P4-F07 | 训练前向状态与索引契约 | `spirula-render` | P4-F05, P4-F02 | 浮点训练输出；保存/重算前向状态；visible/full 参数映射；状态版本/生命周期和字节预算 | 训练与预览前向对照；空/裁剪场景索引一致；保存状态峰值和释放有证据 | 未开始 |
+| P4-F08 | 光栅化与合成反向传播 | `spirula-render` | P4-F07 | 像素到投影参数 VJP；透明度/遮挡/early-out/cutoff 导数；CPU 微型梯度参考 | 平滑区域有限差分通过；生产硬阈值单独测试；记录 eps/容差和失败样本 | 未开始 |
+| P4-F09 | 投影与 SH 反向传播 | `spirula-render` | P4-F07 | 协方差/投影 Jacobian；quat normalize/log-scale/opacity 链；SH viewdir→mean；当前支持相机模型 | 每类可训练参数有数值梯度对照；极值/非有限输入有定义；未支持模型不得进入训练 | 未开始 |
+| P4-F10 | 梯度聚合与可微渲染验收 | `spirula-render`/`spirula-gpu` | P4-F08, P4-F09, P2-F01 | 跨 tile 梯度聚合及 visible→full gather；WGSL CAS/分阶段归约能力策略；refinement 统计；高重叠压力 | 完整前后向有限差分通过；梯度有限；记录非确定性/原子竞争/峰值；作为 P5-F02 前置 | 未开始 |
 
-Phase 4 退出条件：P4-F01 至 P4-F06 可通过 application/session 生成稳定预览，
-CPU/GPU 对照和图像容差测试通过。
+预览里程碑：P4-F01 至 P4-F06 经早期 application/CLI 生成稳定预览，
+CPU/GPU 和图像容差通过。Phase 4 退出条件另需 P4-F07 至 P4-F10 的
+保存状态、手写 VJP、梯度聚合和数值验证；完成后才能验收训练一步更新。
 
 ### Phase 5：训练核心
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P5-F01 | 训练 session 与 step 调度 | `spirula-train` | P1-F03, P4-F06 | 定义 session 状态和 step 计数；定义启动/停止/失败事件顺序；测试边界 step 和重复命令 | 定义状态机、step 边界、终止原因和事件顺序 | 未开始 |
-| P5-F02 | loss 与优化器 | `spirula-train` | P5-F01 | 实现 loss 输入与输出；实现优化器状态；用微型场景验证一步更新和确定性 | 微型场景 loss、优化器状态和确定性输入输出有测试 | 未开始 |
-| P5-F03 | densification 与剪枝 | `spirula-train` | P5-F02 | 实现 densification 触发统计；实现剪枝阈值和上限；测试资源不足、空结果和重复执行 | 触发条件、上限和失败行为明确；结果可复现 | 未开始 |
-| P5-F04 | 评估与进度事件 | `spirula-train` | P5-F01 | 定义评估采样与指标；定义事件频率和 payload；验证 UI/CLI 可消费且不阻塞训练 | 指标、频率、进度和错误事件可被 UI/CLI 消费 | 未开始 |
-| P5-F05 | checkpoint 保存与 resume | `spirula-train`/`spirula-io` | P1-F05, P3-F07, P5-F01 | 定义 checkpoint schema 和临时路径；保存模型/优化器/step 元数据；从中断文件恢复并继续 | 原子保存、版本校验、崩溃恢复和继续训练通过微型 fixture | 未开始 |
+| P5-F01 | 训练 worker 与 step 调度 | `spirula-train` | P1-F07, P4-F06, P5-F08, P3-F08 | 消费 TrainPlan 和有界 batch；step/schedule、工作状态和安全边界；向唯一应用 owner 报告事件 | 不复制应用状态机；fake/真实 worker 接口一致；step 边界、取消与迟到事件有测试 | 未开始 |
+| P5-F02 | loss 与优化器 | `spirula-train` | P5-F01, P4-F10 | 实现已支持 loss 及导数；Adam moments/计数/逐参数 LR 与 schedule；串联前向/VJP/更新；记录资源峰值 | 微型 CPU 一步更新对照；参数/梯度/状态有限；容差与设备记录；不支持 loss 显式拒绝 | 未开始 |
+| P5-F03 | densification 与剪枝 | `spirula-train` | P5-F02 | 触发统计/增长/剪枝/上限；同步重映射参数、Adam 和统计；增长前资源预检；RNG/采样状态 | 可复现样本及 split/prune 状态对照；资源不足不发布半更新；空结果/重复执行有定义 | 未开始 |
+| P5-F04 | 评估与进度事件 | `spirula-train` | P5-F02 | 固定 eval split/指标/采样；事件频率与实际 step；异步快照；GPU 时间和 host 时间分开 | 慢 UI/CLI 不阻塞训练；估算进度与实际迭代分开；质量及时间样本归档 | 未开始 |
+| P5-F05 | checkpoint 保存与 resume | `spirula-train`/`spirula-io` | P1-F05, P3-F07, P5-F02, P5-F03 | 模型/Adam/step/schedule/RNG/sampler/refinement/数据及计划 digest；generation/manifest/marker/指针提交；版本与恢复模式 | 各发布边界故障注入；旧完整版本保留；新进程状态恢复；区分模型重启/容差恢复/位级恢复 | 未开始 |
 | P5-F06 | stop、cancel 与部分失败 | `spirula-train` | P5-F01, P5-F05 | 实现合作式 stop/cancel；区分用户取消、可重试和不可恢复错误；验证已保存结果和清理 | 合作式取消、重试、终止状态和已保存结果有测试 | 未开始 |
-| P5-F07 | 训练端到端验收 | `spirula-train`/`spirula-render` | P5-F01–P5-F06 | 串联 session、render 和 checkpoint；固定微型训练步数；比较 resume 前后指标、输出和事件 | 微型场景达到确定 step，resume 后指标和输出在约定范围内 | 未开始 |
+| P5-F07 | 训练端到端验收 | application/CLI/`spirula-train` | P5-F01, P5-F02, P5-F03, P5-F04, P5-F05, P5-F06 | 真实微型数据集经 CLI 加载/预览/训练/保存；新进程 N→保存→M 对比连续 N+M；更新隔离 CLI 包 | 参数/Adam/采样/指标按声明容差比较；真实取消/损坏/资源失败；完整工作流与测量证据 | 未开始 |
+| P5-F08 | 可执行 TrainPlan 与能力校验 | `spirula-train`/application | P1-F02, P2-F01, P3-F03 | 兼容配置+数据摘要+GPU 能力→生效训练计划；数值/能力/组合/预算验证；规范化序列化和版本化 digest | 251 字段兼容读取不变；不支持项/非有限值/冲突显式拒绝；resolved plan 可保存并重算 digest | 未开始 |
 
-Phase 5 退出条件：P5-F01 至 P5-F07 全部有 session 事件和 checkpoint 证据，
+Phase 5 退出条件：P5-F01 至 P5-F08 全部有 session 事件和 checkpoint 证据，
 训练复用渲染接口且可从失败或取消状态安全恢复。
 
 ### Phase 6：CLI 与 Slint 应用壳
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P6-F01 | application/session 服务 | `spirula-application`（新增） | P1-F03, P5-F01 | 定义 application command/event API；实现 bounded channel 和 session owner；统一 UI/CLI 取消与进度 | 统一命令、状态、取消、进度和事件；CLI/UI 不重复编排 | 未开始 |
-| P6-F02 | CLI 命令与文本事件 | `spirula-cli` | P6-F01 | 实现加载/预览/训练/停止/恢复/导出参数；映射稳定错误码和退出码；输出 typed event 文本 | 解析加载、预览、训练、停止、恢复和导出命令；错误码稳定 | 未开始 |
-| P6-F03 | Slint 窗口与导航 | `spirula-ui` | P6-F01 | 建立 Slint 窗口和导航模型；绑定日志、校验和错误反馈；禁止 UI 直接创建 GPU/IO 对象 | 建立窗口、页面状态、日志和验证反馈；不直接访问 IO/GPU | 未开始 |
+| P6-F01 | application/session 完整业务集成 | `spirula-application` | P1-F07, P5-F07 | 扩展早期唯一 owner 接入已实现加载/训练/恢复/评估；为 P7/P8 留 capability 挂接入口；统一 UI/CLI 状态和终态 | 真实服务的迟到事件/失败/订阅恢复通过；保留 P1-F07 背压与取消保证 | 未开始 |
+| P6-F02 | CLI 命令与文本事件 | `spirula-cli` | P1-F09, P6-F01 | 完善早期 CLI 的加载/预览/训练/停止/恢复/导出；稳定错误和退出码；完整 help 与事件输出 | 各命令通过共享业务服务；配置和 capability 一致；子进程生命周期测试通过 | 未开始 |
+| P6-F03 | Slint 窗口与导航 | `spirula-ui` | P6-F01, P6-F07 | 窗口/导航和视图状态；绑定日志/校验/错误；配置项来自已实现 capability；沿用验证后的呈现接口 | 不直接 IO/GPU；未实现配置不可启动；显示路径有拷贝/延迟/释放记录 | 未开始 |
 | P6-F04 | 数据集加载与预览 | `spirula-ui`/application | P4-F06, P6-F01, P6-F03 | 绑定数据集选择和加载命令；显示相机/场景摘要；在共享 session 上展示 P3/P4 fixture 预览 | 通过共享 session 加载 P3 fixture 并显示稳定预览 | 未开始 |
 | P6-F05 | 训练 start/stop/resume | `spirula-ui`/application | P5-F05, P6-F01, P6-F03 | 绑定 start/stop/resume；显示 step、指标和错误；验证取消后可保存并恢复 | UI 命令映射到同一 session，进度、取消和失败可见 | 未开始 |
 | P6-F06 | CLI/UI 共享事件验收 | application/CLI/UI | P6-F02–P6-F05 | 用同一 fixture 运行 CLI 和 UI；比较命令、状态、事件和输出；覆盖连接断开和 session 失败 | 同一 fixture 下两入口状态、错误和恢复结果一致 | 未开始 |
+| P6-F07 | Slint 与 wgpu 显示路径验证 | `spirula-ui`/application/`spirula-gpu` | P2-F06, P1-F07, P1-F08 | 在完整 UI 前验证最小图像/不透明呈现接口；renderer/backend/版本、线程和纹理所有权；共享或 readback 回退 | 记录每帧复制字节/同步/延迟；尺寸变化和关闭释放正确；无证据不宣称零复制；不暴露 wgpu 给 UI | 未开始 |
 
-Phase 6 退出条件：P6-F01 至 P6-F06 通过 headless application 测试和 Slint
-行为测试；CLI 与 UI 使用同一 session 服务。
+Phase 6 退出条件：P6-F01 至 P6-F07 通过 headless application 测试和 Slint
+行为测试；CLI 与 UI 使用同一 session 服务。尚待 P7/P8 的导出和辅助命令
+在本阶段仅验收协议及明确不可用结果，真实行为随对应功能接入并补充测试。
 
 ### Phase 7：编辑、网格与导出
 
@@ -162,22 +179,24 @@ Phase 6 退出条件：P6-F01 至 P6-F06 通过 headless application 测试和 S
 | P7-F04 | 网格导入导出 | `spirula-io` | P7-F03, P1-F05 | 实现网格格式读写；写入版本、校验和元数据；用 reference viewer 做 round-trip 和原子保存验证 | 格式版本化、校验和原子保存；可被 reference 工具读取 | 未开始 |
 | P7-F05 | 图像与视频导出 | `spirula-io`/application | P7-F04, P6-F01 | 实现图像帧/视频导出；报告进度并支持取消/重试；清理部分文件并验证可播放结果 | 导出进度、取消、重试和部分文件清理有测试 | 未开始 |
 | P7-F06 | web viewer 资源 | `spirula-io`/`spirula-ui` | P7-F04 | 打包 viewer 资源和场景索引；固定 URL/文件布局；用现有 viewer 打开导出结果 | 生成的资源与现有 viewer 消费契约一致 | 未开始 |
+| P7-F07 | 编辑模型视图与分块 splat 导出 | `spirula-core`/`spirula-io`/application | P7-F02, P3-F06, P1-F05 | 选择/裁剪/变换统一模型视图；分块 PLY 写出；点数/坐标/尺度/SH 独立回读；取消和预算 | 原文件不变；编辑结果 round-trip 和图像对照；无需全量中间 PLY；压缩格式资源需求另行声明 | 未开始 |
 
-Phase 7 退出条件：P7-F01 至 P7-F06 的编辑状态可重新打开，导出失败可见且
+Phase 7 退出条件：P7-F01 至 P7-F07 的编辑状态可重新打开，导出失败可见且
 不会留下不可识别的半成品。
 
 ### Phase 8：辅助管线
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P8-F01 | SfM 管线适配 | `spirula-io`/application | P3-F03, P6-F01 | 探测 SfM 外部工具和版本；准备输入/输出目录；隔离集成测试成功、超时和失败 | 外部工具能力探测、输入输出和失败信息有隔离集成测试 | 未开始 |
+| P8-F01 | SfM 管线适配 | `spirula-io`/application | P3-F03, P6-F01, P8-F07 | 在技术栈约束内探测 SfM 工具/version/capability；隔离输入输出；统一进程取消、产物验证和状态恢复 | 成功/超时/失败和阶段复用集成测试；输出经格式校验才发布；依赖例外须先记录架构决策 | 未开始 |
 | P8-F02 | 稠密重建管线 | `spirula-io`/application | P8-F01 | 定义稠密重建适配接口；检查模型/许可证/平台；用最小样本验证输出和资源限制 | 版本、模型和平台要求明确；最小样本可复现 | 未开始 |
 | P8-F03 | 深度与法线管线 | `spirula-io`/application | P2-F06, P6-F01 | 加载深度/法线模型；检查设备和精度能力；验证输出尺寸、格式和不可用错误 | 模型加载、设备能力、输出格式和不可用结果可诊断 | 未开始 |
 | P8-F04 | 分割与特征匹配 | `spirula-io`/application | P8-F03 | 接入分割和特征匹配模型；记录许可证和版本；测试空结果、重试和结果格式 | 许可证、模型版本、失败重试和结果格式有记录 | 未开始 |
-| P8-F05 | 视频解码 | `spirula-io` | P3-F02, P6-F01 | 探测 codec 和平台解码能力；处理时间戳与方向；测试损坏视频、取消和帧顺序 | codec/平台能力显式检查；时间戳、方向和错误可测试 | 未开始 |
+| P8-F05 | 视频解码 | `spirula-io` | P3-F02, P6-F01, P8-F07 | 探测 codec/平台解码能力；统一工具版本与进程取消；时间戳/方向；损坏视频和帧顺序 | 能力和依赖显式检查；取消终止后代进程；部分产物清理；资源预算和错误可测 | 未开始 |
 | P8-F06 | 模型管理 | `spirula-io`/application | P8-F01–P8-F05 | 实现模型下载和本地缓存；校验 hash/版本；支持取消、失败清理和迁移 | 模型下载、缓存、校验、取消和版本迁移语义明确 | 未开始 |
+| P8-F07 | 外部工具锁定与进程适配基础 | `spirula-io`/application | P1-F05, P1-F07, P1-F08 | 固定 source/target/URL/hash/version/help/许可证；安全解压/离线校验/安装锁/回滚；有界日志和进程树取消 | 伪工具隔离测试损坏包/路径穿越/安装失败/取消；真实工具按平台单独验收；不改变现有运行时约束 | 未开始 |
 
-Phase 8 退出条件：P8-F01 至 P8-F06 各有隔离测试、能力矩阵和失败信息，
+Phase 8 退出条件：P8-F01 至 P8-F07 各有隔离测试、能力矩阵和失败信息，
 缺少外部模型或 codec 时不会被误报为已完成。
 
 ### Phase 9：跨平台、性能与发布
@@ -185,9 +204,9 @@ Phase 8 退出条件：P8-F01 至 P8-F06 各有隔离测试、能力矩阵和失
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
 | P9-F01 | 跨平台 adapter 验证 | `spirula-gpu`/CI | P2-F06 | 在三平台枚举 adapter；记录 backend、limits 和 feature；归档不可用设备原因 | macOS、Linux、Windows 的设备能力和不可用结果有记录 | 未开始 |
-| P9-F02 | 正确性与性能基线 | workspace | P4-F06, P5-F07 | 固定渲染质量和训练收敛样本；测量内存/启动/checkpoint；保存命令、硬件和原始结果 | 固定渲染质量、训练收敛、内存、启动时间和 checkpoint 大小的测量命令与环境 | 未开始 |
+| P9-F02 | 正确性与性能基线汇总 | workspace | P1-F08, P4-F10, P5-F07 | 汇总逐功能测量；固定质量/收敛、step 分布、CPU/GPU 峰值、同步、启动、保存/恢复和取消延迟 | 同设备/数据/recipe 可复现；算子对照与端到端 time-to-quality 分开；不把编译或测试存在视为 GPU 实测 | 未开始 |
 | P9-F03 | profiling 与 GPU 缓存 | `spirula-gpu`/`spirula-render` | P9-F02 | 采集 profile 和热点；实现 shader/pipeline 缓存；用同一基线解释性能收益和回归 | 先有基线，再用 profile 证明 shader/pipeline 缓存和优化没有未解释回归 | 未开始 |
-| P9-F04 | 打包与发布清单 | workspace/CI | P6-F02, P7-F05 | 定义构建矩阵和产物命名；从干净 checkout 打包；记录运行库、能力开关和校验值 | 从干净 checkout 生成可复现包，能力开关、版本和依赖清单完整 | 未开始 |
+| P9-F04 | 完整安装包与发布清单 | workspace/CI | P2-F07, P6-F02, P6-F03, P7-F05 | 在最小 CLI 包上完成 Slint 安装包/三平台矩阵/签名政策；版本/hash、能力/依赖/许可证清单；干净环境验证 | 隔离安装后微型真实流程可复现；平台未实测范围明确；不得由构建成功推断训练可用 | 未开始 |
 | P9-F05 | 崩溃报告与已知差异 | application/文档 | P6-F01, P9-F01 | 定义崩溃报告字段和隐私边界；记录平台差异和已知限制；编写回滚和问题复现步骤 | 崩溃信息、隐私边界、已知平台差异和回滚步骤有文档 | 未开始 |
 
 Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果有基线和
@@ -195,28 +214,22 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 
 ## 4. 首批功能顺序
 
-首批只推进以下编号，完成一个后再进入下一个：
+已完成 P0-F01–P0-F06 和 P1-F01–P1-F05；当前继续 P1-F06。
+后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
+不会把组内多个编号合并成一个已完成功能：
 
-1. P0-F01：固定 C++ 参考基线；
-2. P0-F02：建立子系统行为清单；
-3. P0-F03：建立能力矩阵；
-4. P0-F04：建立最小兼容 fixtures；
-5. P0-F05：固化运行时契约；
-6. P0-F06：建立验证入口；
-7. P1-F01：领域错误与稳定 ID；
-8. P1-F02：配置与版本化序列化；
-9. P1-F03：取消与进度原语；
-10. P1-F04：数学、相机与场景基础类型；
-11. P1-F05：原子文件与 fixture harness；
-12. P2-F06：headless GPU smoke test；
-13. P3-F01/P3-F03：相机与数据集兼容；
-14. P4-F01/P4-F02：splat 场景上传和渲染入口；
-15. P5-F01/P5-F05：微型训练循环和 resume；
-16. P6-F01/P6-F02：共享 session 与 CLI；
-17. P6-F03/P6-F06：Slint 壳和共享会话事件；
-18. P7-F01/P7-F04：编辑、网格和导出；
-19. P8-F01/P8-F03/P8-F05：辅助管线；
-20. P9-F01/P9-F02：跨平台和性能基线。
+1. P1-F06 → P1-F07/P1-F08 → P1-F09：基础检查、唯一会话、测量和最小 CLI。
+2. P2-F01–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
+3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
+4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
+5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
+6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
+7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。
+8. P5-F05/P5-F06 → P5-F07：完整检查点、新进程恢复与微型训练包。
+9. P6-F01–P6-F06：完善业务集成、完整 CLI 和 Slint，共享同一会话。
+10. P7-F01–P7-F07：编辑、网格、分块 splat 导出和其他导出。
+11. P8-F07 → P8-F01/P8-F05，再按前置推进 P8-F02–P8-F04/P8-F06。
+12. P9-F01–P9-F05：汇总平台、质量/性能与完整发布；各功能的资源/数值测量已在此前执行。
 
 ## 5. 单个功能点的完成标准
 
@@ -226,7 +239,8 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 - 明确归属 crate、公共 API、输入输出、前置功能和依赖方向；
 - 记录 C++ 行为、格式兼容假设和迁移说明；
 - 覆盖正常输入、非法输入、取消、部分失败和持久化恢复；
-- GPU 功能有 CPU reference 或确定性 fixture，并记录数值容差；
+- GPU 功能有 CPU reference 或确定性 fixture，前后向分别验证，并记录数值容差；
+- 按 [开发门禁](development-gates.md) 提交资源预算、能力/回退、背压及恢复证据；
 - 有 headless 测试；Slint 行为与 application 服务分开测试；
 - 涉及性能时记录基线、测量命令、环境、指标和回归解释；
 - 更新受影响的架构、计划、fixture、迁移记录和 README，且状态与代码一致；
@@ -268,4 +282,6 @@ ID）已在 `spirula-core` 落地，契约补记见 `docs/phase-0/runtime-contra
 `docs/phase-1/geometry.md`。完整镜头、场景序列化和 splat 文件布局仍分别属于 P3-F01、P3-F05 和
 P3-F06。P1-F05（原子文件与 fixture harness）已在 `spirula-io` 落地，契约见
 `docs/phase-1/atomic.md`；配置文件的原子保存与迁移备份也在此完成。Checkpoint
-目录交换与完成标记仍属于 P5-F05。下一步是 P1-F06：workspace 基础检查。
+目录交换与完成标记仍属于 P5-F05。下一步是 P1-F06：workspace 基础检查。2026-10-25 的 OOOSplat / Brush 审查
+已形成新增功能与依赖调整，见 [审查记录](research/ooosplat-brush-review.md)。
+新增功能均为未开始；GPU、训练、UI 实现状态没有因本次规划调整而提前完成。
