@@ -42,28 +42,23 @@ impl SceneTransform {
     }
 
     /// `R^T t / scale`, the shift applied before rotation.
-    pub fn translation_before_rotation(self) -> Vec3 {
+    pub fn translation_before_rotation(self) -> Result<Vec3, DomainError> {
         self.rotation
             .transpose()
-            .mul_vec(self.translation)
-            .scale(1.0 / self.scale)
+            .try_mul_vec(self.translation)?
+            .try_scale(1.0 / self.scale)
     }
 
     pub fn apply(self, world: Vec3) -> Result<Vec3, DomainError> {
-        let rotated = self.rotation.mul_vec(world).scale(self.scale);
-        Vec3::try_new(
-            rotated.x() + self.translation.x(),
-            rotated.y() + self.translation.y(),
-            rotated.z() + self.translation.z(),
-        )
+        let rotated = self.rotation.try_mul_vec(world)?.try_scale(self.scale)?;
+        rotated.try_add(self.translation)
     }
 
     /// `R_w = R^T`, `scale_w = 1/scale`, `t_w = -(1/scale) R^T t`.
     pub fn inverse(self) -> Result<Self, DomainError> {
         let rotation = self.rotation.transpose();
         let scale = 1.0 / self.scale;
-        let shifted = rotation.mul_vec(self.translation).scale(-scale);
-        let translation = Vec3::try_new(shifted.x(), shifted.y(), shifted.z())?;
+        let translation = rotation.try_mul_vec(self.translation)?.try_scale(-scale)?;
         Self::try_new(rotation, translation, scale)
     }
 }
@@ -90,8 +85,19 @@ impl GaussianSplat {
             return Err(out_of_range("opacity_logit", "finite", "nonfinite"));
         }
         for axis in scale_log.to_array() {
-            if !axis.exp().is_finite() {
-                return Err(out_of_range("scale_log", "exp finite", format!("{axis}")));
+            let activated = axis.exp();
+            if !activated.is_finite() || activated == 0.0 {
+                return Err(out_of_range(
+                    "scale_log",
+                    "exp positive finite",
+                    format!("{axis}"),
+                ));
+            }
+        }
+        for axis in dc.to_array() {
+            let color = axis * SH_C0 + 0.5;
+            if !color.is_finite() {
+                return Err(out_of_range("dc", "finite base color", format!("{axis}")));
             }
         }
         Ok(Self {
@@ -123,7 +129,7 @@ impl GaussianSplat {
         self.dc
     }
 
-    /// Activated scales. Construction already rejected a non-finite `exp`.
+    /// Activated scales. Construction already rejected a non-positive `exp`.
     pub fn scales(self) -> Vec3 {
         Vec3::try_new(
             self.scale_log.x().exp(),
@@ -149,7 +155,7 @@ impl GaussianSplat {
             self.dc.y() * SH_C0 + 0.5,
             self.dc.z() * SH_C0 + 0.5,
         )
-        .expect("finite dc")
+        .expect("dc checked")
     }
 }
 

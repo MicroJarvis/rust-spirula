@@ -90,10 +90,17 @@ fn inverse_composition_quaternion_and_row_column() {
 
     let turned = quat * quat;
     let inverse = row.try_inverse().unwrap();
-    close9((inverse * row).row_major(), &Mat3::identity().row_major());
-    close9(turned.to_rotation().row_major(), &(row * row).row_major());
+    close9(
+        (inverse * row).unwrap().row_major(),
+        &Mat3::identity().row_major(),
+    );
+    close9(
+        turned.to_rotation().row_major(),
+        &(row * row).unwrap().row_major(),
+    );
     close3(
-        quat.rotate(Vec3::try_new(1.0, 0.0, 0.0).unwrap()),
+        quat.try_rotate(Vec3::try_new(1.0, 0.0, 0.0).unwrap())
+            .unwrap(),
         &[0.0, 1.0, 0.0],
     );
 
@@ -180,7 +187,7 @@ fn golden_projection_pose_and_behind_camera() {
     )
     .unwrap();
     let origin_sample = vec3(&numbers(field(&samples[0], "world")));
-    let shifted = origin_sample + moved.translation();
+    let shifted = (origin_sample + moved.translation()).unwrap();
     let projected = moved_camera.project_world(shifted).unwrap();
     let expected = numbers(field(&samples[0], "pixel"));
     close(projected.x(), expected[0]);
@@ -284,11 +291,11 @@ fn golden_scene_and_splat_invariants() {
         close3(inverse.apply(vec3(&expected)).unwrap(), &world.to_array());
     }
     close3(
-        transform.translation_before_rotation(),
+        transform.translation_before_rotation().unwrap(),
         &numbers(field(train, "translation_before_rotation")),
     );
     let center = numbers(field(&golden, "center_world"));
-    let before = transform.translation_before_rotation();
+    let before = transform.translation_before_rotation().unwrap();
     close(before.x(), -center[0]);
     close(before.y(), -center[1]);
     close(before.z(), -center[2]);
@@ -376,4 +383,88 @@ fn golden_scene_and_splat_invariants() {
         )
         .is_err()
     );
+    assert!(
+        GaussianSplat::try_new(
+            splat.mean(),
+            splat.rotation(),
+            Vec3::try_new(-1.0e9, 0.0, 0.0).unwrap(),
+            logit,
+            dc,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn arithmetic_rejects_nonfinite_and_keeps_typed_values_finite() {
+    let huge = Vec3::try_new(f64::MAX, 0.0, 0.0).unwrap();
+    assert_eq!(
+        (huge + huge).unwrap_err().code(),
+        ErrorCode::ValueOutOfRange
+    );
+    assert_eq!(
+        huge.try_scale(2.0).unwrap_err().code(),
+        ErrorCode::ValueOutOfRange
+    );
+    let identity = Mat3::identity();
+    let blow =
+        Mat3::try_from_row_major([f64::MAX, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]).unwrap();
+    assert_eq!(
+        (blow * blow).unwrap_err().code(),
+        ErrorCode::ValueOutOfRange
+    );
+    assert_eq!(
+        blow.try_mul_vec(huge).unwrap_err().code(),
+        ErrorCode::ValueOutOfRange
+    );
+    assert!(identity.try_mul(identity).is_ok());
+}
+
+#[test]
+fn quaternion_stays_unit_and_normalizes_extreme_inputs() {
+    let mut q = Quat::try_from_wxyz(0.7, 0.3, 0.2, 0.1).unwrap();
+    for _ in 0..22 {
+        q = q * q;
+    }
+    let [w, x, y, z] = q.wxyz();
+    close((w * w + x * x + y * y + z * z).sqrt(), 1.0);
+    CameraPose::try_new(q.to_rotation(), Vec3::try_new(0.0, 0.0, 0.0).unwrap()).unwrap();
+
+    let large = Quat::try_from_wxyz(1.0e200, 0.0, 0.0, 0.0).unwrap();
+    assert_eq!(large.wxyz(), [1.0, 0.0, 0.0, 0.0]);
+    let tiny = Quat::try_from_wxyz(1.0e-13, 0.0, 0.0, 0.0).unwrap();
+    assert_eq!(tiny.wxyz(), [1.0, 0.0, 0.0, 0.0]);
+    assert!(Quat::try_from_wxyz(0.0, 0.0, 0.0, 0.0).is_err());
+}
+
+#[test]
+fn rotation_validation_is_transpose_stable() {
+    let skewed = Mat3::try_from_row_major([
+        0.9238795327548249,
+        -0.38268343177713643,
+        0.0,
+        0.38268343295304313,
+        0.9238795322677485,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .unwrap();
+    assert_eq!(
+        skewed.try_rotation().unwrap_err().code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        skewed.transpose().try_rotation().unwrap_err().code(),
+        ErrorCode::InvalidArgument
+    );
+    assert!(SceneTransform::try_new(skewed, Vec3::try_new(0.0, 0.0, 0.0).unwrap(), 1.0,).is_err());
+
+    let yaw = Mat3::try_from_row_major([0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0]).unwrap();
+    let accepted = yaw.try_rotation().unwrap();
+    accepted.transpose().try_rotation().unwrap();
+    let transform =
+        SceneTransform::try_new(accepted, Vec3::try_new(1.0, 2.0, 3.0).unwrap(), 2.0).unwrap();
+    transform.inverse().unwrap();
 }

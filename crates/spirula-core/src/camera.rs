@@ -143,8 +143,8 @@ impl PinholeCamera {
     /// OpenGL camera-space `z >= 0` is behind or on the plane and returns
     /// `SP-INP-003` with field `camera_z`. No pixel is produced.
     pub fn project_world(self, world: Vec3) -> Result<Vec2, DomainError> {
-        let delta = world - self.pose.translation;
-        let gl = self.pose.rotation.transpose().mul_vec(delta);
+        let delta = (world - self.pose.translation)?;
+        let gl = self.pose.rotation.transpose().try_mul_vec(delta)?;
         if !gl.z().is_finite() || gl.z() >= 0.0 {
             return Err(out_of_range("camera_z", "< 0", format!("{}", gl.z())));
         }

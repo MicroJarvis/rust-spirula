@@ -6,7 +6,6 @@ use crate::{ContextKey, DomainError, ErrorCode};
 
 const SINGULAR: f64 = 1e-12;
 const ROTATION_TOL: f64 = 1e-9;
-const QUAT_MIN_LENGTH: f64 = 1e-12;
 
 pub(crate) fn invalid(field: &str, message: impl Into<String>) -> DomainError {
     DomainError::try_new(ErrorCode::InvalidArgument, message)
@@ -31,6 +30,15 @@ pub(crate) fn out_of_range(field: &str, expected: &str, actual: impl Into<String
 
 fn finite(value: f64) -> bool {
     value.is_finite()
+}
+
+fn near_identity(matrix: Mat3) -> bool {
+    let identity = Mat3::identity().m;
+    matrix
+        .m
+        .iter()
+        .zip(identity)
+        .all(|(actual, expected)| finite(*actual) && (actual - expected).abs() <= ROTATION_TOL)
 }
 
 /// Finite 3-vector.
@@ -70,48 +78,44 @@ impl Vec3 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
-    pub fn cross(self, other: Self) -> Self {
-        Self {
-            x: self.y * other.z - self.z * other.y,
-            y: self.z * other.x - self.x * other.z,
-            z: self.x * other.y - self.y * other.x,
-        }
+    pub fn try_cross(self, other: Self) -> Result<Self, DomainError> {
+        Self::try_new(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        )
     }
 
     pub fn length(self) -> f64 {
         self.dot(self).sqrt()
     }
 
-    pub fn scale(self, factor: f64) -> Self {
-        Self {
-            x: self.x * factor,
-            y: self.y * factor,
-            z: self.z * factor,
-        }
+    pub fn try_scale(self, factor: f64) -> Result<Self, DomainError> {
+        Self::try_new(self.x * factor, self.y * factor, self.z * factor)
+    }
+
+    pub fn try_add(self, other: Self) -> Result<Self, DomainError> {
+        Self::try_new(self.x + other.x, self.y + other.y, self.z + other.z)
+    }
+
+    pub fn try_sub(self, other: Self) -> Result<Self, DomainError> {
+        Self::try_new(self.x - other.x, self.y - other.y, self.z - other.z)
     }
 }
 
 impl std::ops::Add for Vec3 {
-    type Output = Self;
+    type Output = Result<Self, DomainError>;
 
-    fn add(self, other: Self) -> Self {
-        Self {
-            x: self.x + other.x,
-            y: self.y + other.y,
-            z: self.z + other.z,
-        }
+    fn add(self, other: Self) -> Self::Output {
+        self.try_add(other)
     }
 }
 
 impl std::ops::Sub for Vec3 {
-    type Output = Self;
+    type Output = Result<Self, DomainError>;
 
-    fn sub(self, other: Self) -> Self {
-        Self {
-            x: self.x - other.x,
-            y: self.y - other.y,
-            z: self.z - other.z,
-        }
+    fn sub(self, other: Self) -> Self::Output {
+        self.try_sub(other)
     }
 }
 
@@ -190,16 +194,16 @@ impl Mat3 {
         out
     }
 
-    pub fn mul_vec(self, vector: Vec3) -> Vec3 {
+    pub fn try_mul_vec(self, vector: Vec3) -> Result<Vec3, DomainError> {
         let m = &self.m;
         let x = vector.x();
         let y = vector.y();
         let z = vector.z();
-        Vec3 {
-            x: m[0] * x + m[1] * y + m[2] * z,
-            y: m[3] * x + m[4] * y + m[5] * z,
-            z: m[6] * x + m[7] * y + m[8] * z,
-        }
+        Vec3::try_new(
+            m[0] * x + m[1] * y + m[2] * z,
+            m[3] * x + m[4] * y + m[5] * z,
+            m[6] * x + m[7] * y + m[8] * z,
+        )
     }
 
     pub fn transpose(self) -> Self {
@@ -212,6 +216,18 @@ impl Mat3 {
         let m = &self.m;
         m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
             + m[2] * (m[3] * m[7] - m[4] * m[6])
+    }
+
+    pub fn try_mul(self, other: Self) -> Result<Self, DomainError> {
+        let mut m = [0.0; 9];
+        for row in 0..3 {
+            for column in 0..3 {
+                m[row * 3 + column] = self.m[row * 3] * other.m[column]
+                    + self.m[row * 3 + 1] * other.m[3 + column]
+                    + self.m[row * 3 + 2] * other.m[6 + column];
+            }
+        }
+        Self::try_from_row_major(m)
     }
 
     pub fn try_inverse(self) -> Result<Self, DomainError> {
@@ -233,36 +249,24 @@ impl Mat3 {
         ];
         Self::try_from_row_major(inv)
     }
-}
 
-impl std::ops::Mul for Mat3 {
-    type Output = Self;
-
-    fn mul(self, other: Self) -> Self {
-        let mut m = [0.0; 9];
-        for row in 0..3 {
-            for column in 0..3 {
-                m[row * 3 + column] = self.m[row * 3] * other.m[column]
-                    + self.m[row * 3 + 1] * other.m[3 + column]
-                    + self.m[row * 3 + 2] * other.m[6 + column];
-            }
-        }
-        Self { m }
-    }
-}
-
-impl Mat3 {
-    /// Proper rotation: orthonormal columns and determinant +1.
+    /// Proper rotation: both Gram matrices near `I`, determinant +1.
+    ///
+    /// Checking only `R^T R` is not transpose-stable under `1e-9` element
+    /// tolerances, so `R R^T` is required as well.
     pub fn try_rotation(self) -> Result<Self, DomainError> {
-        let gram = self.transpose() * self;
-        let identity = Self::identity().m;
-        for (actual, expected) in gram.m.iter().zip(identity) {
-            if !finite(*actual) || (actual - expected).abs() > ROTATION_TOL {
-                return Err(invalid(
-                    "rotation",
-                    "matrix is not a proper rotation within 1e-9",
-                ));
-            }
+        let gram_left = self
+            .transpose()
+            .try_mul(self)
+            .map_err(|_| invalid("rotation", "matrix is not a proper rotation within 1e-9"))?;
+        let gram_right = self
+            .try_mul(self.transpose())
+            .map_err(|_| invalid("rotation", "matrix is not a proper rotation within 1e-9"))?;
+        if !near_identity(gram_left) || !near_identity(gram_right) {
+            return Err(invalid(
+                "rotation",
+                "matrix is not a proper rotation within 1e-9",
+            ));
         }
         let det = self.determinant();
         if !finite(det) || (det - 1.0).abs() > ROTATION_TOL {
@@ -272,6 +276,14 @@ impl Mat3 {
             ));
         }
         Ok(self)
+    }
+}
+
+impl std::ops::Mul for Mat3 {
+    type Output = Result<Self, DomainError>;
+
+    fn mul(self, other: Self) -> Self::Output {
+        self.try_mul(other)
     }
 }
 
@@ -294,13 +306,24 @@ impl Quat {
         }
     }
 
-    /// Normalize a finite quaternion. A near-zero length is `SP-INP-003`.
+    /// Normalize a finite nonzero quaternion.
+    ///
+    /// Scales by the largest absolute component first so values such as
+    /// `(1e200, 0, 0, 0)` and `(1e-13, 0, 0, 0)` stay finite and nonzero.
     pub fn try_from_wxyz(w: f64, x: f64, y: f64, z: f64) -> Result<Self, DomainError> {
         if !(finite(w) && finite(x) && finite(y) && finite(z)) {
             return Err(out_of_range("quaternion", "finite", "nonfinite"));
         }
+        let max = w.abs().max(x.abs()).max(y.abs()).max(z.abs());
+        if max == 0.0 {
+            return Err(out_of_range("quaternion", "nonzero length", "0"));
+        }
+        let w = w / max;
+        let x = x / max;
+        let y = y / max;
+        let z = z / max;
         let length = (w * w + x * x + y * y + z * z).sqrt();
-        if !finite(length) || length < QUAT_MIN_LENGTH {
+        if !finite(length) || length == 0.0 {
             return Err(out_of_range(
                 "quaternion",
                 "nonzero length",
@@ -343,23 +366,22 @@ impl Quat {
         let wx = w * x;
         let wy = w * y;
         let wz = w * z;
-        Mat3 {
-            m: [
-                1.0 - 2.0 * (yy + zz),
-                2.0 * (xy - wz),
-                2.0 * (xz + wy),
-                2.0 * (xy + wz),
-                1.0 - 2.0 * (xx + zz),
-                2.0 * (yz - wx),
-                2.0 * (xz - wy),
-                2.0 * (yz + wx),
-                1.0 - 2.0 * (xx + yy),
-            ],
-        }
+        Mat3::try_from_row_major([
+            1.0 - 2.0 * (yy + zz),
+            2.0 * (xy - wz),
+            2.0 * (xz + wy),
+            2.0 * (xy + wz),
+            1.0 - 2.0 * (xx + zz),
+            2.0 * (yz - wx),
+            2.0 * (xz - wy),
+            2.0 * (yz + wx),
+            1.0 - 2.0 * (xx + yy),
+        ])
+        .expect("unit quaternion yields a finite rotation")
     }
 
-    pub fn rotate(self, vector: Vec3) -> Vec3 {
-        self.to_rotation().mul_vec(vector)
+    pub fn try_rotate(self, vector: Vec3) -> Result<Vec3, DomainError> {
+        self.to_rotation().try_mul_vec(vector)
     }
 }
 
@@ -367,12 +389,13 @@ impl std::ops::Mul for Quat {
     type Output = Self;
 
     /// Hamilton product. `self * other` applies `other` first.
+    ///
+    /// The product is renormalized so repeated multiplication stays unit.
     fn mul(self, other: Self) -> Self {
-        Self {
-            w: self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
-            x: self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
-            y: self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
-            z: self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
-        }
+        let w = self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z;
+        let x = self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y;
+        let y = self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x;
+        let z = self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w;
+        Self::try_from_wxyz(w, x, y, z).expect("unit quaternion product is nonzero")
     }
 }

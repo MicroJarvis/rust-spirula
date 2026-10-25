@@ -40,19 +40,28 @@ Pinned sources: `src/data/CameraMath.h`, `src/core/CameraModel.h`,
 ## Binding decisions
 
 - Vectors, matrices, and quaternions that enter the API must be finite.
-  A quaternion with positive length is normalized. A zero quaternion is
-  `SP-INP-003`.
+  Public `Vec3` / `Mat3` arithmetic (`+`, `-`, `try_scale`, `try_cross`,
+  `try_mul`, `try_mul_vec`) revalidates and returns `SP-INP-003` on overflow
+  or non-finite results so typed values never carry Inf/NaN.
+- A finite nonzero quaternion is normalized. Normalization scales by the
+  largest absolute component first so extreme finite inputs such as
+  `(1e200, 0, 0, 0)` and `(1e-13, 0, 0, 0)` succeed. A zero quaternion is
+  `SP-INP-003`. Quaternion multiplication renormalizes so repeated products
+  stay unit length.
 - `Mat3` is row-major. `try_inverse` returns `SP-INP-003` when the
   determinant is non-finite or smaller than `1e-12` in magnitude.
-- Poses and scene rotations must be proper rotations: `R^T R = I` and
-  `det(R) = 1`, each within `1e-9`. Reflections and non-orthogonal matrices
-  are `SP-INP-001`.
+- Poses and scene rotations must be proper rotations: both `R^T R = I` and
+  `R R^T = I`, and `det(R) = 1`, each within `1e-9`. Checking only one Gram
+  matrix is not transpose-stable at that tolerance. Reflections and
+  non-orthogonal matrices are `SP-INP-001`.
 - Focal lengths and similarity scale must be finite and strictly positive
   (`SP-INP-003`). Width and height must be non-zero (`SP-INP-003`).
 - Behind-camera projection returns `SP-INP-003` with field `camera_z` and
   expected `< 0`. It does not return a pixel.
-- Splat log-scales must stay finite after `exp`. Opacity is stored as a
-  finite logit; the logistic saturates toward 0 or 1 for extreme logits.
+- Splat log-scales must yield a strictly positive finite `exp` (reject
+  overflow and underflow-to-zero). Opacity is stored as a finite logit; the
+  logistic saturates toward 0 or 1 for extreme logits. DC must produce a
+  finite base color.
 - Golden camera pixels must match within `1e-9` px.
 
 ## Deferred
