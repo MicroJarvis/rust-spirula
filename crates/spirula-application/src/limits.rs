@@ -91,12 +91,22 @@ impl SessionLimits {
     /// Clamp zero/tiny capacities and timing so the returned policy matches
     /// what the owner actually enforces (queues ≥ 1, cancel poll ≤ heartbeat
     /// and ≤ 250ms, byte floors large enough for overflow substitute text).
+    /// Envelope + max `CommandRejected` (label + error) or max reason/state.
+    pub fn max_legal_control_event_bytes(
+        label_max_bytes: usize,
+        error_event_max_bytes: usize,
+        reason_max_bytes: usize,
+    ) -> usize {
+        let rejected = 48 + 16 + label_max_bytes + error_event_max_bytes + 48;
+        let state_changed = 64 + reason_max_bytes + 48;
+        rejected.max(state_changed)
+    }
+
     pub fn normalized(mut self) -> Self {
         self.command_queue_capacity = self.command_queue_capacity.max(1);
         self.worker_progress_queue_capacity = self.worker_progress_queue_capacity.max(1);
         self.worker_result_queue_capacity = self.worker_result_queue_capacity.max(1);
         self.control_history_capacity = self.control_history_capacity.max(1);
-        self.control_history_max_bytes = self.control_history_max_bytes.max(64);
         self.notification_queue_capacity = self.notification_queue_capacity.max(1);
         self.max_subscribers = self.max_subscribers.max(1);
         self.log_tail_capacity = self.log_tail_capacity.max(1);
@@ -111,6 +121,18 @@ impl SessionLimits {
         self.error_event_max_bytes = self
             .error_event_max_bytes
             .max(self.error_message_max_bytes.saturating_add(64));
+        // History byte floor fits one legal max control event (rejected load
+        // with max label + max error view + envelope overhead). Oversized
+        // entries are still dropped rather than retained over budget.
+        let max_legal_control = Self::max_legal_control_event_bytes(
+            self.label_max_bytes,
+            self.error_event_max_bytes,
+            self.reason_max_bytes,
+        );
+        self.control_history_max_bytes = self
+            .control_history_max_bytes
+            .max(64)
+            .max(max_legal_control);
 
         if self.heartbeat_interval.is_zero() {
             self.heartbeat_interval = Duration::from_millis(1);

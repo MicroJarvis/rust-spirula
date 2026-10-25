@@ -1041,6 +1041,7 @@ fn session_limits_normalize_zero_and_slow_poll() {
         cancel_poll_interval: Duration::from_millis(500),
         heartbeat_interval: Duration::from_millis(100),
         teardown_deadline: Duration::from_millis(1),
+        control_history_max_bytes: 8,
         ..SessionLimits::default()
     };
     let app = ApplicationService::start(raw);
@@ -1051,6 +1052,45 @@ fn session_limits_normalize_zero_and_slow_poll() {
     assert!(effective.cancel_poll_interval <= effective.heartbeat_interval);
     // Teardown floor covers cancel observation; 1ms cannot silently win.
     assert!(effective.teardown_deadline >= effective.cancel_poll_interval.saturating_mul(4));
+    // History floor fits one legal max control event (label+error+overhead).
+    let legal = SessionLimits::max_legal_control_event_bytes(
+        effective.label_max_bytes,
+        effective.error_event_max_bytes,
+        effective.reason_max_bytes,
+    );
+    assert!(effective.control_history_max_bytes >= legal);
+}
+
+#[test]
+fn long_lifetime_accepted_ids_stay_expired_under_budget() {
+    let mut limits = SessionLimits::for_test();
+    limits.result_retention = 2;
+    limits.control_history_capacity = 4;
+    limits.control_history_max_bytes = 1024;
+    let app = ApplicationService::start(limits);
+    let first = accept(&app, CommandPayload::ProbeLoad { label: "a".into() });
+    wait_terminal(&app, first);
+    wait_ready(&app);
+    for i in 0..64 {
+        let id = accept(&app, CommandPayload::ProbeRun { steps: 1 });
+        wait_terminal(&app, id);
+        wait_ready(&app);
+        let _ = i;
+        // Rejects also exercise Accepted/Rejected byte accounting.
+        let _ = app.submit(Command::new(CommandPayload::ProbeLoad {
+            label: "z".repeat(app.limits().label_max_bytes + 8),
+        }));
+    }
+    assert!(
+        matches!(app.command_result(first), CommandResult::Expired),
+        "{:?}",
+        app.command_result(first)
+    );
+    // Unknown only for never-accepted future-looking ids.
+    assert!(matches!(
+        app.command_result(spirula_application::CommandId::new(u64::MAX)),
+        CommandResult::Unknown
+    ));
 }
 
 #[test]

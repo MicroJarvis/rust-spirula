@@ -78,8 +78,10 @@ Drop capacity). Follow-up worker-boundary: `check_progress` calls
 pre-mailbox sanitize/bound, bounded errors keep code/category/retryable/
 user_action. Later acceptance: Reset clears `last_outcome`; successful
 `Stop{save}` emits `Saving`+checkpoint; teardown deadline normalized to
-cancel budget and always joins; O(1) accepted-id watermark; honest
-ownership docs; Accepted/Rejected payload byte accounting.
+cancel budget and always joins; O(1) accepted-id watermark (no unbounded
+seen-set); oversized control entries dropped under byte budget while
+results stay bounded; Accepted/Rejected approx_bytes include labels/errors;
+honest ownership docs.
 
 ## Scope and result
 

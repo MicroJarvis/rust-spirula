@@ -168,9 +168,14 @@ unbounded control deque.
   only on publish disconnect).
 - `command_result(id)` → `Pending` | `Ready` | `Expired` | `Unknown`. Pending
   covers the active probe **and** outstanding `stop_owner` /
-  `shutdown_owner` identities. Accepted command ids use a contiguous id space
-  and an O(1) `max_accepted` watermark so an evicted result stays `Expired`,
-  never `Unknown`, without an unbounded seen-set.
+  `shutdown_owner` identities.   Accepted command ids use a contiguous id space and an O(1)
+  `max_accepted` watermark so an evicted result stays `Expired`, never
+  `Unknown`, without retaining every historical id. Control history
+  `approx_bytes` counts full command labels and rejection errors; a single
+  entry larger than `control_history_max_bytes` is dropped (watermark /
+  resync) while its terminal may remain in the bounded result cache.
+  `SessionLimits::normalized` raises the history byte floor to one legal
+  max control event.
 - Every accepted command produces exactly one canonical terminal for its
   `command_id`: `Completed { outcome }` or `ShutdownComplete` (shutdown owner
   only). `Failed` is only a `RunOutcome` / `TerminalOutcome` payload.
