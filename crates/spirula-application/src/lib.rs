@@ -1,9 +1,10 @@
-//! Unique application/session owner for Spirula Studio.
+//! Unique logical application/session owner for Spirula Studio.
 //!
 //! P1-F07 owns command admission, cancel/control, recoverable control
 //! history, bounded progress/log/notify fanout, and a fake worker that
-//! exercises lifecycle contracts. It depends only on `spirula-core`.
-//! Binding decisions: `docs/phase-1/application.md`.
+//! exercises lifecycle contracts. Session state is serialized under one
+//! owner mutex (not a single exclusive writer thread). It depends only on
+//! `spirula-core`. Binding decisions: `docs/phase-1/application.md`.
 
 mod bound;
 mod command;

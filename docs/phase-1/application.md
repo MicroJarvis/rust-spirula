@@ -21,22 +21,28 @@ These fill the frozen sketches. They do not add error codes.
 ### Ownership and dependencies
 
 - One `ApplicationService` per process role under test is the **unique logical
-  owner** of session state. All mutations of `SessionState`, `seq`, active
-  `CommandId`/`RunId`, history, and drop counters go through one `Mutex`
-  (caller `submit`/`Drop`, the owner loop, and tests). That is a serialized
-  owner-state binding, not a claim that only one OS thread ever touches the
-  mutex. Each instance allocates a unique `SessionId` (process-wide counter).
-  Command ids and run ids use separate counters so accepted-command expiry is
-  an O(1) watermark, not an unbounded set.
+  application owner**. There is a single session-state record; UI/CLI/workers
+  must not keep a parallel business state machine. All mutations of
+  `SessionState`, `seq`, active `CommandId`/`RunId`, history, and drop
+  counters take the same owner `Mutex`. Callers of `submit` (including
+  immediate `Pause`/`Resume`/`Reset`/`Stop`/`Shutdown`) and `Drop` may hold
+  that lock on their threads; the dedicated owner loop holds it when applying
+  worker mailboxes and finishing shutdown. That is a **serialized shared
+  owner-state binding**, not “exactly one OS writer thread”. Cancel/Stop/
+  Shutdown stay responsive because control admission is lock-bounded and
+  independent of subscriber/progress backpressure. Each instance allocates a
+  unique `SessionId`. Command ids and run ids use separate counters so
+  accepted-command expiry is an O(1) watermark, not an unbounded set.
 - Public crate deps: `spirula-core` only. Allowed future edges to
   `spirula-io`/`spirula-train` stay unused here.
-- One dedicated owner thread applies worker mailboxes and drives shutdown.
-  Rejected or admitted commands never spawn a thread. The fake worker is one
-  long-lived thread; it publishes through a bounded worker→owner mailbox and
-  never awaits a subscriber or log sink. Service `Drop` always joins owner and
-  worker within the effective `teardown_deadline` (normalized to cover cancel
-  observation); it never detaches immortal threads or emits canonical events
-  after `ShutdownComplete`.
+- One dedicated owner thread drains worker mailboxes and drives shutdown
+  completion. Rejected or admitted commands never spawn a thread. The fake
+  worker is one long-lived thread; it publishes through a bounded
+  worker→owner mailbox and never awaits a subscriber or log sink. Service
+  `Drop` always joins owner and worker within the effective
+  `teardown_deadline` (normalized to cover cancel observation); it never
+  detaches immortal threads or emits canonical events after
+  `ShutdownComplete`.
 
 ### Commands (P1-F07 surface)
 

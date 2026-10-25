@@ -71,10 +71,12 @@ Slint widgets.
 
 ### `spirula-application`
 
-Unique session owner: command admission, Stop/Shutdown control, cancel token,
-recoverable control history, snapshots/cursors, bounded notify fanout, and
-(for P1-F07) a fake probe worker. Public deps today: `spirula-core` only.
-Bindings: [phase-1/application.md](phase-1/application.md).
+Unique logical session owner: command admission, Stop/Shutdown control, cancel
+token, recoverable control history, snapshots/cursors, bounded notify fanout,
+and (for P1-F07) a fake probe worker. State mutations are serialized through
+one owner mutex (callers and the mailbox loop); UI/CLI must not duplicate the
+business state machine. Public deps today: `spirula-core` only. Bindings:
+[phase-1/application.md](phase-1/application.md).
 
 ### `spirula-ui`
 

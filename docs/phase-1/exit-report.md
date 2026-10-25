@@ -81,7 +81,8 @@ user_action. Later acceptance: Reset clears `last_outcome`; successful
 cancel budget and always joins; O(1) accepted-id watermark (no unbounded
 seen-set); oversized control entries dropped under byte budget while
 results stay bounded; Accepted/Rejected approx_bytes include labels/errors;
-honest ownership docs.
+honest ownership docs (serialized mutex binding, not one exclusive
+writer thread).
 
 ## Scope and result
 

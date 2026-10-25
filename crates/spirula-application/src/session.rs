@@ -1,4 +1,6 @@
-//! Unique application/session owner. One writer thread; bounded admission.
+//! Unique logical application/session owner. Session state is mutated only
+//! under a shared owner mutex (caller `submit`/`Drop`, the mailbox owner
+//! loop, and tests) — not "exactly one OS writer thread". Bounded admission.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
