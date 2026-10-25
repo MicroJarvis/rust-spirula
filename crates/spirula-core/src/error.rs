@@ -637,12 +637,17 @@ impl DomainError {
     /// One stderr line. `show_code` is the `SPIRULA_ERROR_CODES=1` form.
     ///
     /// Core does not read the environment variable; the CLI adapter does.
+    /// LF, CR, NEL (U+0085), U+2028 and U+2029 in the message are escaped so
+    /// the result stays a single physical line. [`Self::message`] is unchanged.
     pub fn cli_stderr_line(&self, show_code: bool) -> String {
+        let mut line = String::from("error: ");
+        push_cli_message(&mut line, &self.message);
         if show_code {
-            format!("error: {} (code: {})", self.message, self.code.as_str())
-        } else {
-            format!("error: {}", self.message)
+            line.push_str(" (code: ");
+            line.push_str(self.code.as_str());
+            line.push(')');
         }
+        line
     }
 
     /// Structured event object. `source` is omitted.
@@ -729,6 +734,19 @@ pub fn process_exit_code(error: &DomainError, stage: ProcessStage) -> u8 {
         return EXIT_USAGE;
     }
     EXIT_FAILURE
+}
+
+fn push_cli_message(line: &mut String, message: &str) {
+    for character in message.chars() {
+        match character {
+            '\n' => line.push_str("\\n"),
+            '\r' => line.push_str("\\r"),
+            '\u{0085}' => line.push_str("\\u0085"),
+            '\u{2028}' => line.push_str("\\u2028"),
+            '\u{2029}' => line.push_str("\\u2029"),
+            other => line.push(other),
+        }
+    }
 }
 
 fn push_json_key(json: &mut String, key: &str) {

@@ -307,6 +307,44 @@ fn cli_text_and_exit_table_follow_the_contract() {
 }
 
 #[test]
+fn cli_stderr_line_escapes_line_separators_without_changing_message_or_json() {
+    let message = "top\nbottom\r\nnel\u{0085}ls\u{2028}ps\u{2029}end";
+    let error = DomainError::try_new(ErrorCode::InvalidArgument, message).unwrap();
+
+    assert_eq!(error.message(), message);
+    assert_eq!(error.to_string(), message);
+
+    let plain = error.cli_stderr_line(false);
+    let coded = error.cli_stderr_line(true);
+    assert_eq!(
+        plain,
+        "error: top\\nbottom\\r\\nnel\\u0085ls\\u2028ps\\u2029end"
+    );
+    assert_eq!(
+        coded,
+        "error: top\\nbottom\\r\\nnel\\u0085ls\\u2028ps\\u2029end (code: SP-INP-001)"
+    );
+    for line in [&plain, &coded] {
+        assert!(
+            !line.chars().any(|character| {
+                matches!(
+                    character,
+                    '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+                )
+            }),
+            "cli line broke into more than one physical line: {line:?}"
+        );
+    }
+
+    let json = error.to_event_json();
+    assert!(json.contains(r#""message":"top\nbottom\r\nnel\u0085ls"#));
+    assert!(json.contains('\u{2028}'));
+    assert!(json.contains('\u{2029}'));
+    assert!(!json.contains(r#"\u2028"#));
+    assert!(!json.contains(r#"\u2029"#));
+}
+
+#[test]
 fn suggested_actions_cover_only_clear_catalog_meanings() {
     assert_eq!(
         ErrorCode::ValueOutOfRange.suggested_user_action(),
