@@ -2,11 +2,18 @@
 //!
 //! This crate is tooling, not a runtime library: `cargo run -p spirula-xtask --
 //! verify` checks the compatibility fixtures, the document/status consistency,
-//! the optional C++ reference baseline, and the full workspace gate.
+//! the workspace policy (lints, architecture edges, features, CLI shape), the
+//! optional C++ reference baseline, and the fixed workspace gate.
+
+pub mod gate;
+pub mod policy;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub use gate::{GateStep, diff_gate_step, workspace_gate_steps};
+pub use policy::{PolicyReport, check_workspace_policy};
 
 /// Summary of the document/status check.
 #[derive(Debug, Clone)]
@@ -70,12 +77,12 @@ pub fn check_docs(root: &Path) -> Result<DocsReport, String> {
         }
     }
 
-    // Completed Phase 0 features must have their recorded artifact.
+    // Completed features with mapped records must keep those artifacts.
     let mut completed = 0;
     for (id, status) in &features {
         if status == "已完成" {
             completed += 1;
-            if let Some(required) = phase_0_artifact(id) {
+            for required in completed_feature_artifacts(id) {
                 let path = root.join(required);
                 if !path.is_file() {
                     return Err(format!(
@@ -144,15 +151,23 @@ fn parse_features(plan: &str) -> Result<Vec<(String, String)>, String> {
     Ok(features.into_iter().collect())
 }
 
-fn phase_0_artifact(id: &str) -> Option<&'static str> {
+fn completed_feature_artifacts(id: &str) -> &'static [&'static str] {
     match id {
-        "P0-F01" => Some("docs/phase-0/reference-baseline.md"),
-        "P0-F02" => Some("docs/phase-0/subsystem-inventory.md"),
-        "P0-F03" => Some("docs/phase-0/capability-matrix.md"),
-        "P0-F04" => Some("docs/phase-0/fixtures.md"),
-        "P0-F05" => Some("docs/phase-0/runtime-contracts.md"),
-        "P0-F06" => Some("docs/phase-0/exit-report.md"),
-        _ => None,
+        "P0-F01" => &["docs/phase-0/reference-baseline.md"],
+        "P0-F02" => &["docs/phase-0/subsystem-inventory.md"],
+        "P0-F03" => &["docs/phase-0/capability-matrix.md"],
+        "P0-F04" => &["docs/phase-0/fixtures.md"],
+        "P0-F05" => &["docs/phase-0/runtime-contracts.md"],
+        "P0-F06" => &["docs/phase-0/exit-report.md"],
+        "P1-F02" => &["docs/phase-1/config.md"],
+        "P1-F03" => &["docs/phase-1/cancellation.md"],
+        "P1-F04" => &["docs/phase-1/geometry.md"],
+        "P1-F05" => &["docs/phase-1/atomic.md"],
+        "P1-F06" => &[
+            "docs/phase-1/workspace-checks.md",
+            "docs/phase-1/exit-report.md",
+        ],
+        _ => &[],
     }
 }
 

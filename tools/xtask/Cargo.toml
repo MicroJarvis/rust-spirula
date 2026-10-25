@@ -14,4 +14,8 @@ name = "spirula-xtask"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
 spirula-io = { path = "../../crates/spirula-io" }
+
+[lints]
+workspace = true

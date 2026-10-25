@@ -3,13 +3,18 @@
 //! Commands:
 //!   fixtures  verify the compatibility fixture set
 //!   docs      verify project-plan status, links, artifacts and error codes
+//!   policy    verify lint inheritance, architecture edges, features, CLI shape
 //!   baseline  verify the pinned C++ reference checkout (skipped when absent)
-//!   verify    run fixtures + docs + baseline note + the workspace gate
+//!   verify    run fixtures + docs + policy + baseline note + the workspace gate
 
 use std::env;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::Instant;
+
+use spirula_xtask::{
+    check_docs, check_workspace_policy, diff_gate_step, workspace_gate_steps, workspace_root,
+};
 
 fn main() -> ExitCode {
     let command = env::args().nth(1).unwrap_or_else(|| "verify".to_owned());
@@ -17,6 +22,7 @@ fn main() -> ExitCode {
         "verify" => run_verify(),
         "fixtures" => run_fixtures(),
         "docs" => run_docs(),
+        "policy" => run_policy(),
         "baseline" => run_baseline(),
         "-h" | "--help" | "help" => {
             print_usage();
@@ -34,9 +40,10 @@ fn print_usage() {
     println!(
         "spirula-xtask <command>
 
-  verify    run fixture, documentation and workspace checks (default)
+  verify    run fixture, documentation, policy and workspace checks (default)
   fixtures  verify fixtures/manifest.json and every fixture format
   docs      verify project-plan status, links, artifacts and error codes
+  policy    verify lint inheritance, architecture edges, features and CLI shape
   baseline  verify the pinned C++ reference checkout, if present
 
 Environment:
@@ -59,8 +66,8 @@ fn run_fixtures() -> ExitCode {
 }
 
 fn run_docs() -> ExitCode {
-    let root = spirula_xtask::workspace_root();
-    match spirula_xtask::check_docs(&root) {
+    let root = workspace_root();
+    match check_docs(&root) {
         Ok(report) => {
             println!(
                 "docs: ok ({} features, {} files, {} links, {} error codes)",
@@ -75,8 +82,29 @@ fn run_docs() -> ExitCode {
     }
 }
 
+fn run_policy() -> ExitCode {
+    let root = workspace_root();
+    match check_workspace_policy(&root) {
+        Ok(report) => {
+            println!(
+                "policy: ok ({} members, {} path edges, {} optional features, combinations [{}], host [{}])",
+                report.members,
+                report.path_edges,
+                report.optional_features,
+                report.feature_combinations.join(", "),
+                report.host_targets_checked.join(", ")
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("policy: failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_baseline() -> ExitCode {
-    let root = spirula_xtask::workspace_root();
+    let root = workspace_root();
     let repo = reference_repo(&root);
     if !repo.join(".git").exists() {
         println!(
@@ -108,7 +136,7 @@ fn run_baseline() -> ExitCode {
 }
 
 fn run_verify() -> ExitCode {
-    let root = spirula_xtask::workspace_root();
+    let root = workspace_root();
     let started = Instant::now();
     let mut failures = 0;
 
@@ -118,39 +146,35 @@ fn run_verify() -> ExitCode {
     if run_docs() != ExitCode::SUCCESS {
         failures += 1;
     }
+    if run_policy() != ExitCode::SUCCESS {
+        failures += 1;
+    }
     baseline_note(&root);
 
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let gate: [(&str, &[&str]); 4] = [
-        ("fmt", &["fmt", "--all", "--", "--check"]),
-        ("check", &["check", "--workspace"]),
-        ("test", &["test", "--workspace"]),
-        (
-            "clippy",
-            &[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--all-features",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        ),
-    ];
-    for (name, args) in gate {
-        if !run_tool(name, &cargo, args, &root) {
+    let gate = workspace_gate_steps();
+    for step in gate {
+        let program = if step.program == "cargo" {
+            cargo.as_str()
+        } else {
+            step.program
+        };
+        if !run_tool(step.name, program, step.args, &root) {
             failures += 1;
         }
     }
-    if root.join(".git").exists() && !run_tool("diff", "git", &["diff", "--check"], &root) {
-        failures += 1;
+    if root.join(".git").exists() {
+        let diff = diff_gate_step();
+        if !run_tool(diff.name, diff.program, diff.args, &root) {
+            failures += 1;
+        }
     }
 
+    // fixtures + docs + policy + gate steps + diff
+    let reported = gate.len() + 4;
     if failures == 0 {
         println!(
-            "verify: ok ({} checks passed in {:.1}s)",
-            gate.len() + 3,
+            "verify: ok ({reported} checks passed in {:.1}s)",
             started.elapsed().as_secs_f64()
         );
         ExitCode::SUCCESS

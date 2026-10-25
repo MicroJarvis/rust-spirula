@@ -75,16 +75,17 @@ Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架
 | P1-F03 | 取消与进度原语 | `spirula-core` | P0-F05, P1-F01 | 定义取消 token 和检查点；定义进度值与事件载荷；测试重复取消、终止和错误终态 | 定义合作式取消、进度值和事件载荷；测试重复取消和终态 | 已完成 |
 | P1-F04 | 数学、相机与场景基础类型 | `spirula-core` | P0-F04, P1-F01 | 实现向量、矩阵和四元数；实现相机投影与坐标变换；定义场景和 splat 不变量 | 实现变换、投影、坐标约定和场景不变量；与 P0 fixtures 对照 | 已完成 |
 | P1-F05 | 原子文件与 fixture harness | `spirula-io` | P0-F04, P1-F01 | 实现临时文件命名与原子替换；处理损坏和中断写入；提供可复用临时目录 fixture harness | 临时文件加原子替换；损坏、并发失败和恢复路径有测试 | 已完成 |
-| P1-F06 | workspace 基础检查 | workspace | P0-F06 | 固定 fmt/check/test/clippy 命令；固定 lint 与 feature 组合；检查 CLI 仅作入口适配 | 固化 lint、格式化、测试和本地检查命令；CLI 不含隐藏业务逻辑 | 当前 |
+| P1-F06 | workspace 基础检查 | workspace | P0-F06 | 固定 fmt/check/test/clippy 命令；固定 lint 与 feature 组合；检查 CLI 仅作入口适配 | 固化 lint、格式化、测试和本地检查命令；CLI 不含隐藏业务逻辑 | 已完成 |
 
 Phase 1 退出条件：P1-F01 至 P1-F06 通过 workspace 检查，核心契约可被后续
-IO、GPU、渲染和训练功能复用。
+IO、GPU、渲染和训练功能复用。证据见
+[`docs/phase-1/exit-report.md`](phase-1/exit-report.md)。
 
 ### Phase 2：wgpu 基础层
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter 和 backend；声明必需 feature/limit；实现无可用设备时的候选诊断 | 按 feature/limit 选择 adapter；不可用时返回可操作错误 | 未开始 |
+| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter 和 backend；声明必需 feature/limit；实现无可用设备时的候选诊断 | 按 feature/limit 选择 adapter；不可用时返回可操作错误 | 当前 |
 | P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01 | 创建 instance、adapter、device、queue；定义所有权和释放顺序；覆盖 device lost 与重建 | 定义创建、关闭、device lost 和资源所有权；覆盖失败路径 | 未开始 |
 | P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02 | 定义 buffer/texture 用途和标签；实现 staging 与同步；验证最小上传和 readback round-trip | 定义资源标签、staging、同步和 readback 契约；提供最小 round-trip | 未开始 |
 | P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F02 | 定义 WGSL 文件加载和版本；固定 bind group/uniform layout；生成可解释的 pipeline key 与编译错误 | WGSL 加载、uniform/layout、pipeline key 和编译错误可诊断 | 未开始 |
@@ -268,4 +269,8 @@ ID）已在 `spirula-core` 落地，契约补记见 `docs/phase-0/runtime-contra
 `docs/phase-1/geometry.md`。完整镜头、场景序列化和 splat 文件布局仍分别属于 P3-F01、P3-F05 和
 P3-F06。P1-F05（原子文件与 fixture harness）已在 `spirula-io` 落地，契约见
 `docs/phase-1/atomic.md`；配置文件的原子保存与迁移备份也在此完成。Checkpoint
-目录交换与完成标记仍属于 P5-F05。下一步是 P1-F06：workspace 基础检查。
+目录交换与完成标记仍属于 P5-F05。P1-F06（workspace 基础检查）已固化
+`spirula-xtask verify` 的 fmt/check/test/clippy 入口、workspace lint 继承、
+架构 path 依赖边界、声明 feature 组合与 CLI 入口适配策略，契约见
+`docs/phase-1/workspace-checks.md`，退出证据见 `docs/phase-1/exit-report.md`。
+Phase 1 已完成；下一步是 P2-F01：adapter 选择与能力协商（尚未开始实现）。

@@ -22,6 +22,14 @@ rust-version = "1.99"
 license = "GPL-3.0-or-later"
 authors = ["Spirula Studio contributors"]
 
+# Inherited by every member via `[lints] workspace = true`. Keep this set
+# narrow: deny new unsafe by default; allow only at the call site with a
+# justification (today: spirula-io Windows MoveFileExW and OsStr prefix strip).
 [workspace.lints.rust]
-unsafe_code = "warn"
+unsafe_code = "deny"
+unused_must_use = "deny"
 
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "warn"
+unimplemented = "warn"

@@ -481,6 +481,7 @@ fn publish_lock_name(file_name: &OsStr) -> OsString {
     name
 }
 
+#[allow(unsafe_code)] // remainder is a suffix of a valid encoded OsStr after a whole-OsStr prefix
 fn strip_os_prefix<'a>(value: &'a OsStr, prefix: &OsStr) -> Option<&'a OsStr> {
     let value_bytes = value.as_encoded_bytes();
     let prefix_bytes = prefix.as_encoded_bytes();
@@ -600,6 +601,7 @@ fn replace_file_platform(temporary: &Path, destination: &Path) -> io::Result<()>
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)] // Windows MoveFileExW FFI; matches AtomicFile.h replace flags
 fn replace_file_platform(temporary: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 

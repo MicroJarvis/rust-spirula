@@ -20,20 +20,25 @@ pinned commit, toolchain and build/test entry points are recorded in
 [docs/phase-0/reference-baseline.md](docs/phase-0/reference-baseline.md); set
 `SPIRULA_REFERENCE_REPO` to locate the checkout (default `../spirula-studio`).
 
-Phase 0 (reference baseline, subsystem inventory, capability matrix,
-checksummed compatibility fixtures, runtime contracts and the verification
-entry) is complete. See [docs/phase-0/README.md](docs/phase-0/README.md) and
-the recorded [exit report](docs/phase-0/exit-report.md). Verify the workspace
-and fixtures with:
+Phase 0 and Phase 1 are complete. Phase 0 evidence is in
+[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). Phase 1 evidence is
+in [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md). The single local
+verification entry is:
 
 ```bash
 cargo run -p spirula-xtask -- verify
 ```
 
-P1-F01 through P1-F04 are implemented in `spirula-core`. P1-F05 (atomic
-publish, temp harness, and config filesystem save/migration) is implemented
-in `spirula-io`; see [docs/phase-1/atomic.md](docs/phase-1/atomic.md). Full
-lenses, scene files, and splat files stay in P3. Checkpoint bundle markers
-stay in P5-F05. The next feature is P1-F06 in
-[docs/project-plan.md](docs/project-plan.md).
+That command runs fixture and document checks, workspace policy (lint
+inheritance, architecture path edges, declared feature combinations, CLI
+entry-only shape), and the fixed `fmt` / `check` / `test` / `clippy` gate on
+the host triple only. Details:
+[docs/phase-1/workspace-checks.md](docs/phase-1/workspace-checks.md).
 
+P1-F01 through P1-F04 live in `spirula-core`. P1-F05 (atomic publish, temp
+harness, config filesystem save/migration) lives in `spirula-io`; see
+[docs/phase-1/atomic.md](docs/phase-1/atomic.md). Full lenses, scene files, and
+splat files stay in P3. Checkpoint bundle markers stay in P5-F05.
+`spirula-application` stays absent until Phase 6; `spirula-cli` is an entry
+adapter only. The next feature is P2-F01 in
+[docs/project-plan.md](docs/project-plan.md).

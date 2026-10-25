@@ -110,6 +110,7 @@ refer to [fixtures.md](fixtures.md).
 | C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 进行中 |
 | C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | render quality, convergence, memory, startup, checkpoint size | P9-F02 | workspace | 未开始 |
 | C-X-05 | cross-platform adapter coverage | CI matrix | platform | report | macOS/Linux/Windows records, skip reasons | P9-F01 | `spirula-gpu` | 未开始 |
+| C-X-06 | workspace verification gate | xtask verify | checkout | pass/fail | fixed fmt/check/test/clippy + policy; host triple only | P1-F06 | workspace | 已完成 |
 
 ## Owners and phases summary
 
@@ -123,6 +124,7 @@ refer to [fixtures.md](fixtures.md).
 | `spirula-ui` | C-UI-01..06 | P6-F03..F06 |
 | `spirula-cli` | C-CLI-01..07 | P6-F02 |
 | `spirula-application` | C-APP-01..02, C-UI-07, C-X-02 | P6-F01 |
+| workspace / xtask | C-X-06 | P1-F06 |
 
 ## Gaps recorded by this matrix
 
@@ -150,6 +152,10 @@ refer to [fixtures.md](fixtures.md).
   recovery, and the temp harness. Config save/migration with `{path}.bak`
   finishes the P1-F02 filesystem contract. Checkpoint bundle schema and
   completion markers remain P5-F05, so `C-DATA-20` stays `未开始`.
+- `C-X-06` is implemented by `spirula-xtask` (P1-F06): inherited workspace
+  lints, architecture path-edge policy, declared feature combinations, CLI
+  entry-adapter checks, and the fixed host gate. Windows/cross `--target`
+  coverage remains `C-X-05` / P9-F01 and was not claimed here.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.

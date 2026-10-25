@@ -69,8 +69,10 @@ create GPU pipelines, or implement training rules.
 
 ### `spirula-cli`
 
-Argument parsing and process entry point. CLI commands call the same
-application/session services as the desktop UI.
+Argument parsing and process entry point. CLI commands will call the same
+application/session services as the desktop UI once `spirula-application`
+exists (Phase 6). Until then the crate is an entry adapter only: no path
+dependencies on IO/train/render/GPU, and no nested business modules.
 
 ## GPU strategy
 
@@ -108,7 +110,11 @@ P5-F01 and P6-F01. The primitive contract is
 [docs/phase-1/cancellation.md](phase-1/cancellation.md). P1-F04 adds the CPU
 math, pinhole projection, similarity, and splat value checks in
 [docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other lenses stay
-in P3-F01; scene files stay in P3-F05; splat files stay in P3-F06. A crate does not define
+in P3-F01; scene files stay in P3-F05; splat files stay in P3-F06. P1-F06 fixes
+the workspace verification entry, lint inheritance, architecture path-edge
+policy, and CLI entry-adapter rule in
+[docs/phase-1/workspace-checks.md](phase-1/workspace-checks.md);
+`spirula-application` remains absent until Phase 6. A crate does not define
 its own error string, event shape, or schema version; it implements the
 catalog and envelope in that document.
 

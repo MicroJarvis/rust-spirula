@@ -15,3 +15,6 @@ spirula-core = { path = "../spirula-core" }
 
 [dev-dependencies]
 spirula-core = { path = "../spirula-core" }
+
+[lints]
+workspace = true
