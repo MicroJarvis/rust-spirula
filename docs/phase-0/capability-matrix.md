@@ -37,7 +37,7 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-19 | checkpoint read | `engine/EngineCheckpoint.cpp`, `core/CheckpointIO.h` | `state.tar` + `.npy` | state blocks | ustar + NPY v1-v3; `state.json` fields and `format_version` 1 | `fixtures/checkpoints` + P3-F07 | `spirula-io` | 未开始 |
 | C-DATA-20 | checkpoint write | `EngineCheckpoint.cpp:354-390` | state blocks | `step-%09d.ckpt` | same layout; rewrite adds atomic replacement and completion marker | P5-F05 round trip | `spirula-io` | 未开始 |
 | C-DATA-21 | resume prerequisites | `checkpoint/Resume.cpp:78-140` | run dir/checkpoint | config + step | full-resume check, config.json required, scene_center legacy rule | P3-F07/P5-F05 | `spirula-io` | 未开始 |
-| C-DATA-22 | config read/write | `config/TrainConfig.h`, `config/TrainConfigJson.h` | flat JSON | typed config | flat flag keys, unknown ignored, missing defaults, no version today | P1-F02 + `fixtures/config` | `spirula-core` | 未开始 |
+| C-DATA-22 | config read/write | `config/TrainConfig.h`, `config/TrainConfigJson.h` | flat JSON | typed config | flat flag keys, unknown ignored, missing defaults, no version today | P1-F02 + `fixtures/config` | `spirula-core` | 已完成 |
 | C-DATA-23 | atomic persistence | `core/AtomicFile.h:15-23` | bytes | file replace | temp + rename; reference checkpoints are not atomic | P1-F05 (crash/corrupt tests) | `spirula-io` | 未开始 |
 | C-DATA-24 | mesh export formats | `mesh/MeshExport.h` | mesh | PLY/OBJ/glTF/GLB/STL | format set and color modes; no overwrite of input | P7-F04 round trip | `spirula-io` | 未开始 |
 
@@ -107,7 +107,7 @@ refer to [fixtures.md](fixtures.md).
 |---|---|---|---|---|---|---|---|---|
 | C-X-01 | error taxonomy | `runtime_error` everywhere; CLI text | failure | typed error | stable codes, category, retryability, context | P1-F01 | `spirula-core` | 已完成 |
 | C-X-02 | logging and diagnostics | `TrainerCore.cpp:775-779`, `Log.h` | events | text | stable message content for scripts | P6-F02/P9-F05 | `spirula-application` | 未开始 |
-| C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 未开始 |
+| C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 进行中 |
 | C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | render quality, convergence, memory, startup, checkpoint size | P9-F02 | workspace | 未开始 |
 | C-X-05 | cross-platform adapter coverage | CI matrix | platform | report | macOS/Linux/Windows records, skip reasons | P9-F01 | `spirula-gpu` | 未开始 |
 
@@ -129,9 +129,12 @@ refer to [fixtures.md](fixtures.md).
 - `C-X-01` is implemented in `spirula-core` (P1-F01): the 26-code catalog,
   categories, retryability, context keys, CLI text and exit codes. Every
   other row remains `未开始` and must be updated as those features land.
+- `C-DATA-22` is implemented in `spirula-core` (P1-F02): the 251-field
+  config table, `schema_version` 1, and legacy reads. `C-X-03` stays
+  `进行中` because checkpoint `format_version` validation is still P3-F07.
 - The reference's `config.json` and checkpoint have no validated version
-  field; `C-X-03` records the intentional divergence (add versions, keep a
-  compatibility reader).
+  field. Config now adds `schema_version` and keeps an unversioned reader.
+  Checkpoint validation is unchanged.
 - The reference has no CPU reference renderer for every stage; `C-REN-10`
   records the work the rewrite must add, not a reference feature.
 - Auxiliary pipelines (SfM, SAM, video, dense, mesh, partitioning) are listed as

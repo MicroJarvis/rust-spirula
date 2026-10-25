@@ -36,6 +36,7 @@ fn fixtures_pass_all_checks() {
     assert_eq!(
         report.checks,
         vec![
+            "config: 251-field catalog and default document",
             "camera: intrinsics, distortion and projection samples",
             "dataset: COLMAP text rows, golden values and tiny PNG",
             "scene: similarity blocks, inverse, centering, georeference and samples",

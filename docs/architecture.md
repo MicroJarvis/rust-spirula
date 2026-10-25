@@ -98,7 +98,9 @@ stable codes, command/event envelopes, the session state machine and
 cancellation, the GPU resource/shader boundary, and format versioning. They are
 recorded in [docs/phase-0/runtime-contracts.md](phase-0/runtime-contracts.md).
 P1-F01 implements that error catalog in `spirula-core` (`ErrorCode`,
-`DomainError`, context keys, CLI text and exit codes). A crate does not define
+`DomainError`, context keys, CLI text and exit codes). P1-F02 implements the
+training-config document in the same crate; filesystem backup stays in
+P1-F05. A crate does not define
 its own error string, event shape, or schema version; it implements the
 catalog and envelope in that document.
 

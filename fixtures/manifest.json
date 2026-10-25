@@ -9,6 +9,16 @@
       "sha256": "65e09b22b9958afbd9523267caaa71c57ad3c589d06635a0f1057293f6c53792"
     },
     {
+      "path": "config/catalog.json",
+      "bytes": 41905,
+      "sha256": "4dd0aaecf8dcc78bced12a60d11a6182e026b010ac167a6749f08791b4955f05"
+    },
+    {
+      "path": "config/defaults.json",
+      "bytes": 6530,
+      "sha256": "50259f7b2d854bcb681474153f727b0f95466a24a77881a49cfc33b8deb04a74"
+    },
+    {
       "path": "checkpoints/tiny-run/config.json",
       "bytes": 201,
       "sha256": "e3965610d3ccc8dc7ac458a14dc645f1e48899eab637264a8649ec27e56efbd8"

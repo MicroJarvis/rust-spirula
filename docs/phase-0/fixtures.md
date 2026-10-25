@@ -28,6 +28,7 @@ change bumps it and the affected golden schema.
 
 | fixture | files | format contract | reference |
 |---|---|---|---|
+| config | `config/catalog.json`, `config/defaults.json` | 251-field catalog and the current default document, including bare `Infinity` | `src/config/TrainConfig.h`, [../phase-1/config.md](../phase-1/config.md) |
 | camera | `camera/single_camera.json`, `golden/camera.json` | `PINHOLE`, 64x48, intrinsics `[fx, fy, cx, cy]`, OpenCV distortion row `[k1, k2, p1, p2, 0, 0, 0, 0]`; `c2w` is OpenGL (x right, y up, -Z forward); projection samples are world points and expected pixels | `src/core/CameraModel.h:21-50`, `src/data/CameraMath.h:1-42` |
 | dataset | `datasets/tiny-colmap/{cameras,images,points3D}.txt`, `datasets/tiny-colmap/images/tiny.png`, `golden/dataset.json` | COLMAP text records; one camera, one image, four points; image is a 64x48 8-bit RGB PNG | `src/data/parsers/ColmapParser.cpp:616-795` |
 | scene | `scene/scene_transform.json`, `golden/scene.json` | `format: spirula-scene-transform`, `version: 1`; centering, georeference, and both similarity blocks with every reference spelling | `src/data/SceneTransform.cpp:110-163,244-331` |

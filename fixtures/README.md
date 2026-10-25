@@ -10,6 +10,8 @@ The format contracts and compatibility notes are in
 fixtures/
   manifest.json                       # size + SHA-256 for every file below
   camera/single_camera.json           # pinhole + OpenCV distortion
+  config/catalog.json                 # all 251 training-config fields
+  config/defaults.json                # current default document
   datasets/tiny-colmap/               # COLMAP text dataset + 64x48 PNG
   scene/scene_transform.json          # every similarity spelling + georeference
   splats/tiny_splat.ply               # 3 Gaussian splats, binary little-endian

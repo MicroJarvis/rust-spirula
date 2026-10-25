@@ -64,6 +64,8 @@ pub fn default_fixture_root() -> PathBuf {
 
 const REQUIRED_FILES: &[&str] = &[
     "camera/single_camera.json",
+    "config/catalog.json",
+    "config/defaults.json",
     "datasets/tiny-colmap/cameras.txt",
     "datasets/tiny-colmap/images.txt",
     "datasets/tiny-colmap/points3D.txt",
@@ -134,6 +136,7 @@ pub fn check_fixtures(root: &Path) -> Result<FixtureReport> {
     }
 
     let checks = vec![
+        check_config(root)?,
         check_camera(root)?,
         check_dataset(root)?,
         check_scene(root)?,
@@ -152,6 +155,70 @@ pub fn check_fixtures(root: &Path) -> Result<FixtureReport> {
 // ---------------------------------------------------------------------------
 // Camera
 // ---------------------------------------------------------------------------
+
+fn check_config(root: &Path) -> Result<String> {
+    let catalog = read_json(&root.join("config/catalog.json"))?;
+    expect_str(
+        &catalog,
+        "schema",
+        "spirula-train-config-catalog",
+        "config catalog",
+    )?;
+    expect_u64(&catalog, "version", 1, "config catalog")?;
+    expect_u64(&catalog, "field_count", 251, "config catalog")?;
+    let fields = as_array(
+        get(&catalog, "fields", "config catalog")?,
+        "config catalog.fields",
+    )?;
+    if fields.len() != 251 {
+        return fail(format!(
+            "config catalog lists {} fields, expected 251",
+            fields.len()
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for (index, field) in fields.iter().enumerate() {
+        let context = format!("config catalog.fields[{index}]");
+        let name = as_str(get(field, "name", &context)?, &format!("{context}.name"))?;
+        if !names.insert(name.to_owned()) {
+            return fail(format!("{context}: duplicate field `{name}`"));
+        }
+        for key in [
+            "type",
+            "section",
+            "tier",
+            "choices",
+            "choice_kind",
+            "default_json",
+        ] {
+            as_str(get(field, key, &context)?, &format!("{context}.{key}"))?;
+        }
+        get(field, "empty_is_unset", &context)?;
+    }
+    for required in [
+        "data",
+        "num_iterations",
+        "scene_center",
+        "outlier_threshold",
+        "max_world_size",
+    ] {
+        if !names.contains(required) {
+            return fail(format!("config catalog is missing `{required}`"));
+        }
+    }
+
+    let defaults = read_text(&root.join("config/defaults.json"))?;
+    if !defaults.contains("\"schema_version\":1") || !defaults.contains("Infinity") {
+        return fail(
+            "config defaults.json must be a current document with non-finite defaults".to_owned(),
+        );
+    }
+    if defaults.matches("\"schema_version\"").count() != 1 {
+        return fail("config defaults.json must contain schema_version once".to_owned());
+    }
+
+    Ok("config: 251-field catalog and default document".to_owned())
+}
 
 fn check_camera(root: &Path) -> Result<String> {
     let camera = read_json(&root.join("camera/single_camera.json"))?;

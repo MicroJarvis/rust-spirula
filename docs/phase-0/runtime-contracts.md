@@ -387,7 +387,7 @@ errors include the label and operation (`create`, `upload`, `dispatch`,
 | fixture manifest | 1 | `schema`, `version` | unknown version rejected with `SP-FMT-003` |
 | fixture golden files | 1 | `schema`, `version` | same |
 | `scene_transform.json` | 1 | `format`, `version` | additive fields allowed; unknown version rejected |
-| run `config.json` | none today | P1-F02 adds `schema_version` | missing -> legacy defaults; unknown -> reject |
+| run `config.json` | 1 | `schema_version` | missing stays legacy; unknown rejected with `SP-FMT-003`; see [../phase-1/config.md](../phase-1/config.md) |
 | checkpoint `state.json` | 1 | `format_version` | must be validated on load from P3-F07 onward |
 | splat PLY | none | property set is the identity | reader keeps the documented property order; writer may add a comment |
 | event envelope | 1 | `event_version` | additive events/fields keep 1; removed/renamed fields bump |
