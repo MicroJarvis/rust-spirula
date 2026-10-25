@@ -1,15 +1,15 @@
-# Phase 1 exit report
+# P1-F06 verification record
 
 Recorded: 2026-10-25 13:51 CST (2026-10-25T05:51:49Z), on the development
 machine, in worktree `.worktrees/p1-f06` on branch `codex/p1-f06`. Parent tip
 before this feature was `4de9e94` (`fix(P1-F05): bind publish leases to
-destinations and backup temps`).
+destinations and backup temps`). Later merged roadmap `e548295`.
 
 ## 1. Scope and result
 
-Phase 1 is complete. P1-F01 through P1-F06 have code and/or recorded contracts,
-and the workspace gate including the new policy check passes on this host.
-Phase 2 is not started; `P2-F01` becomes the sole `当前` feature after merge.
+P1-F06 is complete: the workspace gate and policy check pass on this host.
+Phase 1 continues through P1-F09. The next feature is P1-F07 (headless
+application/session). Phase 2 stays unstarted.
 
 ## 2. Environment
 
@@ -61,5 +61,6 @@ Observed on this host (fresh verify after the P1-F06 changes):
 
 - No cross-compilation matrix was run; compile steps only pin the development
   machine’s rustc host triple.
-- `spirula-application` was not added; CLI remains a skeleton entry adapter.
+- `spirula-application` was not added; it is P1-F07 and remains unstarted.
+- Phase 1 is not finished: P1-F08 and P1-F09 are still unstarted.
 - Phase 2 GPU work (`P2-F01` onward) is unstarted.

@@ -86,7 +86,7 @@ Policy enforces **dependency** shape for `spirula-cli`: only
 `spirula-core` and `spirula-application` are allowed workspace edges. It does
 **not** AST-scan `main.rs` for business logic (`std::fs`, inline training, and
 similar would not be detected). The current `main.rs` is a documented skeleton
-placeholder until Phase 6 wires application commands; keep business orchestration
+placeholder until P1-F09 wires application commands; keep business orchestration
 out of this crate by convention and review, not by substring bans.
 
 ## Commands

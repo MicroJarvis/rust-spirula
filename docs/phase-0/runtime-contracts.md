@@ -7,10 +7,14 @@ is recorded in [subsystem-inventory.md](subsystem-inventory.md); intentional
 divergences are listed in section 9.
 
 The contracts are language-neutral here. P1-F01 (errors), P1-F03
-(cancellation/progress), P2-F05 (GPU errors), P5-F01 (session) and P6-F01
-(application service) implement them in Rust. A contract change requires
+(cancellation/progress), P1-F07 (application owner), P2-F05 (GPU errors),
+P5-F01 (training worker) and P6-F01 (full application integration) implement
+them in Rust. A contract change requires
 updating this document, the capability matrix and the affected implementation
-in the same feature.
+in the same feature. The 2026-10-25 planning revision clarifies prospective
+event delivery, GPU wrappers and full-resume semantics before these services
+exist; P1-F01/P1-F03 primitives and persisted formats are unchanged. See
+[development gates](../development-gates.md).
 
 ## 1. Error model
 
@@ -171,8 +175,10 @@ CommandPayload =
 
 Rules:
 
-- commands enter through one bounded channel; the session is the only writer
-  of its state;
+- normal commands enter through one bounded channel; the application session
+  is the only writer of its state. Stop/Shutdown also signal an independent
+  idempotent control mailbox/cancel token so a full work queue cannot prevent
+  cancellation; the owner still records admission and terminal outcomes;
 - an accepted command returns `CommandAccepted { id }`, a rejected one returns
   `CommandRejected { id, error }`; the caller never blocks on the work itself;
 - at most one mutating command is in flight; a second one is rejected as
@@ -186,7 +192,8 @@ Rules:
 EventEnvelope {
   event_version: 1,
   session_id: SessionId,
-  seq: u64,                 // strictly increasing per session, no gaps
+  run_id: Option<RunId>,    // active operation generation; absent for session events
+  seq: u64,                 // source order; delivered streams may have gaps
   command_id: Option<CommandId>,
   monotonic_ms: u64,        // display only
   event: Event,
@@ -208,21 +215,42 @@ Event =
   | ShutdownComplete
 ```
 
-Ordering and delivery guarantees:
+Ordering and delivery guarantees (implemented first in P1-F07):
 
-- `seq` is strictly increasing per session with no gaps; state changes,
-  warnings, `Completed`, `Failed` and `ShutdownComplete` are never dropped;
-- every accepted command receives exactly one terminal event
-  (`Completed`, `ShutdownComplete`, or a command-specific terminal event) with
-  the same `command_id`;
-- `Progress` and `Log` are latest-wins under backpressure: the application may
-  coalesce/drop them, but must emit at least one heartbeat per second while
-  active and a final progress before completion;
-- when a bounded subscriber queue is full, state/terminal events block the
-  producer; progress/log drop with one `Warning` carrying the drop count;
-- after `ShutdownComplete` there are no more events and the channel closes;
-- an event consumer that falls behind does not stall GPU work; the UI reads the
-  latest snapshot plus the event stream.
+- the single application publisher assigns strictly increasing `seq` before
+  coalescing/fanout. Delivered streams may have gaps due to dropped progress/log
+  or an expired replay window; sequence numbers are never reused. Consumers
+  also validate session/run identity to reject stale worker updates;
+- every accepted command produces exactly one canonical terminal event with
+  its `command_id` (`Completed`, `ShutdownComplete`, or a command-specific
+  terminal event). `Failed` is a `RunOutcome`, not a separate Event variant;
+- state/warning/command/terminal events enter a bounded control history before
+  subscriber notification. History capacity, byte limits and retention policy
+  are explicit; slow subscribers do not pin it or block the worker. A cursor
+  older than retained history receives an explicit resync-required response,
+  latest snapshot and retained terminal outcomes, never a fabricated complete
+  history. Querying an expired command result reports expiration explicitly;
+- snapshots carry the latest source `seq`, current state, active command/run,
+  last outcome and drop counters. Subscribe/replay and snapshot cursors use a
+  common boundary, so reconnect cannot apply older state over newer state;
+- `Progress` and `Log` are latest-wins with bounded item/byte sizes. The
+  publisher provides at least one heartbeat per second while active and
+  publishes final progress before completion; delivery to a slow UI can
+  coalesce these. Drops update counters and coalesce one warning summary;
+- GPU/CPU workers publish replaceable progress snapshots and one terminal
+  result per active operation through a separate result mailbox. They never
+  await a subscriber or log sink. Application notification/log tasks handle
+  bounded fanout, bounded in-memory tails and rotated disk diagnostics;
+  logging failure has a declared warning/failure policy, not unbounded growth;
+- Stop/Shutdown and terminal publication remain responsive when normal command,
+  progress and subscriber queues are full. Test this with stalled consumers;
+- `ShutdownComplete` is the last canonical event, after which notification
+  channels close. Retained snapshots/history remain queryable until the
+  application service is dropped.
+
+No existing event-envelope consumer is implemented. `event_version` stays 1
+for its first implementation; after publication, changing delivery semantics
+requires a documented compatibility review as well as field versioning.
 
 `RunOutcome`:
 
@@ -315,7 +343,8 @@ CancelReason = User | Shutdown | Timeout | Superseded
 ### 5.1 P1-F03 binding decisions
 
 `spirula-core` implements the token and the progress/terminal payloads.
-Session loops, channels, SIGINT, and checkpoint files stay later. Details
+Session loops/channels start in P1-F07, CLI SIGINT in P1-F09, and checkpoint
+files in P5-F05. Details
 are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
 
 - The token is cloneable and shared. One atomic word stores the first
@@ -343,12 +372,19 @@ are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
 - `spirula-gpu` is the only crate that names `wgpu` types in public APIs.
   `spirula-render` and `spirula-train` use opaque handles
   (`DeviceHandle`, `BufferHandle`, `TextureHandle`, `PipelineHandle`,
-  `SubmissionHandle`) and value types (layouts, usage flags, labels);
+  `SubmissionHandle`) and value types (layouts, usage flags, labels). These are
+  narrow typed wrappers proven by P2-F03/P2-F04 and P4-F02, not a parallel
+  general-purpose wgpu API. Resource identity includes context/generation;
+  cross-context and stale-generation use is rejected before submission;
 - a session owns one GPU context; no global device singleton (reference
   deviation). Context creation happens in the session worker, never on the UI
   thread;
 - GPU work is submitted through the context; readback and sync are explicit;
-- the UI never creates, uploads, or reads GPU resources.
+- the UI never creates, uploads, or reads GPU resources. P6-F07 validates
+  Slint presentation via application-owned image/opaque presentation values;
+  shared-texture or readback fallback, per-frame copies and synchronization are
+  measured before the full UI. No `wgpu` types cross into UI/core. Any boundary
+  change must first update this contract and architecture together.
 
 ### 6.2 Resource labels and lifetime
 
@@ -367,7 +403,12 @@ errors include the label and operation (`create`, `upload`, `dispatch`,
 - `engine reset` semantics become "drop the scene GPU resources and keep the
   device", with an explicit `close` for the context;
 - a device-lost error does not allow further use of existing handles;
-  recreation starts from scratch.
+  recreation starts with a new generation. In-flight drops and resource
+  sharing are tested rather than inferred from handle indirection;
+- resource budgets include staging, in-flight work, sort/bin scratch, saved
+  forward state and optimizer buffers. Reserve/check before allocation or
+  growth and report requested/current/budget bytes. Accounted allocations and
+  device-wide measured memory are separate metrics (P1-F08 onward).
 
 ### 6.3 Submission, synchronization and readback
 
@@ -382,8 +423,8 @@ errors include the label and operation (`create`, `upload`, `dispatch`,
   requested size, current usage and label;
 - device loss marks the context lost, fails in-flight submissions with
   `SP-GPU-002`, and emits a diagnostic event. Automatic recreation and
-  checkpoint reload are a session policy (P2-F02), not hidden inside the
-  backend;
+  checkpoint reload are application-owner policy (P1-F07/P2-F02, completed
+  with P5-F05), not hidden inside the backend;
 - a stall watchdog (reference: 60 s) reports `SP-GPU-002` with the last
   submitted label.
 
@@ -433,10 +474,34 @@ Rules:
 - `config.json` readers accept unversioned legacy files indefinitely until a
   later feature records a deprecation date.
 
+### 7.1 Full training resume and bundle publication
+
+P3-F07 classifies model-only initialization versus resumable training. PLY
+alone does not contain optimizer/sampler state. P5-F05 depends on P5-F02 and
+P5-F03 and records model, Adam moments/counts, step/schedules, RNG/sampler,
+refinement state, dataset/split identity, resolved-plan digest and capability
+requirements. Unsupported/missing state cannot silently initialize a fresh
+optimizer and report full resume.
+
+Publication uses immutable generations: sync blocks → validated hashed
+manifest → completion marker → publish generation → atomically replace current
+pointer → platform directory sync. P1-F05 supplies file primitives; it does
+not already implement this multi-file protocol. Readers ignore incomplete
+generations; prior complete generations and legacy readers are preserved.
+All publication boundaries need failure injection, including post-publish
+durability failures. Rust extension metadata and reference-compatible export
+must be documented separately; old files are not silently rewritten.
+
+P5-F07 compares uninterrupted `N+M` against `N`→save→new process→`M`, checking
+parameters, optimizer, sampling and metrics under declared exact/tolerance
+semantics. Details and required state are in
+[development gates](../development-gates.md).
+
 ## 8. Cross-entry consistency
 
 - CLI and UI are adapters over the same `spirula-application` session commands
-  and events (P6-F01). Neither implements training, IO or GPU logic.
+  and events (P1-F07/P1-F09 early, P6-F01 full integration). Neither implements
+  training, IO or GPU logic.
 - The CLI maps events to text; the UI maps them to widgets. Both print the
   same `code`, `message` and terminal outcome for the same fixture run.
 - The session owns the dataset, engine/GPU context, checkpoint writes and
@@ -469,11 +534,13 @@ a row above explicitly changes them.
 |---|---|---|
 | error catalog/display/exit codes | P1-F01 | code snapshot, category/retryable, CLI text and exit table |
 | cancellation idempotency and terminal outcome | P1-F03 | repeated request, cancel before start, cancel during load/train/save |
-| command/event ordering and bounded channel | P6-F01 | exactly one terminal event, monotonic seq, backpressure drop rules |
-| state machine | P5-F01 | transition table driven test, invalid-command rejection |
+| command/event ordering and bounded delivery | P1-F07/P6-F01 | one canonical terminal, source seq gaps, snapshot/replay resync, stopped consumers, bounded logs and responsive cancellation |
+| application state machine / training worker | P1-F07/P5-F01 | owner transition table, invalid-command rejection, stale run updates, step boundaries |
 | GPU error mapping and labels | P2-F05 | injected submit failure, OOM, device-lost/stall |
 | shader and pipeline key | P2-F04 | compile error carries file/line; layout/version changes create a new key |
 | version rejection/migration | P1-F02/P3-F07 | legacy config accepted, unknown version rejected, backup preserved |
+| full checkpoint resume | P5-F05/P5-F07 | publication fault injection, full state/digest checks, new-process N+M comparison |
+| executable configuration | P5-F08 | unsupported/range/capability errors, canonical resolved digest; compatibility reader unchanged |
 | CLI/UI parity | P6-F06 | same fixture, same state/error/terminal outcome |
 
 Contract text is checked for internal consistency (every referenced code is in

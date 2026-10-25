@@ -17,5 +17,8 @@ path = "src/main.rs"
 serde_json.workspace = true
 spirula-io = { path = "../../crates/spirula-io" }
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

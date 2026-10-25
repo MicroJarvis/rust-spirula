@@ -3,7 +3,8 @@
 `spirula-core` owns a cooperative cancel token and typed progress/terminal
 payloads. It does not run a session, open a channel, or touch the filesystem.
 Session checkpoints, save-on-cancel, SIGINT, and event envelopes stay with
-P5-F01 and P6-F01.
+P1-F07/P1-F09 (early application/CLI), P5-F01 (training scheduling),
+P5-F05/P5-F06 (checkpoint/save-on-cancel), and P6-F01 (full integration).
 
 ## Reference behavior
 

@@ -6,8 +6,10 @@ method, owner crate and current state. "Owner" is the Rust crate that must
 implement the capability, not the crate that merely consumes it.
 
 States: `未开始` (no Rust implementation), `进行中`, `已完成`, `阻塞`. All
-rows are `未开始` as of Phase 0; the target feature in the verification column
-is the point at which the row is expected to become `已完成`.
+rows began as `未开始` in Phase 0; subsequent implementations are recorded
+below. The target feature in the verification column is the completion gate.
+The 2026-10-25 prospective additions follow [development gates](../development-gates.md)
+and remain `未开始`.
 
 Reference citations are `path:line` in the reference checkout. Fixture names
 refer to [fixtures.md](fixtures.md).
@@ -35,11 +37,13 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-17 | seed point cloud PLY | `NerfstudioParser.cpp:235-276` | PLY | points + RGB | requires x/y/z + RGB, ascii/BE; double coordinates | `fixtures/splats/points.ply` + P3-F05 | `spirula-io` | 未开始 |
 | C-DATA-18 | splat PLY read/write | `checkpoint/SplatPly.cpp` | PLY | splat scene | property order/raw meaning; ASCII read, binary LE write | `fixtures/splats/tiny_splat.ply` + P3-F06 | `spirula-io` | 未开始 |
 | C-DATA-19 | checkpoint read | `engine/EngineCheckpoint.cpp`, `core/CheckpointIO.h` | `state.tar` + `.npy` | state blocks | ustar + NPY v1-v3; `state.json` fields and `format_version` 1 | `fixtures/checkpoints` + P3-F07 | `spirula-io` | 未开始 |
-| C-DATA-20 | checkpoint write | `EngineCheckpoint.cpp:354-390` | state blocks | `step-%09d.ckpt` | same layout; rewrite adds atomic replacement and completion marker | P5-F05 round trip | `spirula-io` | 未开始 |
-| C-DATA-21 | resume prerequisites | `checkpoint/Resume.cpp:78-140` | run dir/checkpoint | config + step | full-resume check, config.json required, scene_center legacy rule | P3-F07/P5-F05 | `spirula-io` | 未开始 |
+| C-DATA-20 | checkpoint write | `EngineCheckpoint.cpp:354-390` | state blocks | `step-%09d.ckpt` | same layout; rewrite adds atomic replacement and completion marker | P5-F05 fault injection + P5-F07 new-process resume | `spirula-io` | 未开始 |
+| C-DATA-21 | resume prerequisites | `checkpoint/Resume.cpp:78-140` | run dir/checkpoint | config + step | classify model-only/full resume; full state/dataset/plan required; retain scene_center legacy rule | P3-F07/P5-F05 | `spirula-io` | 未开始 |
 | C-DATA-22 | config read/write | `config/TrainConfig.h`, `config/TrainConfigJson.h` | flat JSON | typed config | flat flag keys, unknown ignored, missing defaults, no version today | P1-F02 + `fixtures/config` | `spirula-core` | 已完成 |
 | C-DATA-23 | atomic persistence | `core/AtomicFile.h:15-23` | bytes | file replace | temp + rename; reference checkpoints are not atomic | P1-F05 (crash/corrupt tests) | `spirula-io` | 已完成 |
 | C-DATA-24 | mesh export formats | `mesh/MeshExport.h` | mesh | PLY/OBJ/glTF/GLB/STL | format set and color modes; no overwrite of input | P7-F04 round trip | `spirula-io` | 未开始 |
+| C-DATA-25 | bounded training batch loader | `data/DataManager.cpp`; Brush `brush-dataset/scene_loader.rs` as secondary design reference | images + sampling state | ordered batches/cache | no new runtime dependency; bounded decode/prefetch/cache bytes | P3-F08 budget/cancel/order tests | `spirula-io` | 未开始 |
+| C-DATA-26 | edited splat view and chunked export | `checkpoint/SplatPly.cpp`; OOOSplat export view as secondary design reference | selection/transform + model | PLY chunks | preserve reference coordinates/raw attributes; explicit compression memory limits | P7-F07 independent readback | `spirula-io` | 未开始 |
 
 ## Rendering and GPU
 
@@ -53,8 +57,12 @@ refer to [fixtures.md](fixtures.md).
 | C-REN-06 | rasterize and composite | `kernels/raster/RasterizationEval3DFwd_kernel.cuh:234-325` | sorted pairs | RGB, T, depth | front-to-back, early-out 1e-4, ray depth | P4-F05 golden image | `spirula-render` | 未开始 |
 | C-REN-07 | depth and median depth | `RasterizationEval3DFwd_kernel.cuh:262-322` | sorted pairs | depth buffers | expected ray depth; median via log-space 1/2 crossing | P4-F05 tolerance | `spirula-render` | 未开始 |
 | C-REN-08 | appearance chain | `EngineForward.cpp:478-489` | rendered RGB | final RGB | background, PPISP, color space, bilateral grid in fixed order | P4-F05 golden | `spirula-render` | 未开始 |
-| C-REN-09 | readback and preview | `EngineQuery.cpp:50-118`, `Engine.h:620-657` | GPU buffers | host image | f16 expanded on host; viewer blit to uint8 | P4-F06 headless preview | `spirula-render`/`spirula-gpu` | 未开始 |
+| C-REN-09 | readback and preview | `EngineQuery.cpp:50-118`, `Engine.h:620-657` | GPU buffers | host image | f16 expanded on host; viewer blit to uint8 | P4-F06 application/CLI preview | `spirula-render`/`spirula-gpu` | 未开始 |
 | C-REN-10 | CPU reference renderer | (new; reference parity tools) | scene + camera | image + tolerance | each GPU stage has CPU reference or deterministic fixture | P4-F01/P4-F03 | `spirula-render` | 未开始 |
+| C-REN-11 | training forward saved state | `engine/EngineForward.cpp`, `kernels/raster/*` | scene/camera | float image + indexed intermediates | explicit saved/recomputed layout, lifetime and budget | P4-F07 forward parity | `spirula-render` | 未开始 |
+| C-REN-12 | raster/compositing VJP | `kernels/raster/*`, `engine/EngineLoss.cpp` | image gradient + forward state | projected gradients | production thresholds recorded; smooth numerical probes separate | P4-F08 finite differences | `spirula-render` | 未开始 |
+| C-REN-13 | projection/covariance/SH VJP | `kernels/projection/*`, `engine/EngineForward.cpp` | projected gradients + parameters | 3D/quat/scale/SH/opacity gradients | parameterization and viewdir-to-mean chain explicit | P4-F09 parameter-wise checks | `spirula-render` | 未开始 |
+| C-REN-14 | gradient aggregation/refinement stats | reference backward families; Brush `brush-render/bwd` as secondary design reference | tile/visible gradients | full gradients + stats | capability-aware CAS/reduction, finite values and mapped indices | P4-F10 end-to-end backward | `spirula-render`/`spirula-gpu` | 未开始 |
 | C-GPU-01 | adapter selection and limits | `backend/api/BackendRuntime.h`, `backend/vulkan/VulkanContext.h:44-46` | requested features | adapter + capabilities | score discrete > integrated > other, VRAM tie-break | P2-F01 headless | `spirula-gpu` | 未开始 |
 | C-GPU-02 | device/queue lifecycle | `backend/vulkan/VulkanContext.cpp`, `EngineState.cpp` | process | context | one compute queue; reset frees all memory | P2-F02 device-lost test | `spirula-gpu` | 未开始 |
 | C-GPU-03 | buffer/texture/readback | `backend/api/BackendRuntime.h:1-140` | bytes/images | GPU + back | staging, sync, pinned memory; labels | P2-F03 round trip | `spirula-gpu` | 未开始 |
@@ -66,7 +74,7 @@ refer to [fixtures.md](fixtures.md).
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
-| C-TRN-01 | session phases and scheduling | `TrainerCore.cpp:1227-1893` | config + dataset | events + checkpoint | loading/ready/training/evaluating/done/failed | P5-F01 state-machine tests | `spirula-train` | 未开始 |
+| C-TRN-01 | training worker and scheduling | `TrainerCore.cpp:1227-1893` | config + dataset | events + checkpoint | loading/ready/training/evaluating/done/failed | P1-F07 application owner + P5-F01 step tests | `spirula-train` | 未开始 |
 | C-TRN-02 | per-pixel loss | `EngineLoss.cpp:929-963` | render + GT | loss dict | L1/L2/YUV, SSIM/FLIP/DeltaE, depth/normal/alpha, regularizers | P5-F02 micro fixture | `spirula-train` | 未开始 |
 | C-TRN-03 | optimizer | `EngineOptim.cpp:667,768`, `TrainerCore.cpp:182-192` | gradients | updated state | Adam beta/eps, scheduled LR + warmup, fused path optional | P5-F02 determinism test | `spirula-train` | 未开始 |
 | C-TRN-04 | densification/pruning | `EngineConfig.h:209-290`, `EngineDensify.cpp:156` | step + stats | grown/pruned set | schedules, caps, opacity floor, relocation | P5-F03 reproducibility | `spirula-train` | 未开始 |
@@ -74,18 +82,20 @@ refer to [fixtures.md](fixtures.md).
 | C-TRN-06 | progress events | `TrainerCore.h:178-186,219-227` | step | typed event | step/latency/splats/metrics, called outside engine lock | P5-F04/P6-F01 | `spirula-train` | 未开始 |
 | C-TRN-07 | stop/pause/save-on-stop | `TrainerCore.h:270-280`, `TrainerCore.cpp:1764-1893` | command | final checkpoint | cooperative stop at step boundary, 130 on SIGINT | P5-F06 cancellation tests | `spirula-train` | 未开始 |
 | C-TRN-08 | divergence detection | `TrainerCore.cpp:1644-1660` | loss/latency | warning event | non-finite or `rgb_loss > 1e3` logged once | P5-F06 | `spirula-train` | 未开始 |
+| C-TRN-09 | validated executable TrainPlan | (new; reference config compatibility retained) | legacy config + dataset/GPU capabilities | resolved plan + digest | unsupported options fail; config acceptance is not execution support | P5-F08 validation/digest tests | `spirula-train`/`spirula-application` | 未开始 |
 
 ## UI
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
 | C-UI-01 | window and screen navigation | `gui/GuiApp.h:120`, `GuiApp.cpp:3329-3334` | commands | screens | Home/NewDataset/Train/Viewer/Batch/Mesh | P6-F03 Slint behavior test | `spirula-ui` | 未开始 |
-| C-UI-02 | config editor and validation | `gui/ConfigUI.h`, `config/TrainConfig.h` | config table | edited config | tiers/basic/advanced/expert and translated labels | P6-F03 | `spirula-ui` | 未开始 |
+| C-UI-02 | config editor and validation | `gui/ConfigUI.h`, `config/TrainConfig.h` | config table | edited config | tiers/basic/advanced/expert and translated labels | P5-F08/P6-F03 supported-capability checks | `spirula-ui` | 未开始 |
 | C-UI-03 | dataset load and preview | `gui/GuiApp.cpp:8605-9271`, `EngineDataManager.cpp:581` | dataset path | preview | loads through application/session; no direct IO/GPU | P6-F04 | `spirula-ui` | 未开始 |
 | C-UI-04 | training start/stop/resume | `gui/TrainRunner.cpp:124-149`, `GuiApp.cpp:11598-11606` | commands | status + metrics | same session as CLI; stop may save | P6-F05 | `spirula-ui` | 未开始 |
 | C-UI-05 | log and error feedback | `gui/GuiApp.cpp:10696-10699`, `TrainRunner.cpp:160-180` | events | log panel/modal | raw error text plus typed code; retry on data errors | P6-F03/P6-F06 | `spirula-ui` | 未开始 |
 | C-UI-06 | GUI automation surface | `gui/Automation.cpp:734-746` | HTTP/UI events | state/tree/screenshot | loopback, off by default | P6-F06 (optional) | `spirula-ui` | 未开始 |
 | C-UI-07 | shared session with CLI | `GuiApp.cpp:1391-1410` | application API | same events | CLI and UI submit the same commands | P6-F06 parity test | `spirula-application` | 未开始 |
+| C-UI-08 | measured Slint presentation path | (new; reference viewer blit is behavior input) | application image/opaque presentation | displayed frame | no public wgpu in UI; shared/readback fallback cost recorded | P6-F07 copies/latency/lifetime | `spirula-ui`/`spirula-application`/`spirula-gpu` | 未开始 |
 
 ## CLI and application
 
@@ -98,8 +108,8 @@ refer to [fixtures.md](fixtures.md).
 | C-CLI-05 | device selection flag | `cli/main.cpp:287-349` | index/name/uuid/auto | device | prints a table, warns on known-bad devices | P6-F02/P2-F01 | `spirula-cli`/`spirula-gpu` | 未开始 |
 | C-CLI-06 | resume command | `cli/main.cpp:539-542`, `checkpoint/Resume.h` | run dir/checkpoint | resumed session | explicit flags override checkpoint config | P6-F02/P5-F05 | `spirula-cli` | 未开始 |
 | C-CLI-07 | subcommands other than train | `Main.cpp:71-106`, `Tools.h:52-62` | argv | tool output | sfm/sam/mesh/geometry/dense/e57/lidar/partition/encode later | P8/P7 target features | `spirula-cli` | 未开始 |
-| C-APP-01 | command/event session API | (new; reference is `TrainerSession` + GUI worker) | commands | events | bounded channel, typed events, one owner | P6-F01 | `spirula-application` | 未开始 |
-| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中 |
+| C-APP-01 | command/event session API | (new; reference is `TrainerSession` + GUI worker) | commands | events | one application owner, bounded history/snapshots, source seq gaps and resync | P1-F07/P6-F01 | `spirula-application` | 未开始 |
+| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P1-F07/P1-F09/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中 |
 
 ## Cross-cutting
 
@@ -108,35 +118,37 @@ refer to [fixtures.md](fixtures.md).
 | C-X-01 | error taxonomy | `runtime_error` everywhere; CLI text | failure | typed error | stable codes, category, retryability, context | P1-F01 | `spirula-core` | 已完成 |
 | C-X-02 | logging and diagnostics | `TrainerCore.cpp:775-779`, `Log.h` | events | text | stable message content for scripts | P6-F02/P9-F05 | `spirula-application` | 未开始 |
 | C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 进行中 |
-| C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | render quality, convergence, memory, startup, checkpoint size | P9-F02 | workspace | 未开始 |
+| C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | per-slice resource/time records, quality/convergence and resume | P1-F08/P9-F02 | workspace | 未开始 |
 | C-X-05 | cross-platform adapter coverage | CI matrix | platform | report | macOS/Linux/Windows records, skip reasons | P9-F01 | `spirula-gpu` | 未开始 |
-| C-X-06 | workspace verification gate | xtask verify | checkout | pass/fail | fixed fmt/check/test/clippy + policy; host triple only | P1-F06 | workspace | 已完成 |
+| C-X-06 | minimal CLI package | (new) | clean checkout | isolated runnable package | CLI/GPU smoke early, real preview/train samples added later | P2-F07/P4-F06/P5-F07 | workspace/CI | 未开始 |
+| C-X-07 | pinned tool/process management | reference auxiliary commands; OOOSplat engine/process policies as secondary reference | versioned runtime artifact/request | verified installation + validated output | existing stack rules remain; bounded logs, process-tree cancel and rollback | P8-F07 isolated tests + platform acceptance | `spirula-io`/`spirula-application` | 未开始 |
 
 ## Owners and phases summary
 
 | owner crate | capability IDs | first target phase |
 |---|---|---|
 | `spirula-core` | C-DATA-11..16, C-DATA-22, C-CLI-02, C-APP-02, C-X-01, C-X-03 | P1-F01, P3-F01 |
-| `spirula-io` | C-DATA-01..10, C-DATA-17..24, C-X-03 | P1-F05, P3-F02..F07 |
-| `spirula-gpu` | C-GPU-01..06, C-CLI-05, C-X-05 | P2-F01..F06 |
-| `spirula-render` | C-REN-01..10 | P4-F01..F06 |
-| `spirula-train` | C-TRN-01..08 | P5-F01..F07 |
-| `spirula-ui` | C-UI-01..06 | P6-F03..F06 |
-| `spirula-cli` | C-CLI-01..07 | P6-F02 |
-| `spirula-application` | C-APP-01..02, C-UI-07, C-X-02 | P6-F01 |
-| workspace / xtask | C-X-06 | P1-F06 |
+| `spirula-io` | C-DATA-01..10, C-DATA-17..26, C-X-03, C-X-07 | P1-F05, P3-F02..F07 |
+| `spirula-gpu` | C-GPU-01..06, C-REN-14, C-UI-08, C-CLI-05, C-X-05 | P2-F01..F06 |
+| `spirula-render` | C-REN-01..14 | P4-F01..F10 |
+| `spirula-train` | C-TRN-01..09 | P5-F08 validation first, P5-F01..F07 |
+| `spirula-ui` | C-UI-01..06, C-UI-08 | P6-F07 early, P6-F03..F06 |
+| `spirula-cli` | C-CLI-01..07 | P1-F09 early, P6-F02 |
+| `spirula-application` | C-APP-01..02, C-TRN-09, C-UI-07..08, C-X-02, C-X-07 | P1-F07 early, P6-F01 |
+| workspace/CI | C-X-04, C-X-06 | P1-F08/P2-F07 early, P9-F02/P9-F04 |
 
 ## Gaps recorded by this matrix
 
 - `C-X-01` is implemented in `spirula-core` (P1-F01): the 26-code catalog,
-  categories, retryability, context keys, CLI text and exit codes. Every
-  other row remains `未开始` and must be updated as those features land.
+  categories, retryability, context keys, CLI text and exit codes. Other
+  implementations and pending portions are recorded below.
 - `C-DATA-22` is implemented in `spirula-core` (P1-F02): the 251-field
   config table, `schema_version` 1, and legacy reads. `C-X-03` stays
   `进行中` because checkpoint `format_version` validation is still P3-F07.
 - `C-APP-02` has the core token and progress/terminal payloads (P1-F03).
-  Session checkpoints, channels, and CLI/UI cancellation remain P5-F06 and
-  P6-F01, so the row stays `进行中`.
+  Application channels/cancellation start in P1-F07/P1-F09; actual training
+  checkpoints and complete UI integration remain P5-F06/P6-F01, so the row
+  stays `进行中`.
 - `C-DATA-14` has the P0 pinhole path: OpenGL `c2w`, OpenCV `k1 k2 p1 p2`,
   and behind-camera rejection (P1-F04). Fisheye, equisolid, equirectangular,
   thin-prism, and ray generation stay in P3-F01, so the row stays `进行中`.
@@ -152,11 +164,11 @@ refer to [fixtures.md](fixtures.md).
   recovery, and the temp harness. Config save/migration with `{path}.bak`
   finishes the P1-F02 filesystem contract. Checkpoint bundle schema and
   completion markers remain P5-F05, so `C-DATA-20` stays `未开始`.
-- `C-X-06` is implemented by `spirula-xtask` (P1-F06): inherited workspace
-  lints, architecture path-edge policy, declared feature combinations, CLI
-  entry-adapter checks, and the fixed gate with compile steps pinned to the
-  rustc host via `--target`. Multi-platform/`--target` matrices remain
-  `C-X-05` / P9-F01.
+- The workspace verify gate is implemented by `spirula-xtask` (P1-F06):
+  inherited lints, architecture edges, declared feature combinations, and
+  compile steps pinned to the rustc host via `--target`. That gate is not
+  `C-X-06` (minimal CLI package, still `未开始`). Multi-platform matrices
+  remain `C-X-05` / P9-F01.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.
@@ -164,4 +176,10 @@ refer to [fixtures.md](fixtures.md).
   records the work the rewrite must add, not a reference feature.
 - Auxiliary pipelines (SfM, SAM, video, dense, mesh, partitioning) are listed as
   `C-CLI-07` only at their entry boundary; they get their own matrix rows
-  when Phase 7/8 starts, so this table does not overstate coverage.
+  when Phase 7/8 starts; C-X-07 now separately tracks their shared tool/process
+  foundation, not completed SfM/video algorithms.
+
+- The new saved-state/VJP/aggregation rows remain unimplemented; existing CPU
+  math/config/atomic tests do not validate GPU training. Per-stage budgets,
+  initial CLI packages, presentation costs and full-resume tests are target
+  gates in [development-gates.md](../development-gates.md), not completed evidence.

@@ -20,9 +20,10 @@ pinned commit, toolchain and build/test entry points are recorded in
 [docs/phase-0/reference-baseline.md](docs/phase-0/reference-baseline.md); set
 `SPIRULA_REFERENCE_REPO` to locate the checkout (default `../spirula-studio`).
 
-Phase 0 and Phase 1 are complete. Phase 0 evidence is in
-[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). Phase 1 evidence is
-in [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md). The single local
+Phase 0 is complete. Phase 1 runs through P1-F09; P1-F01–P1-F06 are done and
+P1-F07 is next. Phase 0 evidence is in
+[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). The P1-F06 record is
+[docs/phase-1/exit-report.md](docs/phase-1/exit-report.md). The single local
 verification entry is:
 
 ```bash
@@ -39,6 +40,13 @@ P1-F01 through P1-F04 live in `spirula-core`. P1-F05 (atomic publish, temp
 harness, config filesystem save/migration) lives in `spirula-io`; see
 [docs/phase-1/atomic.md](docs/phase-1/atomic.md). Full lenses, scene files, and
 splat files stay in P3. Checkpoint bundle markers stay in P5-F05.
-`spirula-application` stays absent until Phase 6; `spirula-cli` is an entry
-adapter only. The next feature is P2-F01 in
-[docs/project-plan.md](docs/project-plan.md).
+`spirula-application` is planned at P1-F07; `spirula-cli` stays an entry
+adapter until that session exists. The next feature is P1-F07 in
+[docs/project-plan.md](docs/project-plan.md). Phase 2 has not started.
+
+The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
+planned early session/CLI delivery, differentiable rendering, resource budgets,
+validated execution plans, full-state resume and packaging. Detailed acceptance
+is indexed in [development gates](docs/development-gates.md). These are pending
+features; the implementation status above remains authoritative. Brush is an
+offline reference and does not change the Rust/Slint/wgpu/WGSL runtime stack.

@@ -46,9 +46,8 @@ struct DepRef {
 
 /// Target-architecture allowed **workspace** path edges.
 ///
-/// Unused edges are fine (skeleton crates). Planned crates such as
-/// `spirula-application` are listed so they validate when added; they are not
-/// banned until Phase 6.
+/// Unused edges are fine (skeleton crates). `spirula-application` is allowed
+/// when P1-F07 adds it; edges are validated, not banned.
 fn allowed_workspace_deps(crate_name: &str) -> Option<&'static [&'static str]> {
     Some(match crate_name {
         "spirula-core" => &[],
@@ -70,6 +69,24 @@ fn allowed_workspace_deps(crate_name: &str) -> Option<&'static [&'static str]> {
         "spirula-xtask" => &["spirula-io", "spirula-core"],
         _ => return None,
     })
+}
+
+/// Crates that must not take a GPU runtime package directly (any kind, any alias).
+fn forbids_direct_gpu(crate_name: &str) -> bool {
+    matches!(
+        crate_name,
+        "spirula-core"
+            | "spirula-io"
+            | "spirula-ui"
+            | "spirula-cli"
+            | "spirula-application"
+            | "spirula-xtask"
+    )
+}
+
+/// Package identity for a direct GPU stack crate. Renames do not change this.
+fn is_direct_gpu_package(name: &str) -> bool {
+    name == "wgpu" || name.starts_with("wgpu-")
 }
 
 /// External crates that `spirula-core` must never take (normal/dev/build).
@@ -160,6 +177,11 @@ fn validate_member_dependencies(
 
     for dep in deps {
         let label = dep_label(dep);
+        if forbids_direct_gpu(crate_name) && is_direct_gpu_package(&dep.name) {
+            return Err(format!(
+                "{crate_name} must not depend on direct GPU package {label}; wgpu stays in spirula-gpu"
+            ));
+        }
 
         if dep.is_path {
             // Path deps are local packages: must be known workspace members and
@@ -600,6 +622,41 @@ mod tests {
             &workspace,
         );
         assert!(aliased_gpu.is_err(), "{aliased_gpu:?}");
+
+        let ui_wgpu = validate_member_dependencies(
+            "spirula-ui",
+            &[external_dep("wgpu", DepKind::Normal)],
+            &workspace,
+        );
+        assert!(ui_wgpu.is_err(), "{ui_wgpu:?}");
+
+        let cli_aliased_wgpu = validate_member_dependencies(
+            "spirula-cli",
+            &[DepRef {
+                name: "wgpu".to_owned(),
+                rename: Some("gfx".to_owned()),
+                kind: DepKind::Normal,
+                is_path: false,
+            }],
+            &workspace,
+        );
+        assert!(cli_aliased_wgpu.is_err(), "{cli_aliased_wgpu:?}");
+
+        let io_wgpu_dev = validate_member_dependencies(
+            "spirula-io",
+            &[external_dep("wgpu-core", DepKind::Dev)],
+            &workspace,
+        );
+        assert!(io_wgpu_dev.is_err(), "{io_wgpu_dev:?}");
+
+        assert!(
+            validate_member_dependencies(
+                "spirula-gpu",
+                &[external_dep("wgpu", DepKind::Normal)],
+                &workspace
+            )
+            .is_ok()
+        );
 
         let missing_member = validate_member_dependencies(
             "spirula-ui",
