@@ -64,19 +64,91 @@ pub struct PublishOutcome {
     pub bytes_written: u64,
 }
 
-/// Exclusive publish/recovery lease for one destination basename.
+/// Exclusive publish/recovery lease for one canonical destination.
+///
+/// The lease is bound to the destination identity captured at acquire time
+/// (canonical parent + file name). Publication APIs on this type always write
+/// that destination; free `*_on_lease` helpers reject a mismatched path.
 ///
 /// The lock file inode is created once and left on disk. Coordination uses
 /// [`File::try_lock`] (advisory). Closing the handle releases the lock even if
 /// the process is killed, so recovery is not wedged by a stale lock file.
 /// The lock file is never unlinked while the lease is held.
 pub struct PublishLease {
+    destination: PathBuf,
     file: File,
 }
 
 impl Drop for PublishLease {
     fn drop(&mut self) {
         let _ = self.file.unlock();
+    }
+}
+
+impl PublishLease {
+    /// Canonical destination this lease authorizes.
+    pub fn destination(&self) -> &Path {
+        &self.destination
+    }
+
+    /// Replace this lease's destination via a streaming writer.
+    pub fn publish_writer<F>(
+        &self,
+        options: PublishOptions<'_>,
+        write: F,
+    ) -> Result<PublishOutcome, DomainError>
+    where
+        F: FnOnce(&mut File) -> Result<u64, DomainError>,
+    {
+        publish_writer_bound(self, options, write)
+    }
+
+    /// Validate then replace this lease's destination.
+    pub fn publish_bytes_validated<F>(
+        &self,
+        bytes: &[u8],
+        options: PublishOptions<'_>,
+        validate: F,
+    ) -> Result<PublishOutcome, DomainError>
+    where
+        F: FnOnce(&[u8]) -> Result<(), DomainError>,
+    {
+        validate(bytes)?;
+        self.publish_writer(options, |file| {
+            file.write_all(bytes)
+                .map_err(|error| map_io(ErrorCode::WriteFailed, &self.destination, error))?;
+            Ok(bytes.len() as u64)
+        })
+    }
+
+    /// Atomically create this lease's destination only if absent (`hard_link`).
+    ///
+    /// Holds this destination's lease for the entire temp/write/link lifecycle
+    /// so orphan recovery cannot delete a live no-clobber temp.
+    pub fn publish_bytes_if_absent(
+        &self,
+        bytes: &[u8],
+        options: PublishOptions<'_>,
+    ) -> Result<Option<PublishOutcome>, DomainError> {
+        publish_bytes_if_absent_bound(self, bytes, options)
+    }
+
+    fn require_destination(&self, destination: &Path) -> Result<(), DomainError> {
+        let expected = canonical_destination(destination)?;
+        if expected != self.destination {
+            return Err(DomainError::try_new(
+                ErrorCode::InvalidArgument,
+                "publish lease does not authorize this destination",
+            )
+            .expect("message")
+            .with_context(ContextKey::Path, destination.display().to_string())
+            .expect("path")
+            .with_context(ContextKey::Expected, self.destination.display().to_string())
+            .expect("expected")
+            .with_context(ContextKey::Actual, "lease_destination_mismatch")
+            .expect("actual"));
+        }
+        Ok(())
     }
 }
 
@@ -103,10 +175,13 @@ where
     F: FnOnce(&[u8]) -> Result<(), DomainError>,
 {
     let lease = acquire_publish_lease(destination)?;
-    publish_bytes_validated_on_lease(destination, bytes, options, &lease, validate)
+    lease.publish_bytes_validated(bytes, options, validate)
 }
 
 /// Validate and publish while `lease` for `destination` is already held.
+///
+/// Rejects a lease bound to a different destination (`SP-INP-001` /
+/// `lease_destination_mismatch`). Prefer [`PublishLease::publish_bytes_validated`].
 pub fn publish_bytes_validated_on_lease<F>(
     destination: &Path,
     bytes: &[u8],
@@ -117,25 +192,198 @@ pub fn publish_bytes_validated_on_lease<F>(
 where
     F: FnOnce(&[u8]) -> Result<(), DomainError>,
 {
-    validate(bytes)?;
-    publish_writer_on_lease(destination, options, lease, |file| {
-        file.write_all(bytes)
-            .map_err(|error| map_io(ErrorCode::WriteFailed, destination, error))?;
-        Ok(bytes.len() as u64)
-    })
+    lease.require_destination(destination)?;
+    lease.publish_bytes_validated(bytes, options, validate)
 }
 
 /// Atomically create `destination` only if it does not already exist.
 ///
-/// Writes a unique temp, then `hard_link`s it into place. An existing
-/// destination yields `Ok(None)` without replacing bytes. Callers that decide
-/// whether a backup is needed must hold the destination lease across that
-/// decision and this call.
+/// Acquires the destination lease for the full temp/write/`hard_link`
+/// lifecycle. An existing destination yields `Ok(None)` without replacing
+/// bytes. Prefer holding an already-acquired [`PublishLease`] and calling
+/// [`PublishLease::publish_bytes_if_absent`] when composing multi-destination
+/// transactions (for example config + `.bak`) so lock order stays explicit.
 pub fn publish_bytes_if_absent(
     destination: &Path,
     bytes: &[u8],
     options: PublishOptions<'_>,
 ) -> Result<Option<PublishOutcome>, DomainError> {
+    let lease = acquire_publish_lease(destination)?;
+    lease.publish_bytes_if_absent(bytes, options)
+}
+
+/// Create a unique sibling with `create_new`, let `write` fill the retained
+/// handle, sync, then atomically replace `destination`. `write` must return
+/// the number of bytes it believes it wrote; a mismatch is `SP-FMT-004` and
+/// aborts before replace.
+pub fn publish_writer<F>(
+    destination: &Path,
+    options: PublishOptions<'_>,
+    write: F,
+) -> Result<PublishOutcome, DomainError>
+where
+    F: FnOnce(&mut File) -> Result<u64, DomainError>,
+{
+    let lease = acquire_publish_lease(destination)?;
+    lease.publish_writer(options, write)
+}
+
+/// Like [`publish_writer`], but uses an already-held destination lease.
+///
+/// Rejects a lease bound to a different destination (`SP-INP-001` /
+/// `lease_destination_mismatch`). Prefer [`PublishLease::publish_writer`].
+pub fn publish_writer_on_lease<F>(
+    destination: &Path,
+    options: PublishOptions<'_>,
+    lease: &PublishLease,
+    write: F,
+) -> Result<PublishOutcome, DomainError>
+where
+    F: FnOnce(&mut File) -> Result<u64, DomainError>,
+{
+    lease.require_destination(destination)?;
+    lease.publish_writer(options, write)
+}
+
+/// Remove unfinished sibling temps for `destination` left by crashed writers.
+///
+/// Acquires the same advisory lease writers use. A live writer blocks recovery
+/// (`SP-SESS-003`). After a killed writer the OS releases the advisory lock
+/// with the process, so recovery can proceed even though the lock inode still
+/// exists. Only names that match the strict
+/// `{file}.spirula-tmp.{pid}.{seq}` pattern with the destination's native
+/// [`OsStr`] identity are removed.
+pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, DomainError> {
+    let lease = acquire_publish_lease(destination)?;
+    let parent = parent_dir(lease.destination());
+    let file_name = destination_file_name(lease.destination())?;
+    let entries = fs::read_dir(parent).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            map_io(ErrorCode::NotFound, parent, error)
+        } else {
+            map_io(ErrorCode::ReadFailed, parent, error)
+        }
+    })?;
+    let mut removed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| map_io(ErrorCode::ReadFailed, parent, error))?;
+        let name = entry.file_name();
+        if !is_strict_publish_temp_name(file_name, &name) {
+            continue;
+        }
+        let path = entry.path();
+        fs::remove_file(&path).map_err(|error| map_io(ErrorCode::WriteFailed, &path, error))?;
+        removed.push(path);
+    }
+    Ok(removed)
+}
+
+/// Acquire the exclusive advisory lease for `destination`.
+///
+/// The returned lease is bound to the canonical destination identity
+/// (canonicalized parent + file name). Publication through that lease always
+/// targets that identity.
+pub fn acquire_publish_lease(destination: &Path) -> Result<PublishLease, DomainError> {
+    require_parent(destination)?;
+    let destination = canonical_destination(destination)?;
+    let path = lock_path_for(&destination)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| map_io(ErrorCode::WriteFailed, &path, error))?;
+    match file.try_lock() {
+        Ok(()) => Ok(PublishLease { destination, file }),
+        Err(TryLockError::WouldBlock) => Err(DomainError::try_new(
+            ErrorCode::CommandInFlight,
+            "another publish or orphan recovery holds the destination lease",
+        )
+        .expect("message")
+        .with_context(ContextKey::Path, destination.display().to_string())
+        .expect("path")
+        .with_context(ContextKey::Actual, "publish_lease_held")
+        .expect("actual")),
+        Err(TryLockError::Error(error)) => Err(map_io(ErrorCode::WriteFailed, &path, error)),
+    }
+}
+
+/// Whether `path` is a strict publish temp for `destination`.
+pub fn is_publish_temp(destination: &Path, path: &Path) -> bool {
+    match (destination_file_name(destination), path.file_name()) {
+        (Ok(file_name), Some(name)) => is_strict_publish_temp_name(file_name, name),
+        _ => false,
+    }
+}
+
+/// Parent directory used for sibling temps, locks, and directory sync.
+///
+/// A bare relative file such as `config.json` reports `parent() == Some("")`;
+/// that empty path is normalized to `.`.
+pub fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+fn publish_writer_bound<F>(
+    lease: &PublishLease,
+    options: PublishOptions<'_>,
+    write: F,
+) -> Result<PublishOutcome, DomainError>
+where
+    F: FnOnce(&mut File) -> Result<u64, DomainError>,
+{
+    let destination = lease.destination();
+    check_cancel(options.cancel)?;
+    require_parent(destination)?;
+
+    let (temp, mut file) = create_temp_sibling(destination)?;
+    let publish = (|| {
+        check_cancel(options.cancel)?;
+        let expected = write(&mut file)?;
+        file.flush()
+            .map_err(|error| map_io(ErrorCode::WriteFailed, &temp, error))?;
+        file.sync_all()
+            .map_err(|error| map_io(ErrorCode::WriteFailed, &temp, error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| map_io(ErrorCode::ReadFailed, &temp, error))?;
+        drop(file);
+        if metadata.len() != expected {
+            return Err(integrity_error(
+                destination,
+                format!("expected {expected} bytes, temp has {}", metadata.len()),
+            ));
+        }
+        check_cancel(options.cancel)?;
+        replace_file(&temp, destination)?;
+        if options.sync_directory {
+            sync_parent_directory(destination)?;
+        }
+        Ok(PublishOutcome {
+            destination: destination.to_path_buf(),
+            bytes_written: expected,
+        })
+    })();
+
+    match publish {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}
+
+fn publish_bytes_if_absent_bound(
+    lease: &PublishLease,
+    bytes: &[u8],
+    options: PublishOptions<'_>,
+) -> Result<Option<PublishOutcome>, DomainError> {
+    let destination = lease.destination();
     check_cancel(options.cancel)?;
     require_parent(destination)?;
     let (temp, mut file) = create_temp_sibling(destination)?;
@@ -193,149 +441,17 @@ pub fn publish_bytes_if_absent(
     }
 }
 
-/// Create a unique sibling with `create_new`, let `write` fill the retained
-/// handle, sync, then atomically replace `destination`. `write` must return
-/// the number of bytes it believes it wrote; a mismatch is `SP-FMT-004` and
-/// aborts before replace.
-pub fn publish_writer<F>(
-    destination: &Path,
-    options: PublishOptions<'_>,
-    write: F,
-) -> Result<PublishOutcome, DomainError>
-where
-    F: FnOnce(&mut File) -> Result<u64, DomainError>,
-{
-    let lease = acquire_publish_lease(destination)?;
-    publish_writer_on_lease(destination, options, &lease, write)
-}
-
-/// Like [`publish_writer`], but uses an already-held destination lease.
-pub fn publish_writer_on_lease<F>(
-    destination: &Path,
-    options: PublishOptions<'_>,
-    _lease: &PublishLease,
-    write: F,
-) -> Result<PublishOutcome, DomainError>
-where
-    F: FnOnce(&mut File) -> Result<u64, DomainError>,
-{
-    check_cancel(options.cancel)?;
-    require_parent(destination)?;
-
-    let (temp, mut file) = create_temp_sibling(destination)?;
-    let publish = (|| {
-        check_cancel(options.cancel)?;
-        let expected = write(&mut file)?;
-        file.flush()
-            .map_err(|error| map_io(ErrorCode::WriteFailed, &temp, error))?;
-        file.sync_all()
-            .map_err(|error| map_io(ErrorCode::WriteFailed, &temp, error))?;
-        let metadata = file
-            .metadata()
-            .map_err(|error| map_io(ErrorCode::ReadFailed, &temp, error))?;
-        drop(file);
-        if metadata.len() != expected {
-            return Err(integrity_error(
-                destination,
-                format!("expected {expected} bytes, temp has {}", metadata.len()),
-            ));
-        }
-        check_cancel(options.cancel)?;
-        replace_file(&temp, destination)?;
-        if options.sync_directory {
-            sync_parent_directory(destination)?;
-        }
-        Ok(PublishOutcome {
-            destination: destination.to_path_buf(),
-            bytes_written: expected,
-        })
-    })();
-
-    match publish {
-        Ok(outcome) => Ok(outcome),
-        Err(error) => {
-            let _ = fs::remove_file(&temp);
-            Err(error)
-        }
-    }
-}
-
-/// Remove unfinished sibling temps for `destination` left by crashed writers.
-///
-/// Acquires the same advisory lease writers use. A live writer blocks recovery
-/// (`SP-SESS-003`). After a killed writer the OS releases the advisory lock
-/// with the process, so recovery can proceed even though the lock inode still
-/// exists. Only names that match the strict
-/// `{file}.spirula-tmp.{pid}.{seq}` pattern with the destination's native
-/// [`OsStr`] identity are removed.
-pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, DomainError> {
-    let parent = parent_dir(destination);
-    let _lease = acquire_publish_lease(destination)?;
+fn canonical_destination(destination: &Path) -> Result<PathBuf, DomainError> {
     let file_name = destination_file_name(destination)?;
-    let entries = fs::read_dir(parent).map_err(|error| {
+    let parent = parent_dir(destination);
+    let parent = fs::canonicalize(parent).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             map_io(ErrorCode::NotFound, parent, error)
         } else {
             map_io(ErrorCode::ReadFailed, parent, error)
         }
     })?;
-    let mut removed = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| map_io(ErrorCode::ReadFailed, parent, error))?;
-        let name = entry.file_name();
-        if !is_strict_publish_temp_name(file_name, &name) {
-            continue;
-        }
-        let path = entry.path();
-        fs::remove_file(&path).map_err(|error| map_io(ErrorCode::WriteFailed, &path, error))?;
-        removed.push(path);
-    }
-    Ok(removed)
-}
-
-/// Acquire the exclusive advisory lease for `destination`.
-pub fn acquire_publish_lease(destination: &Path) -> Result<PublishLease, DomainError> {
-    require_parent(destination)?;
-    let path = lock_path(destination)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|error| map_io(ErrorCode::WriteFailed, &path, error))?;
-    match file.try_lock() {
-        Ok(()) => Ok(PublishLease { file }),
-        Err(TryLockError::WouldBlock) => Err(DomainError::try_new(
-            ErrorCode::CommandInFlight,
-            "another publish or orphan recovery holds the destination lease",
-        )
-        .expect("message")
-        .with_context(ContextKey::Path, destination.display().to_string())
-        .expect("path")
-        .with_context(ContextKey::Actual, "publish_lease_held")
-        .expect("actual")),
-        Err(TryLockError::Error(error)) => Err(map_io(ErrorCode::WriteFailed, &path, error)),
-    }
-}
-
-/// Whether `path` is a strict publish temp for `destination`.
-pub fn is_publish_temp(destination: &Path, path: &Path) -> bool {
-    match (destination_file_name(destination), path.file_name()) {
-        (Ok(file_name), Some(name)) => is_strict_publish_temp_name(file_name, name),
-        _ => false,
-    }
-}
-
-/// Parent directory used for sibling temps, locks, and directory sync.
-///
-/// A bare relative file such as `config.json` reports `parent() == Some("")`;
-/// that empty path is normalized to `.`.
-pub fn parent_dir(path: &Path) -> &Path {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    }
+    Ok(parent.join(file_name))
 }
 
 fn destination_file_name(destination: &Path) -> Result<&OsStr, DomainError> {
@@ -397,9 +513,9 @@ fn is_decimal_token(token: &str) -> bool {
     !token.is_empty() && token.chars().all(|c| c.is_ascii_digit())
 }
 
-fn lock_path(destination: &Path) -> Result<PathBuf, DomainError> {
-    let file_name = destination_file_name(destination)?;
-    Ok(parent_dir(destination).join(publish_lock_name(file_name)))
+fn lock_path_for(canonical_destination: &Path) -> Result<PathBuf, DomainError> {
+    let file_name = destination_file_name(canonical_destination)?;
+    Ok(parent_dir(canonical_destination).join(publish_lock_name(file_name)))
 }
 
 fn create_temp_sibling(destination: &Path) -> Result<(PathBuf, File), DomainError> {

@@ -11,10 +11,7 @@ use std::path::{Path, PathBuf};
 
 use spirula_core::{ContextKey, DomainError, ErrorCode, LoadedTrainConfig};
 
-use crate::atomic::{
-    PublishOptions, PublishOutcome, acquire_publish_lease, publish_bytes_if_absent,
-    publish_bytes_validated_on_lease,
-};
+use crate::atomic::{PublishOptions, PublishOutcome, acquire_publish_lease};
 
 /// Read and parse a config document from disk.
 ///
@@ -44,24 +41,19 @@ pub fn save_train_config(
     options: PublishOptions<'_>,
 ) -> Result<PublishOutcome, DomainError> {
     let lease = acquire_publish_lease(path)?;
-    ensure_loaded_matches_disk(path, loaded)?;
+    ensure_loaded_matches_disk(lease.destination(), loaded)?;
     let text = loaded.to_preserved_json()?;
-    publish_bytes_validated_on_lease(
-        path,
-        text.as_bytes(),
-        options,
-        &lease,
-        validate_config_bytes,
-    )
+    lease.publish_bytes_validated(text.as_bytes(), options, validate_config_bytes)
 }
 
 /// Promote a loaded document to the current form and atomically replace `path`.
 ///
-/// Under one destination lease:
+/// Under the destination lease, plus a separate backup lease for the no-clobber
+/// backup publish (never re-locks the same destination):
 /// 1. Require `loaded.source_text()` to match the live file (`SP-SESS-001`).
 /// 2. Build and validate the migrated document before any backup write.
-/// 3. Create `{path}.bak` with atomic no-clobber (`hard_link`); an existing
-///    backup is left untouched.
+/// 3. Create `{path}.bak` under its own lease with atomic no-clobber
+///    (`hard_link`); an existing backup is left untouched.
 /// 4. Publish the migrated document to `path`.
 pub fn migrate_train_config(
     path: &Path,
@@ -69,20 +61,20 @@ pub fn migrate_train_config(
     options: PublishOptions<'_>,
 ) -> Result<PublishOutcome, DomainError> {
     let lease = acquire_publish_lease(path)?;
-    let original = ensure_loaded_matches_disk(path, loaded)?;
+    let original = ensure_loaded_matches_disk(lease.destination(), loaded)?;
     let migrated = loaded.to_current_json()?;
     validate_config_bytes(migrated.as_bytes())?;
 
-    let backup = backup_path(path);
-    publish_bytes_if_absent(&backup, &original, options)?;
+    let backup = backup_path(lease.destination());
+    {
+        // Separate destination → separate lock file. Acquire while holding the
+        // config lease so snapshot/backup/publish stay one transaction; never
+        // call acquire on `path` again here (would deadlock with ourselves).
+        let backup_lease = acquire_publish_lease(&backup)?;
+        backup_lease.publish_bytes_if_absent(&original, options)?;
+    }
 
-    publish_bytes_validated_on_lease(
-        path,
-        migrated.as_bytes(),
-        options,
-        &lease,
-        validate_config_bytes,
-    )
+    lease.publish_bytes_validated(migrated.as_bytes(), options, validate_config_bytes)
 }
 
 fn ensure_loaded_matches_disk(

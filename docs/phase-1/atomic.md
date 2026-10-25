@@ -59,6 +59,17 @@ non-atomic checkpoints.
   `publish_lease_held` while another publish or recovery is active). Callers
   may retry. The last successful replace wins; readers see only complete
   previous or complete new payloads, never a torn mix.
+- Each `PublishLease` is bound to the canonical destination identity
+  (canonicalized parent + file name). Publication goes through methods on that
+  lease, or through `*_on_lease` helpers that reject a mismatched path with
+  `SP-INP-001` / `lease_destination_mismatch`. A lease for `A` cannot publish
+  to `B`.
+- No-clobber create (`publish_bytes_if_absent` / `hard_link`) holds the
+  **destination's own** lease for the entire temp/write/link lifecycle.
+  Migration therefore takes the config lease, then a separate `{path}.bak`
+  lease (distinct lock file; never re-locks the config destination), so orphan
+  recovery on the backup cannot delete a live backup temp while the main
+  config lease alone is held.
 - `recover_publish_orphans` takes the same exclusive lease. While a writer is
   paused mid-publish, recovery returns `SP-SESS-003` and deletes nothing.
   When the lease is free, it removes only strict
@@ -74,9 +85,10 @@ non-atomic checkpoints.
   invalid UTF-8 is `SP-FMT-002` with `path`, not a retryable read failure.
   Save/migrate hold the destination lease across the disk snapshot check and
   publish (`SP-SESS-001` on stale snapshots). Migration validates the new
-  document before any backup write, then creates `{path}.bak` with atomic
-  no-clobber (`hard_link` / `AlreadyExists` → leave existing backup), then
-  publishes. Checkpoint bundles are out of scope.
+  document before any backup write, then creates `{path}.bak` under a backup
+  lease with atomic no-clobber (`hard_link` / `AlreadyExists` → leave existing
+  backup), then publishes the migrated document. Checkpoint bundles are out of
+  scope.
 
 ## Deferred
 

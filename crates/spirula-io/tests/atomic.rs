@@ -10,8 +10,9 @@ use spirula_core::{
     CancelReason, CancelToken, ContextKey, ErrorCode, LoadedTrainConfig, TrainConfig,
 };
 use spirula_io::{
-    PublishOptions, TempHarness, is_publish_temp, load_train_config, migrate_train_config,
-    parent_dir, publish_bytes, publish_bytes_validated, publish_writer, recover_publish_orphans,
+    PublishOptions, TempHarness, acquire_publish_lease, is_publish_temp, load_train_config,
+    migrate_train_config, parent_dir, publish_bytes, publish_bytes_if_absent,
+    publish_bytes_validated, publish_writer, publish_writer_on_lease, recover_publish_orphans,
     save_train_config,
 };
 
@@ -110,9 +111,10 @@ fn length_mismatch_is_integrity_failure_before_replace() {
     })
     .unwrap_err();
     assert_eq!(error.code(), ErrorCode::IntegrityMismatch);
+    let canonical = fs::canonicalize(&path).unwrap();
     assert_eq!(
         error.context_value(ContextKey::Path),
-        Some(path.to_str().unwrap())
+        Some(canonical.to_str().unwrap())
     );
     assert_eq!(fs::read(&path).unwrap(), b"stable");
 }
@@ -225,7 +227,8 @@ fn orphan_recovery_uses_strict_names_and_skips_live_writer() {
     assert!(writer.join().unwrap().is_err());
 
     let removed = recover_publish_orphans(&path).unwrap();
-    assert_eq!(removed, vec![strict_orphan.clone()]);
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].file_name(), strict_orphan.file_name());
     assert!(!strict_orphan.exists());
     assert!(decoy.exists());
     assert!(path.exists());
@@ -489,6 +492,138 @@ fn load_rejects_invalid_utf8_as_malformed_record() {
         error.context_value(ContextKey::Path),
         Some(path.to_str().unwrap())
     );
+}
+
+#[test]
+fn wrong_lease_rejects_publish_to_other_destination() {
+    let harness = TempHarness::new().unwrap();
+    let path_a = harness.prepare_file("a.bin").unwrap();
+    let path_b = harness.prepare_file("b.bin").unwrap();
+    fs::write(&path_a, b"A").unwrap();
+    fs::write(&path_b, b"B").unwrap();
+
+    let lease_a = acquire_publish_lease(&path_a).unwrap();
+    let _lease_b = acquire_publish_lease(&path_b).unwrap();
+
+    let error = publish_writer_on_lease(&path_b, PublishOptions::default(), &lease_a, |file| {
+        file.write_all(b"hijack").unwrap();
+        Ok(6)
+    })
+    .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    assert_eq!(
+        error.context_value(ContextKey::Actual),
+        Some("lease_destination_mismatch")
+    );
+    assert_eq!(fs::read(&path_a).unwrap(), b"A");
+    assert_eq!(fs::read(&path_b).unwrap(), b"B");
+
+    // Bound methods always publish the lease destination, never a smuggled path.
+    lease_a
+        .publish_bytes_validated(b"A2", PublishOptions::default(), |_| Ok(()))
+        .unwrap();
+    assert_eq!(fs::read(&path_a).unwrap(), b"A2");
+    assert_eq!(fs::read(&path_b).unwrap(), b"B");
+}
+
+#[test]
+fn paused_no_clobber_publication_blocks_recovery() {
+    let harness = TempHarness::new().unwrap();
+    let config = harness.prepare_file("config.json").unwrap();
+    let backup = backup_path(&config);
+    fs::write(&config, b"{\"max_steps\": 1}\n").unwrap();
+
+    let paused = Arc::new(Barrier::new(2));
+    let resume = Arc::new(Barrier::new(2));
+    let backup_for_writer = backup.clone();
+    let paused_writer = Arc::clone(&paused);
+    let resume_writer = Arc::clone(&resume);
+    let writer = thread::spawn(move || {
+        // Same lease + temp lifecycle as publish_bytes_if_absent; pause after
+        // the live temp exists so recovery can observe the held lease.
+        let lease = acquire_publish_lease(&backup_for_writer).unwrap();
+        lease.publish_writer(PublishOptions::default(), |file| {
+            file.write_all(b"live-backup-temp").unwrap();
+            paused_writer.wait();
+            resume_writer.wait();
+            Err(
+                spirula_core::DomainError::try_new(ErrorCode::WriteFailed, "paused backup temp")
+                    .unwrap(),
+            )
+        })
+    });
+
+    // Config lease alone must not cover backup temps (distinct lock identity).
+    let config_lease = acquire_publish_lease(&config).unwrap();
+    paused.wait();
+
+    let blocked = recover_publish_orphans(&backup).unwrap_err();
+    assert_eq!(blocked.code(), ErrorCode::CommandInFlight);
+    assert!(
+        backup
+            .parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| is_publish_temp(&backup, &entry.path())),
+        "live backup temp must survive while the backup lease is held"
+    );
+
+    drop(config_lease);
+    assert!(recover_publish_orphans(&config).unwrap().is_empty());
+    assert!(
+        backup
+            .parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| is_publish_temp(&backup, &entry.path())),
+        "recovering config orphans must not delete backup destination temps"
+    );
+
+    resume.wait();
+    assert!(writer.join().unwrap().is_err());
+    assert!(recover_publish_orphans(&backup).unwrap().is_empty());
+    assert!(!backup.exists());
+}
+
+#[test]
+fn publish_bytes_if_absent_lease_blocks_recovery_and_no_clobbers() {
+    let harness = TempHarness::new().unwrap();
+    // prepare_file only ensures ancestors; destination must stay absent.
+    let path = harness.prepare_file("fresh.bak").unwrap();
+    assert!(!path.exists());
+
+    let paused = Arc::new(Barrier::new(2));
+    let resume = Arc::new(Barrier::new(2));
+    let writer_path = path.clone();
+    let paused_gate = Arc::clone(&paused);
+    let resume_gate = Arc::clone(&resume);
+    let writer = thread::spawn(move || {
+        let lease = acquire_publish_lease(&writer_path).unwrap();
+        paused_gate.wait();
+        let result = lease.publish_bytes_if_absent(b"created", PublishOptions::default());
+        resume_gate.wait();
+        result
+    });
+
+    paused.wait();
+    let blocked = recover_publish_orphans(&path).unwrap_err();
+    assert_eq!(blocked.code(), ErrorCode::CommandInFlight);
+    assert!(!path.exists());
+    resume.wait();
+    let outcome = writer.join().unwrap().unwrap().unwrap();
+    assert_eq!(outcome.bytes_written, 7);
+    assert_eq!(fs::read(&path).unwrap(), b"created");
+
+    assert!(
+        publish_bytes_if_absent(&path, b"other", PublishOptions::default())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"created");
 }
 
 #[test]
