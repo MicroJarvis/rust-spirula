@@ -29,8 +29,8 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 未开始 |
 | C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 未开始 |
 | C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 未开始 |
-| C-DATA-14 | projection/coordinate conventions | `data/CameraMath.h:1-42`, `core/CameraDistortion.cuh` | camera + point | pixel/ray | OpenGL c2w, CV +Z rays, normalized image coords | P3-F01 fixture numbers | `spirula-core` | 未开始 |
-| C-DATA-15 | scene transform serialization | `data/SceneTransform.cpp:244-331` | centering + similarity | `scene_transform.json` | all matrix/quaternion/Euler spellings; georeference block | `fixtures/scene` + P3-F05 | `spirula-core`/`spirula-io` | 未开始 |
+| C-DATA-14 | projection/coordinate conventions | `data/CameraMath.h:1-42`, `core/CameraDistortion.cuh` | camera + point | pixel/ray | OpenGL c2w, CV +Z rays, normalized image coords | P3-F01 fixture numbers | `spirula-core` | 进行中 |
+| C-DATA-15 | scene transform serialization | `data/SceneTransform.cpp:244-331` | centering + similarity | `scene_transform.json` | all matrix/quaternion/Euler spellings; georeference block | `fixtures/scene` + P3-F05 | `spirula-core`/`spirula-io` | 进行中 |
 | C-DATA-16 | scene-center modes | `data/SceneCenter.h`, `DatasetCommon.cpp:523-545` | camera/point statistics | translation | `none/point-median/camera-median/camera-focus/point-mean/camera-mean`, `auto` resolves | P3-F05 unit tests | `spirula-core` | 未开始 |
 | C-DATA-17 | seed point cloud PLY | `NerfstudioParser.cpp:235-276` | PLY | points + RGB | requires x/y/z + RGB, ascii/BE; double coordinates | `fixtures/splats/points.ply` + P3-F05 | `spirula-io` | 未开始 |
 | C-DATA-18 | splat PLY read/write | `checkpoint/SplatPly.cpp` | PLY | splat scene | property order/raw meaning; ASCII read, binary LE write | `fixtures/splats/tiny_splat.ply` + P3-F06 | `spirula-io` | 未开始 |
@@ -45,7 +45,7 @@ refer to [fixtures.md](fixtures.md).
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
-| C-REN-01 | scene/primitive representation | `primitives/Primitive.cuh`, `engine/Engine.h` | splats | device arrays | means/quats wxyz/log scales/logit opacity/DC/SH | P4-F01 fixtures | `spirula-render` | 未开始 |
+| C-REN-01 | scene/primitive representation | `primitives/Primitive.cuh`, `engine/Engine.h` | splats | device arrays | means/quats wxyz/log scales/logit opacity/DC/SH | P4-F01 fixtures | `spirula-render` | 进行中 |
 | C-REN-02 | camera parameter binding | `engine/Engine.h:75-84` | camera + view matrices | GPU uniforms | intrinsics fx/fy/cx/cy; value-parameterized model/tier | P4-F01/P4-F02 | `spirula-render` | 未开始 |
 | C-REN-03 | projection forward | `kernels/projection/*`, `EngineForward.cpp:160-330` | camera + splats | screen splats | 3dgs/mip/3dgut; packed/unpacked | P4-F03 CPU/GPU parity | `spirula-render` | 未开始 |
 | C-REN-04 | tile intersection and binning | `kernels/tile/IntersectTile.cu:420-580` | screen splats | (tile, splat) counts | 8x8 tiles, macro tile 8-128, int32 coarsening | P4-F03 tolerance fixture | `spirula-render` | 未开始 |
@@ -135,6 +135,16 @@ refer to [fixtures.md](fixtures.md).
 - `C-APP-02` has the core token and progress/terminal payloads (P1-F03).
   Session checkpoints, channels, and CLI/UI cancellation remain P5-F06 and
   P6-F01, so the row stays `进行中`.
+- `C-DATA-14` has the P0 pinhole path: OpenGL `c2w`, OpenCV `k1 k2 p1 p2`,
+  and behind-camera rejection (P1-F04). Fisheye, equisolid, equirectangular,
+  thin-prism, and ray generation stay in P3-F01, so the row stays `进行中`.
+  `C-DATA-11` through `C-DATA-13` stay `未开始`.
+- `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
+  inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
+  P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.
+- `C-REN-01` has CPU splat checks for finite means, `wxyz` quaternions, log
+  scales, and logit opacity (P1-F04). Device arrays and SH bands stay in
+  P4-F01, and the PLY layout stays in P3-F06, so the row stays `进行中`.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.

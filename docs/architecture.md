@@ -103,7 +103,10 @@ training-config document in the same crate; filesystem backup stays in
 P1-F05. P1-F03 implements the cooperative cancel token and progress/terminal
 payloads in `spirula-core`; session orchestration stays in P5-F01 and P6-F01.
 The primitive contract is
-[docs/phase-1/cancellation.md](phase-1/cancellation.md). A crate does not define
+[docs/phase-1/cancellation.md](phase-1/cancellation.md). P1-F04 adds the CPU
+math, pinhole projection, similarity, and splat value checks in
+[docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other lenses stay
+in P3-F01; scene files stay in P3-F05; splat files stay in P3-F06. A crate does not define
 its own error string, event shape, or schema version; it implements the
 catalog and envelope in that document.
 

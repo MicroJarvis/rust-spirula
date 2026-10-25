@@ -7,8 +7,12 @@
 //! return [`DomainError`] instead of emitting a nonempty closed choice the
 //! reader rejects. Empty strings are the `null` encoding and stay writable.
 //! P1-F03 owns the cancel token and progress payloads described in
-//! `docs/phase-1/cancellation.md`.
+//! `docs/phase-1/cancellation.md`. P1-F04 owns the CPU math, pinhole camera,
+//! similarity, and splat value checks described in `docs/phase-1/geometry.md`.
+//! Full lenses, scene files, and splat files stay in P3-F01, P3-F05, and
+//! P3-F06.
 
+mod camera;
 mod cancel;
 mod config;
 mod config_bind;
@@ -16,8 +20,11 @@ mod config_doc;
 mod config_value;
 mod error;
 mod json_doc;
+mod math;
 mod progress;
+mod scene;
 
+pub use camera::{CameraPose, OpenCvDistortion, PinholeCamera};
 pub use cancel::{CancelReason, CancelToken};
 pub use config::{
     ChoiceKind, FieldSpec, FieldType, TRAIN_CONFIG_FIELD_COUNT, TRAIN_CONFIG_FIELDS,
@@ -32,6 +39,8 @@ pub use error::{
     UnknownErrorCode, UserAction, process_exit_code,
 };
 pub use json_doc::{JsonKind, JsonNumber, JsonValue, parse_json};
+pub use math::{Mat3, Quat, Vec2, Vec3};
 pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,
 };
+pub use scene::{GaussianSplat, SH_C0, SceneTransform, SplatSet};
