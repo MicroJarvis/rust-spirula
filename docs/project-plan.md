@@ -80,8 +80,8 @@ Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架
 | P1-F05 | 原子文件与 fixture harness | `spirula-io` | P0-F04, P1-F01 | 实现临时文件命名与原子替换；处理损坏和中断写入；提供可复用临时目录 fixture harness | 临时文件加原子替换；损坏、并发失败和恢复路径有测试 | 已完成 |
 | P1-F06 | workspace 基础检查 | workspace | P0-F06 | 固定 fmt/check/test/clippy 命令；固定 lint 与 feature 组合；检查 CLI 仅作入口适配 | 固化 lint、格式化、测试和本地检查命令；CLI 不含隐藏业务逻辑 | 已完成 |
 | P1-F07 | 最小 headless application/session | `spirula-application`（新增） | P1-F03, P1-F06 | 唯一应用 owner；有界命令和可恢复控制事件历史；快照/游标、取消控制通道和 fake worker；区分 run identity 与迟到事件 | 无训练/GPU 依赖的状态机测试；满队列与慢订阅不阻塞 worker；每个接受命令恰有一个终态 | 已完成 |
-| P1-F08 | 资源与性能记录基础设施 | workspace | P1-F06 | 定义版本化测量结果、fixture/配置 hash 和环境字段；记录分配字节、阶段耗时、采样来源和预算；后续 GPU 指标声明不可用原因 | CPU 微型样本可生成和回读结果；已核算字节与系统峰值分开；形成后续逐功能基线模板 | 当前 |
-| P1-F09 | 最小 CLI 会话入口 | `spirula-cli`/application | P1-F07 | help/能力与已接入命令；共享 command/event 映射；SIGINT 与退出码；fake worker 验证，真实预览/训练分别由 P4-F06/P5-F07 接入 | 子进程测试命令拒绝、取消、终态和错误码；未接入命令显式不可用；入口无业务编排 | 未开始 |
+| P1-F08 | 资源与性能记录基础设施 | workspace | P1-F06 | 定义版本化测量结果、fixture/配置 hash 和环境字段；记录分配字节、阶段耗时、采样来源和预算；后续 GPU 指标声明不可用原因 | CPU 微型样本可生成和回读结果；已核算字节与系统峰值分开；形成后续逐功能基线模板 | 已完成 |
+| P1-F09 | 最小 CLI 会话入口 | `spirula-cli`/application | P1-F07 | help/能力与已接入命令；共享 command/event 映射；SIGINT 与退出码；fake worker 验证，真实预览/训练分别由 P4-F06/P5-F07 接入 | 子进程测试命令拒绝、取消、终态和错误码；未接入命令显式不可用；入口无业务编排 | 当前 |
 
 Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU 的
 共享会话/CLI 骨架和测量入口；真实渲染、训练和完整 UI 仍由后续功能接入。
@@ -216,11 +216,11 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 
 ## 4. 首批功能顺序
 
-已完成 P0-F01–P0-F06 和 P1-F01–P1-F07；当前继续 P1-F08。Phase 2 仍未开始。
+已完成 P0-F01–P0-F06 和 P1-F01–P1-F08；当前继续 P1-F09。Phase 2 仍未开始。
 后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
 不会把组内多个编号合并成一个已完成功能：
 
-1. P1-F06/P1-F07（已完成）→ P1-F08 → P1-F09：基础检查、唯一会话、测量和最小 CLI。
+1. P1-F06–P1-F08（已完成）→ P1-F09：基础检查、唯一会话、测量和最小 CLI。
 2. P2-F01–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
@@ -290,7 +290,10 @@ P3-F06。P1-F05（原子文件与 fixture harness）已在 `spirula-io` 落地�
 记录见 `docs/phase-1/exit-report.md`。P1-F07（最小 headless
 application/session）已在 `spirula-application` 落地，契约见
 `docs/phase-1/application.md`（仅依赖 `spirula-core`，fake probe，无训练/
-GPU；磁盘日志未实现，归 P1-F09）。Phase 1 继续到 P1-F09；下一步是 P1-F08：
-资源与性能记录基础设施。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能
-与依赖调整，见 [审查记录](research/ooosplat-brush-review.md)。GPU、训练、
-UI 实现状态没有因本次规划调整而提前完成。
+GPU；磁盘日志未实现，归 P1-F09）。P1-F08（资源与性能记录基础设施）已在
+`spirula-core`/`spirula-io` 落地，契约见 `docs/phase-1/performance.md`
+（版本化报告、fixture/config hash、已核算字节与不可用 OS/GPU/时间戳字段、
+CPU 微型样本生成与回读；无训练/GPU/UI 运行时）。Phase 1 继续到 P1-F09。
+2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+[审查记录](research/ooosplat-brush-review.md)。GPU、训练、UI 实现状态没有
+因本次规划调整而提前完成。

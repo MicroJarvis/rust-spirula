@@ -116,3 +116,39 @@ verify above.
 
 - No real dataset load, training, GPU, Slint, or CLI SIGINT.
 - No rotated disk log sink (explicitly unavailable, not a finished stub).
+
+---
+
+# P1-F08 verification record
+
+Recorded: 2026-10-25, worktree `.worktrees/p1-f08` on branch `codex/p1-f08`,
+parent tip `3c85d92` (P1-F07 on main).
+
+## Scope and result
+
+P1-F08 is complete: versioned `spirula-perf-report` contracts live in
+`spirula-core`; JSON + SHA-256 provenance + atomic publish/reload live in
+`spirula-io`; `spirula-perf-sample` generates and reads a CPU report with
+accounted allocated/current/peak bytes, phase wall time/source/budget, and
+explicit unavailable reasons for OS process peak, device memory, GPU, and
+absolute timestamps. No train/GPU/UI runtime. Next feature is P1-F09. Branch
+remains unmerged until explicitly approved.
+
+## Evidence
+
+| item | location / command |
+|---|---|
+| Binding decisions | [performance.md](performance.md) |
+| Contracts | `crates/spirula-core/src/perf.rs` |
+| Persistence / hashes | `crates/spirula-io/src/perf.rs`, `crates/spirula-io/src/hash.rs` |
+| Sample binary | `cargo run -p spirula-io --bin spirula-perf-sample -- <path>` |
+| Contract tests | `cargo test -p spirula-core perf -- --test-threads=1` |
+| IO tests | `cargo test -p spirula-io perf -- --test-threads=1` |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded at commit) |
+
+## Non-claims
+
+- No OS RSS / working-set sampling.
+- No GPU adapter, device-memory, or wall-clock timestamp measurement.
+- No per-feature baselines beyond the infrastructure sample (those land with
+  later slices; aggregation remains P9-F02).

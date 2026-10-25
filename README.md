@@ -20,11 +20,13 @@ pinned commit, toolchain and build/test entry points are recorded in
 [docs/phase-0/reference-baseline.md](docs/phase-0/reference-baseline.md); set
 `SPIRULA_REFERENCE_REPO` to locate the checkout (default `../spirula-studio`).
 
-Phase 0 is complete. Phase 1 runs through P1-F09; P1-F01–P1-F07 are done and
-P1-F08 is next. Phase 0 evidence is in
-[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). The P1-F06 record is
-[docs/phase-1/exit-report.md](docs/phase-1/exit-report.md); P1-F07 bindings are
-[docs/phase-1/application.md](docs/phase-1/application.md). The single local
+Phase 0 is complete. Phase 1 runs through P1-F09; P1-F01–P1-F08 are done and
+P1-F09 is next. Phase 0 evidence is in
+[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). The P1-F06/F07/F08
+records are in [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
+P1-F07 bindings are [docs/phase-1/application.md](docs/phase-1/application.md);
+P1-F08 bindings are
+[docs/phase-1/performance.md](docs/phase-1/performance.md). The single local
 verification entry is:
 
 ```bash
@@ -43,8 +45,10 @@ harness, config filesystem save/migration) lives in `spirula-io`; see
 splat files stay in P3. Checkpoint bundle markers stay in P5-F05.
 `spirula-application` (P1-F07) owns the headless session, bounded commands,
 control history, and fake probe worker; it depends only on `spirula-core`.
-`spirula-cli` stays an entry adapter until P1-F09. The next feature is P1-F08
-in [docs/project-plan.md](docs/project-plan.md). Phase 2 has not started.
+P1-F08 adds versioned performance reports and the `spirula-perf-sample`
+binary in `spirula-core`/`spirula-io`. `spirula-cli` stays an entry adapter
+until P1-F09. The next feature is P1-F09 in
+[docs/project-plan.md](docs/project-plan.md). Phase 2 has not started.
 
 The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
 planned early session/CLI delivery, differentiable rendering, resource budgets,

@@ -118,7 +118,7 @@ refer to [fixtures.md](fixtures.md).
 | C-X-01 | error taxonomy | `runtime_error` everywhere; CLI text | failure | typed error | stable codes, category, retryability, context | P1-F01 | `spirula-core` | 已完成 |
 | C-X-02 | logging and diagnostics | `TrainerCore.cpp:775-779`, `Log.h` | events | text | stable message content for scripts | P6-F02/P9-F05 | `spirula-application` | 未开始 |
 | C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 进行中 |
-| C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | per-slice resource/time records, quality/convergence and resume | P1-F08/P9-F02 | workspace | 未开始 |
+| C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | per-slice resource/time records, quality/convergence and resume | P1-F08/P9-F02 | workspace | 进行中（P1-F08 报告格式/CPU 样本已完成；逐功能基线与 P9 汇总未开始） |
 | C-X-05 | cross-platform adapter coverage | CI matrix | platform | report | macOS/Linux/Windows records, skip reasons | P9-F01 | `spirula-gpu` | 未开始 |
 | C-X-06 | minimal CLI package | (new) | clean checkout | isolated runnable package | CLI/GPU smoke early, real preview/train samples added later | P2-F07/P4-F06/P5-F07 | workspace/CI | 未开始 |
 | C-X-07 | pinned tool/process management | reference auxiliary commands; OOOSplat engine/process policies as secondary reference | versioned runtime artifact/request | verified installation + validated output | existing stack rules remain; bounded logs, process-tree cancel and rollback | P8-F07 isolated tests + platform acceptance | `spirula-io`/`spirula-application` | 未开始 |

@@ -167,6 +167,8 @@ fn completed_feature_artifacts(id: &str) -> &'static [&'static str] {
             "docs/phase-1/workspace-checks.md",
             "docs/phase-1/exit-report.md",
         ],
+        "P1-F07" => &["docs/phase-1/application.md"],
+        "P1-F08" => &["docs/phase-1/performance.md", "docs/phase-1/exit-report.md"],
         _ => &[],
     }
 }

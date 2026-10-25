@@ -9,8 +9,9 @@
 //! P1-F03 owns the cancel token and progress payloads described in
 //! `docs/phase-1/cancellation.md`. P1-F04 owns the CPU math, pinhole camera,
 //! similarity, and splat value checks described in `docs/phase-1/geometry.md`.
-//! Full lenses, scene files, and splat files stay in P3-F01, P3-F05, and
-//! P3-F06.
+//! P1-F08 owns the versioned resource/performance report contracts in
+//! `docs/phase-1/performance.md`. Full lenses, scene files, and splat files
+//! stay in P3-F01, P3-F05, and P3-F06.
 
 mod camera;
 mod cancel;
@@ -21,6 +22,7 @@ mod config_value;
 mod error;
 mod json_doc;
 mod math;
+mod perf;
 mod progress;
 mod scene;
 
@@ -40,6 +42,10 @@ pub use error::{
 };
 pub use json_doc::{JsonKind, JsonNumber, JsonValue, parse_json};
 pub use math::{Mat3, Quat, Vec2, Vec3};
+pub use perf::{
+    AccountedBytesTracker, AccountedMemory, EnvironmentInfo, PERF_REPORT_SCHEMA,
+    PERF_REPORT_VERSION, PerfProvenance, PerfReport, PhaseTiming, UnavailableMetric,
+};
 pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,
 };

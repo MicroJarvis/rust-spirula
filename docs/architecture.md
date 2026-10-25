@@ -113,7 +113,9 @@ notifications isolate slow consumers; source sequence gaps and resync are
 explicit. A cancellation mailbox remains responsive under full queues. GPU
 work is isolated behind a worker/context so device loss or a pipeline error
 becomes an observable session failure. Resource accounting and per-stage
-measurements start in P1-F08 and continue in each slice, before P9 aggregation.
+measurements are defined in P1-F08
+([docs/phase-1/performance.md](phase-1/performance.md)) and continue in each
+slice, before P9 aggregation.
 
 ## Frozen runtime contracts
 
@@ -136,7 +138,10 @@ checks in [docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other
 lenses stay in P3-F01; scene files stay in P3-F05; splat files stay in P3-F06.
 P1-F06 fixes the workspace verification entry, lint inheritance, architecture
 path-edge policy, and CLI entry-adapter rule in
-[docs/phase-1/workspace-checks.md](phase-1/workspace-checks.md). A crate does
+[docs/phase-1/workspace-checks.md](phase-1/workspace-checks.md). P1-F08 adds
+versioned performance reports (accounted bytes, phase budgets, provenance
+hashes, explicit unavailable GPU/OS/timestamp fields) in `spirula-core` /
+`spirula-io` ([docs/phase-1/performance.md](phase-1/performance.md)). A crate does
 not define its own error string, event shape, or schema version; it implements
 the catalog and envelope in that document.
 
