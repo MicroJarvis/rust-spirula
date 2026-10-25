@@ -245,7 +245,12 @@ reserved for a future **explicit Save** command failure after entering
   `Pending`. The worker receives `Shutdown` and is joined via `WorkerHandle`.
 - Worker panic (caught at the fake-worker boundary) or result-channel
   disconnect publishes `Failed { Internal }` for the active probe and clears
-  pause; no detached paused worker remains.
+  pause; no detached paused worker remains. On panic after a real progress
+  snapshot was produced, the catch-unwind path attaches that **actual** last
+  bounded `ProgressSnapshot` to `Failed.final_progress` so the owner can
+  publish it before the terminal (result mailbox is drained first; queued
+  progress alone would be stale). Arbitrary panics do **not** fabricate a
+  configured final step when no progress was recorded.
 - Last-client / closed notify: further `subscribe` returns
   `SubscribeError::Closed`.
 

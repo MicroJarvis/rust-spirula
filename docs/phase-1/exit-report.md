@@ -82,7 +82,10 @@ cancel budget and always joins; O(1) accepted-id watermark (no unbounded
 seen-set); oversized control entries dropped under byte budget while
 results stay bounded; Accepted/Rejected approx_bytes include labels/errors;
 honest ownership docs (serialized mutex binding, not one exclusive
-writer thread).
+writer thread). Panic-boundary handoff: catch-unwind `Failed` carries the
+actual last bounded progress (not a fabricated final step) so live
+subscribers see Progress before Failed when the worker panics after
+computing final progress.
 
 ## Scope and result
 
@@ -99,9 +102,10 @@ unmerged until explicitly approved.
 |---|---|
 | Binding decisions | [application.md](application.md) |
 | Crate | `crates/spirula-application` (deps: `spirula-core` only) |
-| Lifecycle regressions | `crates/spirula-application/tests/session_lifecycle.rs` (**43** tests) |
+| Lifecycle regressions | `crates/spirula-application/tests/session_lifecycle.rs` (**44** tests) |
 | History unit regressions | `crates/spirula-application/src/history.rs` (`mod tests`, **3** tests) |
-| Reproducible gate | `cargo test -p spirula-application -- --test-threads=1` then `cargo run -p spirula-xtask -- verify` (**8/8** on tip `cdb0655`) |
+| Reproducible gate | `cargo test -p spirula-application -- --test-threads=1` then `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded at commit) |
+| HOLD-MERGE external probes | fresh rebuild of original18 + extra5 + panic1 (**24**/24) against this tip; ephemeral `/tmp` aids only |
 
 Supplemental ephemeral external probe binaries used during HOLD-MERGE review
 are not checked in; treat them as non-reproducible reviewer aids only. The

@@ -687,6 +687,50 @@ fn final_progress_precedes_terminal_on_live_stream() {
     }
 }
 
+/// Panic after the worker computed/sent final progress must still surface
+/// that actual last step on the live stream before Failed (result mailbox
+/// handoff; do not invent a configured final step for arbitrary panics).
+#[test]
+fn panic_run_final_progress_precedes_failed() {
+    let mut limits = SessionLimits::for_test();
+    limits.notification_queue_capacity = 128;
+    limits.control_history_capacity = 128;
+    limits.control_history_max_bytes = 65_536;
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let (sub, _) = app.subscribe().expect("sub");
+    app.set_worker_behavior(FakeWorkerBehavior::Panic);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 1 });
+    let terminal = wait_terminal(&app, run);
+    assert!(
+        matches!(
+            terminal.event,
+            Event::Completed {
+                outcome: OutcomeView::Failed { .. }
+            }
+        ),
+        "{terminal:?}"
+    );
+    let mut final_seen = false;
+    while let Some(env) = sub.try_recv() {
+        if env.command_id == Some(run) {
+            match env.event {
+                Event::Progress(p) if p.step == 1 => final_seen = true,
+                Event::Completed { .. } => {
+                    assert!(
+                        final_seen,
+                        "panic Failed emitted before final progress; envelope={env:?}"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(final_seen, "expected Progress step=1 before Failed");
+}
+
 #[test]
 fn progress_only_gaps_do_not_force_resync() {
     let mut limits = SessionLimits::for_test();

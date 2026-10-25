@@ -283,6 +283,11 @@ fn worker_loop(
                 stall,
                 save_on_cancel,
             }) => {
+                // Survives unwind: last actual progress so Failed can carry it
+                // on the result mailbox (owner drains results before progress).
+                let panic_progress: Arc<Mutex<Option<ProgressSnapshot>>> =
+                    Arc::new(Mutex::new(None));
+                let handoff = Arc::clone(&panic_progress);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_probe(
                         &progress_tx,
@@ -296,9 +301,11 @@ fn worker_loop(
                         pause,
                         stall,
                         save_on_cancel,
+                        &handoff,
                     );
                 }));
                 if result.is_err() {
+                    let last = lock(&panic_progress).take();
                     let err = spirula_core::DomainError::try_new(
                         spirula_core::ErrorCode::Internal,
                         "fake worker panic",
@@ -313,7 +320,7 @@ fn worker_loop(
                             outcome: TerminalOutcome::Failed { error: err },
                             checkpoint_label: None,
                             save_failed: false,
-                            final_progress: None,
+                            final_progress: last,
                         },
                     );
                 }
@@ -348,6 +355,7 @@ fn run_probe(
     pause: Arc<Mutex<bool>>,
     stall: Arc<Mutex<bool>>,
     save_on_cancel: Arc<AtomicBool>,
+    panic_progress: &Arc<Mutex<Option<ProgressSnapshot>>>,
 ) {
     let started = Instant::now();
     let mut last_heartbeat = Instant::now()
@@ -386,6 +394,9 @@ fn run_probe(
                 want_save && matches!(*lock(behavior), FakeWorkerBehavior::CancelSaveFail);
             let label = (want_save && !save_failed).then(|| format!("probe-stop-{step}"));
             let final_progress = Some(make_progress(step, steps, started.elapsed()));
+            if let Some(ref snap) = final_progress {
+                note_panic_progress(panic_progress, snap.clone());
+            }
             finish_canceled(
                 result_tx,
                 limits,
@@ -401,19 +412,23 @@ fn run_probe(
         }
 
         step += 1;
-        publish_progress(
+        let snap = make_progress(step, steps, started.elapsed());
+        note_panic_progress(panic_progress, snap.clone());
+        let _ = try_progress(
             progress_tx,
             limits,
-            run_id,
-            command_id,
-            step,
-            steps,
-            started.elapsed(),
+            WorkerEvent::Progress {
+                run_id,
+                command_id,
+                snapshot: snap,
+            },
         );
         last_heartbeat = Instant::now();
     }
 
     let final_progress = make_progress(step, steps, started.elapsed());
+    // Record before optional panic so catch_unwind can attach it to Failed.
+    note_panic_progress(panic_progress, final_progress.clone());
     // Also try progress mailbox; canonical copy rides with the terminal.
     let _ = try_progress(
         progress_tx,
@@ -461,6 +476,10 @@ fn run_probe(
             );
         }
     }
+}
+
+fn note_panic_progress(slot: &Arc<Mutex<Option<ProgressSnapshot>>>, snapshot: ProgressSnapshot) {
+    *lock(slot) = Some(snapshot);
 }
 
 /// Sleep for one step delay (or until cancel), while paused/stalled, honoring
@@ -559,15 +578,7 @@ fn publish_progress(
     steps: u64,
     elapsed: Duration,
 ) {
-    let snapshot = ProgressSnapshot::try_new(
-        step,
-        Some(steps.max(step)),
-        0,
-        elapsed.as_millis() as u64,
-        None,
-        Vec::new(),
-    )
-    .expect("valid progress");
+    let snapshot = make_progress(step, steps, elapsed);
     let _ = try_progress(
         progress_tx,
         limits,
