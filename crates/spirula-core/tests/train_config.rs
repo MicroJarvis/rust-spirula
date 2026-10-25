@@ -358,6 +358,7 @@ fn integer_lexemes_do_not_use_rounded_f64() {
         r#"{"schema_version":10e-1}"#,
         r#"{"schema_version":100e-2}"#,
         r#"{"schema_version":1.000}"#,
+        r#"{"schema_version":1e000000000000000000000}"#,
     ] {
         let loaded = LoadedTrainConfig::parse(text).unwrap();
         assert_eq!(loaded.schema_version(), Some(1), "{text}");
@@ -373,6 +374,9 @@ fn integer_lexemes_do_not_use_rounded_f64() {
         (r#"{"num_iterations":1500e-2}"#, 15),
         (r#"{"num_iterations":1.000}"#, 1),
         (r#"{"num_iterations":-0.0}"#, 0),
+        (r#"{"num_iterations":1e000000000000000000000}"#, 1),
+        (r#"{"num_iterations":1e+000000000000000000001}"#, 10),
+        (r#"{"num_iterations":10e-000000000000000000001}"#, 1),
     ];
     for (text, expected) in accepted {
         let loaded = LoadedTrainConfig::parse(text).unwrap();

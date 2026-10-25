@@ -315,6 +315,10 @@ fn parse_exponent(text: &str) -> Option<Exponent> {
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Some(Exponent::Value(0));
+    }
     if digits.len() > 18 {
         return Some(if negative {
             Exponent::NegativeHuge

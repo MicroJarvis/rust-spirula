@@ -53,7 +53,8 @@ These differences are intentional. They do not add flags or renumber errors.
 - `schema_version: 1` is the current document. The integer must be exact.
 - Integer fields and `schema_version` use the numeric lexeme. A value is an
   integer when its decimal digits and exponent place it on an integer,
-  including `1.0`, `1e0`, and `10e-1`. `1.0000000000000001` is not an integer,
+  including `1.0`, `1e0`, and `10e-1`. Leading zeros in the exponent do not
+  change it: `1e000000000000000000000` is 1. `1.0000000000000001` is not an integer,
   even though `f64` rounds it to `1`. The same rule covers exponent
   cancellation such as `21474836470e-1`. An exact integer outside `i32` is
   `SP-INP-003`. An exact integer other than 1 in `schema_version` is
