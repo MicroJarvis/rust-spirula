@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use spirula_core::{CancelToken, ContextKey, DomainError, ErrorCode};
 
 const TEMP_MARKER: &str = ".spirula-tmp.";
+const LOCK_SUFFIX: &str = ".spirula-lock";
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Options for one atomic publish.
@@ -62,6 +63,22 @@ pub struct PublishOutcome {
     pub bytes_written: u64,
 }
 
+/// Exclusive publish/recovery lease for one destination basename.
+///
+/// Writers and [`recover_publish_orphans`] take this lease with `create_new`.
+/// A live writer therefore blocks orphan recovery from deleting its temp, and
+/// recovery blocks a concurrent writer from starting.
+struct PublishLease {
+    path: PathBuf,
+    _file: File,
+}
+
+impl Drop for PublishLease {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// Write `bytes` to a unique sibling temp, validate length, then replace
 /// `destination`. On any pre-replace failure the previous destination bytes
 /// stay intact and the temp is removed.
@@ -92,9 +109,10 @@ where
     })
 }
 
-/// Create a unique sibling with `create_new`, let `write` fill it, sync, then
-/// atomically replace `destination`. `write` must return the number of bytes
-/// it believes it wrote; a mismatch is `SP-FMT-004` and aborts before replace.
+/// Create a unique sibling with `create_new`, let `write` fill the retained
+/// handle, sync, then atomically replace `destination`. `write` must return
+/// the number of bytes it believes it wrote; a mismatch is `SP-FMT-004` and
+/// aborts before replace.
 pub fn publish_writer<F>(
     destination: &Path,
     options: PublishOptions<'_>,
@@ -105,14 +123,11 @@ where
 {
     check_cancel(options.cancel)?;
     require_parent(destination)?;
+    let _lease = acquire_publish_lease(destination)?;
 
-    let temp = create_temp_sibling(destination)?;
+    let (temp, mut file) = create_temp_sibling(destination)?;
     let publish = (|| {
         check_cancel(options.cancel)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&temp)
-            .map_err(|error| map_io(ErrorCode::WriteFailed, &temp, error))?;
         let expected = write(&mut file)?;
         file.flush()
             .map_err(|error| map_io(ErrorCode::WriteFailed, &temp, error))?;
@@ -148,12 +163,16 @@ where
     }
 }
 
-/// Remove unfinished sibling temps for `destination` left by crashes or
-/// killed writers. Returns the paths that were deleted. The live destination
-/// is never touched.
+/// Remove unfinished sibling temps for `destination` left by crashed writers.
+///
+/// Acquires the same exclusive lease writers use. If a publisher still holds
+/// the lease, returns `SP-SESS-003` and deletes nothing. Only names that match
+/// the strict `{file}.spirula-tmp.{pid}.{seq}` pattern are removed; the live
+/// destination and arbitrary similarly-prefixed files are left alone.
 pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, DomainError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let prefix = temp_prefix(destination)?;
+    let parent = parent_dir(destination);
+    let _lease = acquire_publish_lease(destination)?;
+    let file_name = destination_file_name(destination)?;
     let entries = fs::read_dir(parent).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             map_io(ErrorCode::NotFound, parent, error)
@@ -168,7 +187,7 @@ pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, Domai
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !name.starts_with(&prefix) {
+        if !is_strict_publish_temp_name(file_name, name) {
             continue;
         }
         let path = entry.path();
@@ -178,42 +197,92 @@ pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, Domai
     Ok(removed)
 }
 
-/// Whether `path` looks like a publish temp for `destination`.
+/// Whether `path` is a strict publish temp for `destination`.
 pub fn is_publish_temp(destination: &Path, path: &Path) -> bool {
-    match temp_prefix(destination) {
-        Ok(prefix) => path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(&prefix)),
-        Err(_) => false,
+    match (
+        destination_file_name(destination),
+        path.file_name().and_then(|name| name.to_str()),
+    ) {
+        (Ok(file_name), Some(name)) => is_strict_publish_temp_name(file_name, name),
+        _ => false,
     }
 }
 
-fn temp_prefix(destination: &Path) -> Result<String, DomainError> {
-    let file_name = destination.file_name().ok_or_else(|| {
-        DomainError::try_new(
-            ErrorCode::InvalidArgument,
-            "destination path has no file name",
+/// Parent directory used for sibling temps, locks, and directory sync.
+///
+/// A bare relative file such as `config.json` reports `parent() == Some("")`;
+/// that empty path is normalized to `.`.
+pub fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+fn destination_file_name(destination: &Path) -> Result<&str, DomainError> {
+    destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            DomainError::try_new(
+                ErrorCode::InvalidArgument,
+                "destination path has no UTF-8 file name",
+            )
+            .expect("message")
+            .with_context(ContextKey::Path, destination.display().to_string())
+            .expect("path")
+        })
+}
+
+fn is_strict_publish_temp_name(destination_file_name: &str, candidate: &str) -> bool {
+    let Some(rest) = candidate.strip_prefix(destination_file_name) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(TEMP_MARKER) else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(pid), Some(seq), None) => is_decimal_token(pid) && is_decimal_token(seq),
+        _ => false,
+    }
+}
+
+fn is_decimal_token(token: &str) -> bool {
+    !token.is_empty() && token.chars().all(|c| c.is_ascii_digit())
+}
+
+fn lock_path(destination: &Path) -> Result<PathBuf, DomainError> {
+    let file_name = destination_file_name(destination)?;
+    Ok(parent_dir(destination).join(format!("{file_name}{LOCK_SUFFIX}")))
+}
+
+fn acquire_publish_lease(destination: &Path) -> Result<PublishLease, DomainError> {
+    let path = lock_path(destination)?;
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(file) => Ok(PublishLease { path, _file: file }),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(DomainError::try_new(
+            ErrorCode::CommandInFlight,
+            "another publish or orphan recovery holds the destination lease",
         )
         .expect("message")
         .with_context(ContextKey::Path, destination.display().to_string())
         .expect("path")
-    })?;
-    Ok(format!("{}{TEMP_MARKER}", file_name.to_string_lossy()))
+        .with_context(ContextKey::Actual, "publish_lease_held")
+        .expect("actual")),
+        Err(error) => Err(map_io(ErrorCode::WriteFailed, &path, error)),
+    }
 }
 
-fn create_temp_sibling(destination: &Path) -> Result<PathBuf, DomainError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let prefix = temp_prefix(destination)?;
+fn create_temp_sibling(destination: &Path) -> Result<(PathBuf, File), DomainError> {
+    let parent = parent_dir(destination);
+    let file_name = destination_file_name(destination)?;
     for _ in 0..32 {
         let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let name = format!("{prefix}{}-{seq}", std::process::id());
+        let name = format!("{file_name}{TEMP_MARKER}{}.{seq}", std::process::id());
         let path = parent.join(name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => {
-                drop(file);
-                return Ok(path);
-            }
+            Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(map_io(ErrorCode::WriteFailed, &path, error)),
         }
@@ -228,12 +297,7 @@ fn create_temp_sibling(destination: &Path) -> Result<PathBuf, DomainError> {
 }
 
 fn require_parent(destination: &Path) -> Result<(), DomainError> {
-    let Some(parent) = destination.parent() else {
-        return Ok(());
-    };
-    if parent.as_os_str().is_empty() {
-        return Ok(());
-    }
+    let parent = parent_dir(destination);
     match fs::metadata(parent) {
         Ok(meta) if meta.is_dir() => Ok(()),
         Ok(_) => Err(DomainError::try_new(
@@ -342,7 +406,7 @@ fn replace_file_platform(temporary: &Path, destination: &Path) -> io::Result<()>
 }
 
 fn sync_parent_directory(destination: &Path) -> Result<(), DomainError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let parent = parent_dir(destination);
     match File::open(parent).and_then(|file| file.sync_all()) {
         Ok(()) => Ok(()),
         Err(error) => Err(DomainError::try_new(

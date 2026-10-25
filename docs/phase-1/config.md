@@ -109,10 +109,14 @@ rename or replace files.
 [atomic.md](atomic.md).
 
 - `load_train_config` reads a path and parses with `LoadedTrainConfig::parse`.
+- `LoadedTrainConfig::source_text` is the exact loaded bytes. Save and migrate
+  require that text to still match the live file; a concurrent rewrite is
+  `SP-SESS-001`.
 - `save_train_config` atomically replaces the path with preserved JSON after
   validating the bytes parse and `TrainConfig::validate`.
-- `migrate_train_config` writes `{path}.bak` with the pre-migration bytes,
-  then atomically publishes current-form JSON. The reference still opens
+- `migrate_train_config` validates current-form JSON first, creates
+  `{path}.bak` only when it does not already exist (retries keep the original
+  rollback bytes), then atomically publishes. The reference still opens
   `config.json` directly (`TrainerCore.cpp:759-768`); the rewrite does not.
 
 The Phase 0 checkpoint `config.json` is a legacy compatibility input. Readers

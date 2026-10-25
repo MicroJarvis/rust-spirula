@@ -27,10 +27,14 @@ non-atomic checkpoints.
 
 ## Binding decisions
 
-- A publish creates a unique sibling
-  `{file_name}.spirula-tmp.{pid}-{seq}` with `create_new`. Colliding names
-  retry with a new sequence. Temps always live in the destination's parent
-  directory so replace stays same-filesystem.
+- An empty `parent()` (bare relatives such as `config.json`) is normalized to
+  `.` for temps, locks, `read_dir`, and directory sync.
+- A publish takes an exclusive lease file `{file_name}.spirula-lock` with
+  `create_new`, then creates a unique sibling
+  `{file_name}.spirula-tmp.{pid}.{seq}` with `create_new` and **keeps that
+  file handle** for the write/sync path (no close/reopen). Colliding temp
+  names retry with a new sequence. Temps stay in the destination parent so
+  replace stays same-filesystem.
 - Bytes are written, flushed, and `sync_all`'d on the temp. The writer reports
   an expected length; a mismatch is `SP-FMT-004` and aborts before replace.
   Optional validators run on the payload before the destination is touched.
@@ -45,17 +49,23 @@ non-atomic checkpoints.
   that as post-publish durability failure, not as an untouched destination.
 - Typed IO errors carry `path` and a local `source`. Cancel checks return
   `SP-CAN-001` and clean the temp without touching the destination.
-- Concurrent publishers each own a temp. The last successful replace wins.
-  Readers may observe only complete previous or complete new payloads for a
-  single-file destination, not a torn mix of two writers' bytes.
-- `recover_publish_orphans(destination)` deletes only siblings matching the
-  destination's `.spirula-tmp.` prefix. It never modifies the live file.
-- `TempHarness` creates an isolated directory under the process temp root and
-  removes it on drop. Children must stay relative and must not escape the
-  root.
-- Config load/save/migrate live here. Save writes preserved JSON atomically.
-  Explicit migration writes `{path}.bak` with the pre-migration bytes first,
-  then publishes current-form JSON. Checkpoint bundles are out of scope.
+- Concurrent publishers serialize on the lease (`SP-SESS-003` /
+  `publish_lease_held` while another publish or recovery is active). Callers
+  may retry. The last successful replace wins; readers see only complete
+  previous or complete new payloads, never a torn mix.
+- `recover_publish_orphans` takes the same exclusive lease. While a writer is
+  paused mid-publish, recovery returns `SP-SESS-003` and deletes nothing.
+  When the lease is free, it removes only strict
+  `{file}.spirula-tmp.{decimal_pid}.{decimal_seq}` names. Arbitrary
+  similarly-prefixed user files and the live destination are left alone.
+- `TempHarness` allocates with `create_dir` and retries on `AlreadyExists`. It
+  never adopts or deletes a preexisting directory; `Drop` removes only the
+  root this harness created. Children must stay relative and must not escape.
+- Config load/save/migrate live here. Save/migrate require
+  `loaded.source_text()` to match the live file (`SP-SESS-001` on stale
+  snapshots). Migration validates the new document before any backup write,
+  creates `{path}.bak` only when absent (no-clobber), then publishes. Checkpoint
+  bundles are out of scope.
 
 ## Deferred
 

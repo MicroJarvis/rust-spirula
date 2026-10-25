@@ -115,6 +115,14 @@ impl LoadedTrainConfig {
         self.version
     }
 
+    /// Exact text this document was parsed from.
+    ///
+    /// Filesystem migrators compare this to the live file so a stale in-memory
+    /// snapshot cannot rewrite a document another writer already changed.
+    pub fn source_text(&self) -> &str {
+        &self.source
+    }
+
     /// Unknown root keys, in document order. Nested values stay in [`UnknownField::raw`].
     pub fn unknown_fields(&self) -> Vec<UnknownField> {
         self.entries

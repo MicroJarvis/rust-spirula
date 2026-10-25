@@ -1,11 +1,14 @@
 //! Isolated temporary directories for filesystem tests and local probes.
 //!
-//! Each harness owns a unique directory under the process temp root and removes
-//! it on drop. Tests should not share paths across harnesses.
+//! Each harness owns a directory it created exclusively under the process temp
+//! root and removes that directory on drop. A preexisting path is never adopted
+//! or deleted.
 
 use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 
@@ -18,19 +21,36 @@ pub struct TempHarness {
 }
 
 impl TempHarness {
-    /// Create `spirula-io-<pid>-<seq>` under the system temporary directory.
+    /// Allocate a new empty directory with `create_dir`, retrying on
+    /// `AlreadyExists`. Never reuses or deletes a preexisting root.
     pub fn new() -> Result<Self, DomainError> {
-        let seq = HARNESS_SEQ.fetch_add(1, Ordering::Relaxed);
-        let name = format!("spirula-io-{}-{seq}", std::process::id());
-        let root = std::env::temp_dir().join(name);
-        fs::create_dir_all(&root).map_err(|error| {
-            DomainError::try_new(ErrorCode::WriteFailed, error.to_string())
-                .expect("message")
-                .with_context(ContextKey::Path, root.display().to_string())
-                .expect("path")
-                .with_source(error)
-        })?;
-        Ok(Self { root })
+        for _ in 0..64 {
+            let seq = HARNESS_SEQ.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let name = format!("spirula-io-{}-{seq}-{nanos}", std::process::id());
+            let root = std::env::temp_dir().join(name);
+            match fs::create_dir(&root) {
+                Ok(()) => return Ok(Self { root }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(
+                        DomainError::try_new(ErrorCode::WriteFailed, error.to_string())
+                            .expect("message")
+                            .with_context(ContextKey::Path, root.display().to_string())
+                            .expect("path")
+                            .with_source(error),
+                    );
+                }
+            }
+        }
+        Err(DomainError::try_new(
+            ErrorCode::WriteFailed,
+            "could not allocate a unique temp harness",
+        )
+        .expect("message"))
     }
 
     pub fn path(&self) -> &Path {
