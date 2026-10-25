@@ -11,53 +11,78 @@ use std::path::{Path, PathBuf};
 
 use spirula_core::{ContextKey, DomainError, ErrorCode, LoadedTrainConfig};
 
-use crate::atomic::{PublishOptions, PublishOutcome, publish_bytes_validated};
+use crate::atomic::{
+    PublishOptions, PublishOutcome, acquire_publish_lease, publish_bytes_if_absent,
+    publish_bytes_validated_on_lease,
+};
 
 /// Read and parse a config document from disk.
+///
+/// Invalid UTF-8 is `SP-FMT-002` with `path`. Other parse failures also carry
+/// `path` when the core error did not already set it.
 pub fn load_train_config(path: &Path) -> Result<LoadedTrainConfig, DomainError> {
-    let text = read_text(path)?;
-    LoadedTrainConfig::parse(&text)
+    let bytes = fs::read(path).map_err(|error| map_read(path, error))?;
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        DomainError::try_new(ErrorCode::MalformedRecord, "config text is not UTF-8")
+            .expect("message")
+            .with_context(ContextKey::Path, path.display().to_string())
+            .expect("path")
+            .with_context(ContextKey::Field, "config")
+            .expect("field")
+            .with_source(error)
+    })?;
+    LoadedTrainConfig::parse(text).map_err(|error| attach_path(error, path))
 }
 
 /// Atomically rewrite `path` with preserved-document JSON.
 ///
-/// Does not insert a missing `schema_version`. Leaves the previous file
-/// intact when validation or the publish fails.
+/// Holds the destination lease across the disk snapshot check and publish so
+/// a concurrent rewrite cannot slip between them.
 pub fn save_train_config(
     path: &Path,
     loaded: &LoadedTrainConfig,
     options: PublishOptions<'_>,
 ) -> Result<PublishOutcome, DomainError> {
+    let lease = acquire_publish_lease(path)?;
     ensure_loaded_matches_disk(path, loaded)?;
     let text = loaded.to_preserved_json()?;
-    publish_bytes_validated(path, text.as_bytes(), options, validate_config_bytes)
+    publish_bytes_validated_on_lease(
+        path,
+        text.as_bytes(),
+        options,
+        &lease,
+        validate_config_bytes,
+    )
 }
 
 /// Promote a loaded document to the current form and atomically replace `path`.
 ///
-/// Order of side effects:
-/// 1. Require `loaded.source_text()` to match the live file (stale snapshots
-///    are `SP-SESS-001`).
+/// Under one destination lease:
+/// 1. Require `loaded.source_text()` to match the live file (`SP-SESS-001`).
 /// 2. Build and validate the migrated document before any backup write.
-/// 3. Create `{path}.bak` only when it does not already exist (no-clobber). An
-///    existing backup is left untouched so retries keep the original rollback
-///    bytes.
-/// 4. Atomically publish the migrated document to `path`.
+/// 3. Create `{path}.bak` with atomic no-clobber (`hard_link`); an existing
+///    backup is left untouched.
+/// 4. Publish the migrated document to `path`.
 pub fn migrate_train_config(
     path: &Path,
     loaded: &LoadedTrainConfig,
     options: PublishOptions<'_>,
 ) -> Result<PublishOutcome, DomainError> {
+    let lease = acquire_publish_lease(path)?;
     let original = ensure_loaded_matches_disk(path, loaded)?;
     let migrated = loaded.to_current_json()?;
     validate_config_bytes(migrated.as_bytes())?;
 
     let backup = backup_path(path);
-    if !backup.exists() {
-        publish_bytes_validated(&backup, &original, options, |_| Ok(()))?;
-    }
+    publish_bytes_if_absent(&backup, &original, options)?;
 
-    publish_bytes_validated(path, migrated.as_bytes(), options, validate_config_bytes)
+    publish_bytes_validated_on_lease(
+        path,
+        migrated.as_bytes(),
+        options,
+        &lease,
+        validate_config_bytes,
+    )
 }
 
 fn ensure_loaded_matches_disk(
@@ -87,10 +112,6 @@ fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(backup)
 }
 
-fn read_text(path: &Path) -> Result<String, DomainError> {
-    fs::read_to_string(path).map_err(|error| map_read(path, error))
-}
-
 fn map_read(path: &Path, error: std::io::Error) -> DomainError {
     let code = match error.kind() {
         std::io::ErrorKind::NotFound => ErrorCode::NotFound,
@@ -102,6 +123,15 @@ fn map_read(path: &Path, error: std::io::Error) -> DomainError {
         .with_context(ContextKey::Path, path.display().to_string())
         .expect("path")
         .with_source(error)
+}
+
+fn attach_path(error: DomainError, path: &Path) -> DomainError {
+    if error.context_value(ContextKey::Path).is_some() {
+        return error;
+    }
+    error
+        .with_context(ContextKey::Path, path.display().to_string())
+        .expect("path context was absent")
 }
 
 fn validate_config_bytes(bytes: &[u8]) -> Result<(), DomainError> {

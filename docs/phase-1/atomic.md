@@ -33,8 +33,10 @@ non-atomic checkpoints.
   Matching uses encoded-byte prefixes, not `to_string_lossy`, so distinct
   non-UTF-8 names (for example `a\xFF` vs `a\xFE`) cannot share a recovery
   prefix.
-- A publish takes an exclusive lease file `{file_name}.spirula-lock` with
-  `create_new`, then creates a unique sibling
+- A publish opens a persistent `{file_name}.spirula-lock` inode and takes an
+  exclusive advisory lock with `File::try_lock`. The inode is not unlinked
+  while held; process death releases the lock so recovery is not wedged by a
+  stale `create_new` lock file. Then it creates a unique sibling
   `{file_name}.spirula-tmp.{pid}.{seq}` with `create_new` and **keeps that
   file handle** for the write/sync path (no close/reopen). Colliding temp
   names retry with a new sequence. Temps stay in the destination parent so
@@ -68,11 +70,13 @@ non-atomic checkpoints.
   `..` / root / `Prefix` (including Windows drive-relative `C:foo`), and
   owned creation walks ancestors with `symlink_metadata` so a symlink inside
   the root cannot redirect writes outside.
-- Config load/save/migrate live here. Save/migrate require
-  `loaded.source_text()` to match the live file (`SP-SESS-001` on stale
-  snapshots). Migration validates the new document before any backup write,
-  creates `{path}.bak` only when absent (no-clobber), then publishes. Checkpoint
-  bundles are out of scope.
+- Config load/save/migrate live here. Load reads bytes then UTF-8-decodes;
+  invalid UTF-8 is `SP-FMT-002` with `path`, not a retryable read failure.
+  Save/migrate hold the destination lease across the disk snapshot check and
+  publish (`SP-SESS-001` on stale snapshots). Migration validates the new
+  document before any backup write, then creates `{path}.bak` with atomic
+  no-clobber (`hard_link` / `AlreadyExists` → leave existing backup), then
+  publishes. Checkpoint bundles are out of scope.
 
 ## Deferred
 

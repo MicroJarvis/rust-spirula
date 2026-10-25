@@ -1,8 +1,10 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use spirula_core::{
     CancelReason, CancelToken, ContextKey, ErrorCode, LoadedTrainConfig, TrainConfig,
@@ -473,4 +475,105 @@ fn current_config_roundtrip_through_filesystem() {
     let loaded = load_train_config(&path).unwrap();
     assert_eq!(loaded.schema_version(), Some(1));
     assert_eq!(loaded.to_current_json().unwrap(), text);
+}
+
+#[test]
+fn load_rejects_invalid_utf8_as_malformed_record() {
+    let harness = TempHarness::new().unwrap();
+    let path = harness.prepare_file("bad.json").unwrap();
+    fs::write(&path, [0x7b, 0xff, 0x7d]).unwrap();
+    let error = load_train_config(&path).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::MalformedRecord);
+    assert!(!error.retryable());
+    assert_eq!(
+        error.context_value(ContextKey::Path),
+        Some(path.to_str().unwrap())
+    );
+}
+
+#[test]
+fn recover_after_killed_child_writer_releases_advisory_lease() {
+    const DEST_ENV: &str = "SPIRULA_P1F05_KILL_DEST";
+    const READY_ENV: &str = "SPIRULA_P1F05_KILL_READY";
+
+    if let Some(dest) = std::env::var_os(DEST_ENV) {
+        let dest = PathBuf::from(dest);
+        let ready = PathBuf::from(std::env::var_os(READY_ENV).expect("ready path"));
+        let _ = publish_writer(
+            &dest,
+            PublishOptions::default().with_sync_directory(false),
+            |file| {
+                file.write_all(b"partial-orphan").unwrap();
+                fs::write(&ready, b"ready").unwrap();
+                loop {
+                    thread::sleep(Duration::from_secs(60));
+                }
+            },
+        );
+        return;
+    }
+
+    let harness = TempHarness::new().unwrap();
+    let path = harness.prepare_file("dest.bin").unwrap();
+    fs::write(&path, b"stable").unwrap();
+    let ready = harness.child("ready.flag").unwrap();
+    let lock = {
+        let mut name = path.file_name().unwrap().to_owned();
+        name.push(".spirula-lock");
+        path.parent().unwrap().join(name)
+    };
+
+    let exe = std::env::current_exe().unwrap();
+    let mut child = Command::new(&exe)
+        .args([
+            "--exact",
+            "recover_after_killed_child_writer_releases_advisory_lease",
+        ])
+        .env(DEST_ENV, &path)
+        .env(READY_ENV, &ready)
+        .env("RUST_TEST_THREADS", "1")
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "child writer never signaled ready"
+        );
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("child exited before ready: {status}");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(lock.exists(), "advisory lock inode should persist");
+    assert!(
+        path.parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| is_publish_temp(&path, &entry.path())),
+        "killed writer must leave a strict publish temp"
+    );
+
+    child.kill().unwrap();
+    let _ = child.wait().unwrap();
+
+    let removed = recover_publish_orphans(&path).unwrap();
+    assert!(
+        !removed.is_empty(),
+        "recovery must succeed after killed writer despite lock inode"
+    );
+    assert!(lock.exists(), "lock inode remains; lease is advisory");
+    assert_eq!(fs::read(&path).unwrap(), b"stable");
+    assert!(
+        path.parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !is_publish_temp(&path, &entry.path()))
+    );
 }
