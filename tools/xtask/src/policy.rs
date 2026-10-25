@@ -22,7 +22,13 @@ pub struct PolicyReport {
     pub path_edges: usize,
     pub optional_features: usize,
     pub feature_combinations: Vec<String>,
-    pub host_targets_checked: Vec<String>,
+    /// `rustc -vV` host triple (may be a Windows host).
+    pub rustc_host: String,
+    /// Explicit Cargo build target from `CARGO_BUILD_TARGET` or config, if any.
+    pub cargo_build_target: Option<String>,
+    /// Targets the host-only gate actually exercises (equals [`Self::rustc_host`]
+    /// when the host gate is satisfied).
+    pub targets_checked: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,16 +136,144 @@ pub fn check_workspace_policy(root: &Path) -> Result<PolicyReport, String> {
     let combinations = feature_combinations(optional_features.len());
     check_gate_covers_features(&combinations)?;
 
-    let host = host_target_triple()?;
-    let host_targets_checked = vec![host];
+    let rustc_host = rustc_host_triple()?;
+    let cargo_build_target = discover_cargo_build_target(root, &TargetLookup::from_process())?;
+    ensure_host_only_gate(&rustc_host, cargo_build_target.as_deref())?;
 
     Ok(PolicyReport {
         members: packages.len(),
         path_edges,
         optional_features: optional_features.len(),
         feature_combinations: combinations,
-        host_targets_checked,
+        targets_checked: vec![rustc_host.clone()],
+        rustc_host,
+        cargo_build_target,
     })
+}
+
+/// Process environment inputs for Cargo target resolution (injectable in tests).
+#[derive(Clone, Debug, Default)]
+pub struct TargetLookup {
+    pub cargo_build_target: Option<String>,
+    pub cargo_home: Option<std::path::PathBuf>,
+}
+
+impl TargetLookup {
+    fn from_process() -> Self {
+        Self {
+            cargo_build_target: std::env::var("CARGO_BUILD_TARGET").ok(),
+            cargo_home: std::env::var_os("CARGO_HOME").map(std::path::PathBuf::from),
+        }
+    }
+}
+
+/// Resolve Cargo's effective default build target without `--target` on the CLI.
+///
+/// Precedence matches Cargo when the gate omits `--target`:
+/// `CARGO_BUILD_TARGET`, then the nearest project `.cargo/config(.toml)`, then
+/// `$CARGO_HOME/config(.toml)`.
+pub fn discover_cargo_build_target(
+    workspace_root: &Path,
+    lookup: &TargetLookup,
+) -> Result<Option<String>, String> {
+    if let Some(target) = lookup
+        .cargo_build_target
+        .as_deref()
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+    {
+        return Ok(Some(target.to_owned()));
+    }
+
+    for dir in workspace_root.ancestors() {
+        if let Some(target) = read_build_target_from_cargo_dir(&dir.join(".cargo"))? {
+            return Ok(Some(target));
+        }
+        if dir.parent().is_none() {
+            break;
+        }
+    }
+
+    if let Some(home) = &lookup.cargo_home
+        && let Some(target) = read_build_target_from_cargo_dir(home)?
+    {
+        return Ok(Some(target));
+    }
+    Ok(None)
+}
+
+fn read_build_target_from_cargo_dir(cargo_dir: &Path) -> Result<Option<String>, String> {
+    for name in ["config.toml", "config"] {
+        let path = cargo_dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .map_err(|error| format!("reading {}: {error}", path.display()))?;
+        if let Some(target) = parse_build_target_from_config(&text) {
+            return Ok(Some(target));
+        }
+    }
+    Ok(None)
+}
+
+/// Parse `[build] target = "..."` from a Cargo config file body.
+pub fn parse_build_target_from_config(text: &str) -> Option<String> {
+    let mut in_build = false;
+    for line in text.lines() {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_build = trimmed == "[build]";
+            continue;
+        }
+        if !in_build {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("target") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        return parse_toml_string_value(rest.trim());
+    }
+    None
+}
+
+fn parse_toml_string_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        return Some(inner.to_owned());
+    }
+    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        return Some(inner.to_owned());
+    }
+    // Bare identifiers are unusual for triples; accept non-empty tokens.
+    if !value.is_empty() && !value.starts_with('{') && !value.starts_with('[') {
+        return Some(value.to_owned());
+    }
+    None
+}
+
+/// The fixed gate omits `--target`, so Cargo must not be steered to another
+/// triple via env/config. Matching the rustc host (including Windows hosts) is
+/// allowed; a different override fails the policy.
+pub fn ensure_host_only_gate(
+    rustc_host: &str,
+    cargo_build_target: Option<&str>,
+) -> Result<(), String> {
+    match cargo_build_target {
+        None => Ok(()),
+        Some(target) if target == rustc_host => Ok(()),
+        Some(target) => Err(format!(
+            "workspace verify gate is host-only (steps omit --target), but Cargo would build for `{target}` while rustc host is `{rustc_host}` \
+             (CARGO_BUILD_TARGET or .cargo/config build.target). Unset the override for verify, or add an explicit cross-target gate — do not claim host checks while a cross target is configured"
+        )),
+    }
 }
 
 fn validate_member_dependencies(
@@ -388,7 +522,7 @@ fn manifest_inherits_workspace_lints(text: &str) -> bool {
     false
 }
 
-fn host_target_triple() -> Result<String, String> {
+fn rustc_host_triple() -> Result<String, String> {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
     let output = Command::new(rustc)
         .args(["-vV"])
@@ -397,13 +531,20 @@ fn host_target_triple() -> Result<String, String> {
     if !output.status.success() {
         return Err("rustc -vV failed".to_owned());
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
+    parse_rustc_host(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| "rustc -vV did not report host".to_owned())
+}
+
+fn parse_rustc_host(verbose: &str) -> Option<String> {
+    for line in verbose.lines() {
         if let Some(triple) = line.strip_prefix("host: ") {
-            return Ok(triple.trim().to_owned());
+            let triple = triple.trim();
+            if !triple.is_empty() {
+                return Some(triple.to_owned());
+            }
         }
     }
-    Err("rustc -vV did not report host".to_owned())
+    None
 }
 
 /// Target allowlist table for docs/tests.
@@ -658,5 +799,96 @@ mod tests {
             message.contains("check") || message.contains("test"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn parse_rustc_host_accepts_windows_and_unix_hosts() {
+        assert_eq!(
+            parse_rustc_host("host: x86_64-pc-windows-msvc\n").as_deref(),
+            Some("x86_64-pc-windows-msvc")
+        );
+        assert_eq!(
+            parse_rustc_host("host: aarch64-apple-darwin\n").as_deref(),
+            Some("aarch64-apple-darwin")
+        );
+    }
+
+    #[test]
+    fn parse_build_target_from_config_reads_build_table() {
+        assert_eq!(
+            parse_build_target_from_config(
+                "[build]\n# comment\ntarget = \"wasm32-unknown-unknown\"\njobs = 4\n"
+            )
+            .as_deref(),
+            Some("wasm32-unknown-unknown")
+        );
+        assert_eq!(
+            parse_build_target_from_config("[alias]\nfoo = \"bar\"\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn host_only_gate_allows_matching_windows_host_override() {
+        assert!(ensure_host_only_gate("x86_64-pc-windows-msvc", None).is_ok());
+        assert!(
+            ensure_host_only_gate("x86_64-pc-windows-msvc", Some("x86_64-pc-windows-msvc")).is_ok()
+        );
+        let err = ensure_host_only_gate("x86_64-pc-windows-msvc", Some("x86_64-unknown-linux-gnu"));
+        assert!(err.is_err(), "{err:?}");
+        assert!(err.unwrap_err().contains("host-only"));
+    }
+
+    #[test]
+    fn discover_prefers_env_over_project_config_without_set_var() {
+        let root = spirula_io::TempHarness::new().expect("harness");
+        let cargo_dir = root.path().join(".cargo");
+        fs::create_dir(&cargo_dir).unwrap();
+        fs::write(
+            cargo_dir.join("config.toml"),
+            "[build]\ntarget = \"wasm32-unknown-unknown\"\n",
+        )
+        .unwrap();
+
+        let from_config = discover_cargo_build_target(
+            root.path(),
+            &TargetLookup {
+                cargo_build_target: None,
+                cargo_home: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(from_config.as_deref(), Some("wasm32-unknown-unknown"));
+
+        let from_env = discover_cargo_build_target(
+            root.path(),
+            &TargetLookup {
+                cargo_build_target: Some("x86_64-unknown-linux-gnu".to_owned()),
+                cargo_home: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(from_env.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn discover_reads_cargo_home_config_when_project_has_none() {
+        let project = spirula_io::TempHarness::new().expect("project");
+        let home = spirula_io::TempHarness::new().expect("cargo home");
+        fs::write(
+            home.path().join("config.toml"),
+            "[build]\ntarget = \"x86_64-pc-windows-gnu\"\n",
+        )
+        .unwrap();
+
+        let found = discover_cargo_build_target(
+            project.path(),
+            &TargetLookup {
+                cargo_build_target: None,
+                cargo_home: Some(home.path().to_path_buf()),
+            },
+        )
+        .unwrap();
+        assert_eq!(found.as_deref(), Some("x86_64-pc-windows-gnu"));
     }
 }

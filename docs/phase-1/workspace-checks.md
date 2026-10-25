@@ -18,8 +18,13 @@ tree.
 | clippy | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | deny warnings |
 | diff | `git diff --check` | when `.git` is present |
 
-The gate never passes `--target`. Cross-compilation and Windows CI remain
-P9-F01 / C-X-05; this feature only records the host triple that actually ran.
+The gate never passes `--target` on the CLI. That alone does **not** prove a
+non-Windows or host-native build: Cargo still honors `CARGO_BUILD_TARGET` and
+`.cargo/config` / `$CARGO_HOME` `build.target`. Policy resolves those overrides,
+compares them to `rustc -vV` `host` (Windows hosts are valid), and **fails** if
+the effective Cargo target differs from the rustc host so verify cannot silently
+claim host checks while a cross target is configured. Matching overrides and
+unset overrides are allowed. Cross-compilation matrices remain P9-F01 / C-X-05.
 
 ## Lint inheritance
 

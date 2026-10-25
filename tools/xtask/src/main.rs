@@ -86,13 +86,19 @@ fn run_policy() -> ExitCode {
     let root = workspace_root();
     match check_workspace_policy(&root) {
         Ok(report) => {
+            let cargo_target = report
+                .cargo_build_target
+                .as_deref()
+                .unwrap_or("(unset, rustc host)");
             println!(
-                "policy: ok ({} members, {} path edges, {} optional features, combinations [{}], host [{}])",
+                "policy: ok ({} members, {} path edges, {} optional features, combinations [{}], rustc host [{}], cargo build.target [{}], checked [{}])",
                 report.members,
                 report.path_edges,
                 report.optional_features,
                 report.feature_combinations.join(", "),
-                report.host_targets_checked.join(", ")
+                report.rustc_host,
+                cargo_target,
+                report.targets_checked.join(", ")
             );
             ExitCode::SUCCESS
         }

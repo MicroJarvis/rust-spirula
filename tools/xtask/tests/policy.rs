@@ -1,4 +1,6 @@
-use spirula_xtask::{check_workspace_policy, workspace_gate_steps, workspace_root};
+use spirula_xtask::{
+    check_workspace_policy, ensure_host_only_gate, workspace_gate_steps, workspace_root,
+};
 
 #[test]
 fn workspace_policy_matches_live_manifests() {
@@ -13,18 +15,23 @@ fn workspace_policy_matches_live_manifests() {
         "no optional features are declared yet"
     );
     assert_eq!(report.feature_combinations, vec!["default".to_owned()]);
-    assert_eq!(report.host_targets_checked.len(), 1);
-    assert!(
-        !report.host_targets_checked[0].is_empty(),
-        "host triple must come from rustc"
+
+    let rustc_host = rustc_host_from_process();
+    assert_eq!(
+        report.rustc_host, rustc_host,
+        "policy must report the actual rustc host (including Windows hosts)"
     );
-    assert!(
-        !report
-            .host_targets_checked
-            .iter()
-            .any(|t| t.contains("windows")),
-        "policy must not invent a Windows target that was not run"
+    assert_eq!(
+        report.targets_checked,
+        vec![rustc_host.clone()],
+        "host-only gate checks the rustc host triple, not an invented OS filter"
     );
+    // Matching override is fine; a differing override would have failed policy.
+    if let Some(cargo_target) = &report.cargo_build_target {
+        assert_eq!(cargo_target, &rustc_host);
+    }
+    ensure_host_only_gate(&report.rustc_host, report.cargo_build_target.as_deref())
+        .expect("live tree must satisfy the host-only gate");
 }
 
 #[test]
@@ -35,8 +42,23 @@ fn verify_gate_stays_host_only_four_cargo_steps() {
         assert_eq!(step.program, "cargo");
         assert!(
             !step.args.contains(&"--target"),
-            "{} must remain host-only",
+            "{} must remain host-only on the CLI; Cargo build.target overrides are policed separately",
             step.name
         );
     }
+}
+
+fn rustc_host_from_process() -> String {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
+    let output = std::process::Command::new(rustc)
+        .args(["-vV"])
+        .output()
+        .expect("rustc -vV");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find_map(|line| line.strip_prefix("host: ").map(str::trim))
+        .filter(|host| !host.is_empty())
+        .expect("rustc host")
+        .to_owned()
 }

@@ -13,7 +13,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub use gate::{GateStep, diff_gate_step, workspace_gate_steps};
-pub use policy::{PolicyReport, check_workspace_policy};
+pub use policy::{
+    PolicyReport, TargetLookup, check_workspace_policy, discover_cargo_build_target,
+    ensure_host_only_gate, parse_build_target_from_config,
+};
 
 /// Summary of the document/status check.
 #[derive(Debug, Clone)]
