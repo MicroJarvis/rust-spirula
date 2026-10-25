@@ -40,11 +40,11 @@ Observed on this host (fresh verify after the P1-F06 changes):
 |---|---|
 | fixtures | pass (checksummed fixture set) |
 | docs | pass (feature rows, links, completed-feature artifacts, error catalog) |
-| policy | pass (8 members, lint inheritance, target architecture edges, CLI dep shape, feature combinations `[default]`, rustc host + host-only Cargo target gate) |
+| policy | pass (8 members, lint inheritance, target architecture edges, CLI dep shape, feature combinations `[default]`, rustc host pinned via `--target`) |
 | fmt / check / test / clippy / diff | pass |
 | `spirula-xtask verify` | ok (8 checks: fixtures, docs, policy, fmt, check, test, clippy, diff) |
 | optional features | none declared; `default` is the only meaningful combination |
-| `--target` / Windows | not part of the gate; not executed |
+| `--target` | compile steps pin live rustc host (not a cross matrix); Windows host triples are allowed when that is the host |
 
 ## 4. Feature evidence
 
@@ -59,6 +59,7 @@ Observed on this host (fresh verify after the P1-F06 changes):
 
 ## 5. Explicit non-claims
 
-- No Windows host or cross `--target` build was run for this exit.
+- No cross-compilation matrix was run; compile steps only pin the development
+  machine’s rustc host triple.
 - `spirula-application` was not added; CLI remains a skeleton entry adapter.
 - Phase 2 GPU work (`P2-F01` onward) is unstarted.

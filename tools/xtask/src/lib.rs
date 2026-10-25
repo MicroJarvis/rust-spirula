@@ -12,11 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use gate::{GateStep, diff_gate_step, workspace_gate_steps};
-pub use policy::{
-    PolicyReport, TargetLookup, check_workspace_policy, discover_cargo_build_target,
-    ensure_host_only_gate, parse_build_target_from_config,
-};
+pub use gate::{GateStep, diff_gate_step, ensure_compile_steps_pin_host, workspace_gate_steps};
+pub use policy::{PolicyReport, check_workspace_policy, rustc_host_triple};
 
 /// Summary of the document/status check.
 #[derive(Debug, Clone)]

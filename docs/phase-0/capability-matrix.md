@@ -154,8 +154,9 @@ refer to [fixtures.md](fixtures.md).
   completion markers remain P5-F05, so `C-DATA-20` stays `未开始`.
 - `C-X-06` is implemented by `spirula-xtask` (P1-F06): inherited workspace
   lints, architecture path-edge policy, declared feature combinations, CLI
-  entry-adapter checks, and the fixed host gate. Windows/cross `--target`
-  coverage remains `C-X-05` / P9-F01 and was not claimed here.
+  entry-adapter checks, and the fixed gate with compile steps pinned to the
+  rustc host via `--target`. Multi-platform/`--target` matrices remain
+  `C-X-05` / P9-F01.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.

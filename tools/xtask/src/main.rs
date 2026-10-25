@@ -13,7 +13,8 @@ use std::process::{Command, ExitCode};
 use std::time::Instant;
 
 use spirula_xtask::{
-    check_docs, check_workspace_policy, diff_gate_step, workspace_gate_steps, workspace_root,
+    check_docs, check_workspace_policy, diff_gate_step, rustc_host_triple, workspace_gate_steps,
+    workspace_root,
 };
 
 fn main() -> ExitCode {
@@ -86,18 +87,13 @@ fn run_policy() -> ExitCode {
     let root = workspace_root();
     match check_workspace_policy(&root) {
         Ok(report) => {
-            let cargo_target = report
-                .cargo_build_target
-                .as_deref()
-                .unwrap_or("(unset, rustc host)");
             println!(
-                "policy: ok ({} members, {} path edges, {} optional features, combinations [{}], rustc host [{}], cargo build.target [{}], checked [{}])",
+                "policy: ok ({} members, {} path edges, {} optional features, combinations [{}], rustc host [{}], gate --target [{}])",
                 report.members,
                 report.path_edges,
                 report.optional_features,
                 report.feature_combinations.join(", "),
                 report.rustc_host,
-                cargo_target,
                 report.targets_checked.join(", ")
             );
             ExitCode::SUCCESS
@@ -158,20 +154,29 @@ fn run_verify() -> ExitCode {
     baseline_note(&root);
 
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let gate = workspace_gate_steps();
-    for step in gate {
+    let rustc_host = match rustc_host_triple() {
+        Ok(host) => host,
+        Err(error) => {
+            eprintln!("verify: could not resolve rustc host: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let gate = workspace_gate_steps(&rustc_host);
+    for step in &gate {
         let program = if step.program == "cargo" {
             cargo.as_str()
         } else {
             step.program
         };
-        if !run_tool(step.name, program, step.args, &root) {
+        let args = step.arg_refs();
+        if !run_tool(step.name, program, &args, &root) {
             failures += 1;
         }
     }
     if root.join(".git").exists() {
         let diff = diff_gate_step();
-        if !run_tool(diff.name, diff.program, diff.args, &root) {
+        let args = diff.arg_refs();
+        if !run_tool(diff.name, diff.program, &args, &root) {
             failures += 1;
         }
     }
