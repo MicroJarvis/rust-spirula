@@ -92,9 +92,10 @@ error: <message> (code: SP-GPU-002)
 ```
 
 The `error:` prefix and exit code are the compatibility contract; the message
-may improve. `cli_stderr_line` escapes LF, CR, NEL (U+0085), U+2028 and
-U+2029 inside that line as `\n`, `\r`, `\u0085`, `\u2028` and `\u2029`. The
-stored `message` is unchanged. The UI displays `message` and offers the code
+may improve. `cli_stderr_line` escapes LF, CR, VT (U+000B), FF (U+000C),
+NEL (U+0085), U+2028 and U+2029 inside that line as `\n`, `\r`, `\v`, `\f`,
+`\u0085`, `\u2028` and `\u2029`. The stored `message` is unchanged. The UI
+displays `message` and offers the code
 for copying. In
 structured/event form the same error serializes as:
 
@@ -123,12 +124,13 @@ left open; they do not add or renumber codes.
   `Display` uses `message` unchanged and does not embed the code. The CLI
   line also omits the code unless the code form below is requested.
 - `cli_stderr_line` returns exactly one physical line in both `show_code`
-  modes. LF, CR, NEL (U+0085), U+2028 and U+2029 are escaped as `\n`, `\r`,
-  `\u0085`, `\u2028` and `\u2029`. This is a display encoding: a message that
-  already contains those backslash sequences is unchanged and therefore
-  indistinguishable on the CLI line. `message()`, `Display` and event JSON
-  keep the original characters. JSON string escaping is unchanged, including
-  raw U+2028 and U+2029.
+  modes. LF, CR, VT (U+000B), FF (U+000C), NEL (U+0085), U+2028 and U+2029
+  are escaped as `\n`, `\r`, `\v`, `\f`, `\u0085`, `\u2028` and `\u2029`.
+  This is a display encoding: a message that already contains those backslash
+  sequences is unchanged and therefore indistinguishable on the CLI line.
+  `message()`, `Display` and event JSON keep the original characters. JSON
+  string escaping is unchanged: VT and FF stay `\u000b` and `\u000c`, and
+  U+2028 and U+2029 stay raw.
 - Context accepts only the twelve stable keys. A second insert of the same
   key fails. Values are opaque strings, including empty. Event JSON emits
   present keys in the key order listed in section 1.1, not insertion order.

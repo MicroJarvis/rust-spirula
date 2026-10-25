@@ -345,6 +345,33 @@ fn cli_stderr_line_escapes_line_separators_without_changing_message_or_json() {
 }
 
 #[test]
+fn cli_stderr_line_escapes_vertical_tab_and_form_feed() {
+    let message = "above\u{000b}mid\u{000c}below";
+    let error = DomainError::try_new(ErrorCode::ReadFailed, message).unwrap();
+
+    assert_eq!(error.message(), message);
+    assert_eq!(error.to_string(), message);
+
+    let plain = error.cli_stderr_line(false);
+    let coded = error.cli_stderr_line(true);
+    assert_eq!(plain, "error: above\\vmid\\fbelow");
+    assert_eq!(coded, "error: above\\vmid\\fbelow (code: SP-IO-003)");
+    for line in [&plain, &coded] {
+        assert!(
+            !line
+                .chars()
+                .any(|character| matches!(character, '\u{000b}' | '\u{000c}')),
+            "cli line broke into more than one physical line: {line:?}"
+        );
+    }
+
+    let json = error.to_event_json();
+    assert!(json.contains(r#""message":"above\u000bmid\u000cbelow""#));
+    assert!(!json.contains('\u{000b}'));
+    assert!(!json.contains('\u{000c}'));
+}
+
+#[test]
 fn suggested_actions_cover_only_clear_catalog_meanings() {
     assert_eq!(
         ErrorCode::ValueOutOfRange.suggested_user_action(),

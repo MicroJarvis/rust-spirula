@@ -637,8 +637,9 @@ impl DomainError {
     /// One stderr line. `show_code` is the `SPIRULA_ERROR_CODES=1` form.
     ///
     /// Core does not read the environment variable; the CLI adapter does.
-    /// LF, CR, NEL (U+0085), U+2028 and U+2029 in the message are escaped so
-    /// the result stays a single physical line. [`Self::message`] is unchanged.
+    /// LF, CR, VT, FF, NEL (U+0085), U+2028 and U+2029 in the message are
+    /// escaped so the result stays a single physical line. [`Self::message`]
+    /// is unchanged.
     pub fn cli_stderr_line(&self, show_code: bool) -> String {
         let mut line = String::from("error: ");
         push_cli_message(&mut line, &self.message);
@@ -741,6 +742,8 @@ fn push_cli_message(line: &mut String, message: &str) {
         match character {
             '\n' => line.push_str("\\n"),
             '\r' => line.push_str("\\r"),
+            '\u{000b}' => line.push_str("\\v"),
+            '\u{000c}' => line.push_str("\\f"),
             '\u{0085}' => line.push_str("\\u0085"),
             '\u{2028}' => line.push_str("\\u2028"),
             '\u{2029}' => line.push_str("\\u2029"),
