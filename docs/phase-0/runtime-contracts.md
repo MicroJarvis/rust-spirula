@@ -228,7 +228,7 @@ Ordering and delivery guarantees:
 
 ```text
 Completed { step }
-Canceled  { step, reason: User | Shutdown | Timeout, saved_checkpoint: Option<PathBuf> }
+Canceled  { step, reason: User | Shutdown | Timeout | Superseded, saved_checkpoint: Option<String> }
 Failed    { error }
 ```
 
@@ -311,6 +311,25 @@ CancelReason = User | Shutdown | Timeout | Superseded
 - a timeout is a `Canceled { reason: Timeout }`, not a retryable I/O error;
 - shutdown from any state requests cancellation and waits for
   `ShutdownComplete` or a bounded drain deadline, whichever comes first.
+
+### 5.1 P1-F03 binding decisions
+
+`spirula-core` implements the token and the progress/terminal payloads.
+Session loops, channels, SIGINT, and checkpoint files stay later. Details
+are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
+
+- The token is cloneable and shared. One atomic word stores the first
+  `CancelReason`, so a canceled observation includes that reason. Repeated
+  `request` calls do nothing. `check` returns `SP-CAN-001` with context
+  `actual` set to `user`, `shutdown`, `timeout`, or `superseded`.
+- `total_steps` may be absent. That means the total is indeterminate.
+  `Some(0)` is an empty total. A known total requires `step <= total`
+  (`SP-INP-003`). Metric names are unique and non-blank (`SP-INP-001`);
+  metric values are finite (`SP-INP-003`).
+- A terminal outcome is `Completed`, `Canceled`, or `Failed`. `Canceled`
+  keeps `Superseded`. The checkpoint path is a string. Publishing progress
+  after a terminal outcome, or a second terminal outcome, returns
+  `SP-SESS-001` and keeps the first outcome.
 
 ## 6. GPU boundary
 

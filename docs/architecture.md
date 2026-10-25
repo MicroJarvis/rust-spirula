@@ -100,7 +100,10 @@ recorded in [docs/phase-0/runtime-contracts.md](phase-0/runtime-contracts.md).
 P1-F01 implements that error catalog in `spirula-core` (`ErrorCode`,
 `DomainError`, context keys, CLI text and exit codes). P1-F02 implements the
 training-config document in the same crate; filesystem backup stays in
-P1-F05. A crate does not define
+P1-F05. P1-F03 implements the cooperative cancel token and progress/terminal
+payloads in `spirula-core`; session orchestration stays in P5-F01 and P6-F01.
+The primitive contract is
+[docs/phase-1/cancellation.md](phase-1/cancellation.md). A crate does not define
 its own error string, event shape, or schema version; it implements the
 catalog and envelope in that document.
 

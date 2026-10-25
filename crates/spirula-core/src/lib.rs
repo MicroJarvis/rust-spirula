@@ -6,14 +6,19 @@
 //! `docs/phase-1/config.md`. Writers call [`TrainConfig::validate`] and
 //! return [`DomainError`] instead of emitting a nonempty closed choice the
 //! reader rejects. Empty strings are the `null` encoding and stay writable.
+//! P1-F03 owns the cancel token and progress payloads described in
+//! `docs/phase-1/cancellation.md`.
 
+mod cancel;
 mod config;
 mod config_bind;
 mod config_doc;
 mod config_value;
 mod error;
 mod json_doc;
+mod progress;
 
+pub use cancel::{CancelReason, CancelToken};
 pub use config::{
     ChoiceKind, FieldSpec, FieldType, TRAIN_CONFIG_FIELD_COUNT, TRAIN_CONFIG_FIELDS,
     TRAIN_CONFIG_SECTIONS, TRAIN_CONFIG_TIERS, TrainConfig, field_spec,
@@ -27,3 +32,6 @@ pub use error::{
     UnknownErrorCode, UserAction, process_exit_code,
 };
 pub use json_doc::{JsonKind, JsonNumber, JsonValue, parse_json};
+pub use progress::{
+    OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,
+};

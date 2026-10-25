@@ -30,9 +30,11 @@ and fixtures with:
 cargo run -p spirula-xtask -- verify
 ```
 
-P1-F01 (domain errors and stable IDs) and P1-F02 (versioned training
-config) are implemented in `spirula-core`. The config contract is
-[docs/phase-1/config.md](docs/phase-1/config.md). The next feature is
-P1-F03 (cancellation and progress) in
+P1-F01 (domain errors and stable IDs), P1-F02 (versioned training
+config), and P1-F03 (cancellation and progress primitives) are implemented
+in `spirula-core`. The contracts are
+[docs/phase-1/config.md](docs/phase-1/config.md) and
+[docs/phase-1/cancellation.md](docs/phase-1/cancellation.md). The next feature
+is P1-F04 (math, camera, and scene types) in
 [docs/project-plan.md](docs/project-plan.md).
 

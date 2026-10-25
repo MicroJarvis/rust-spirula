@@ -99,7 +99,7 @@ refer to [fixtures.md](fixtures.md).
 | C-CLI-06 | resume command | `cli/main.cpp:539-542`, `checkpoint/Resume.h` | run dir/checkpoint | resumed session | explicit flags override checkpoint config | P6-F02/P5-F05 | `spirula-cli` | 未开始 |
 | C-CLI-07 | subcommands other than train | `Main.cpp:71-106`, `Tools.h:52-62` | argv | tool output | sfm/sam/mesh/geometry/dense/e57/lidar/partition/encode later | P8/P7 target features | `spirula-cli` | 未开始 |
 | C-APP-01 | command/event session API | (new; reference is `TrainerSession` + GUI worker) | commands | events | bounded channel, typed events, one owner | P6-F01 | `spirula-application` | 未开始 |
-| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 未开始 |
+| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中 |
 
 ## Cross-cutting
 
@@ -132,6 +132,9 @@ refer to [fixtures.md](fixtures.md).
 - `C-DATA-22` is implemented in `spirula-core` (P1-F02): the 251-field
   config table, `schema_version` 1, and legacy reads. `C-X-03` stays
   `进行中` because checkpoint `format_version` validation is still P3-F07.
+- `C-APP-02` has the core token and progress/terminal payloads (P1-F03).
+  Session checkpoints, channels, and CLI/UI cancellation remain P5-F06 and
+  P6-F01, so the row stays `进行中`.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.

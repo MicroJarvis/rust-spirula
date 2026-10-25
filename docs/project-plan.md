@@ -72,8 +72,8 @@ Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架
 |---|---|---|---|---|---|---|
 | P1-F01 | 领域错误与稳定 ID | `spirula-core` | P0-F05 | 定义领域错误枚举；分配稳定错误码；保留来源、字段和用户可读信息 | 定义可匹配错误类别、稳定 ID 和显示信息；覆盖非法输入测试 | 已完成 |
 | P1-F02 | 配置与版本化序列化 | `spirula-core` | P0-F05, P1-F01 | 定义配置字段和默认值；加入 schema/version；测试缺失、未知和非法字段 | 配置有默认值、校验、版本字段和兼容读取失败语义 | 已完成 |
-| P1-F03 | 取消与进度原语 | `spirula-core` | P0-F05, P1-F01 | 定义取消 token 和检查点；定义进度值与事件载荷；测试重复取消、终止和错误终态 | 定义合作式取消、进度值和事件载荷；测试重复取消和终态 | 当前 |
-| P1-F04 | 数学、相机与场景基础类型 | `spirula-core` | P0-F04, P1-F01 | 实现向量、矩阵和四元数；实现相机投影与坐标变换；定义场景和 splat 不变量 | 实现变换、投影、坐标约定和场景不变量；与 P0 fixtures 对照 | 未开始 |
+| P1-F03 | 取消与进度原语 | `spirula-core` | P0-F05, P1-F01 | 定义取消 token 和检查点；定义进度值与事件载荷；测试重复取消、终止和错误终态 | 定义合作式取消、进度值和事件载荷；测试重复取消和终态 | 已完成 |
+| P1-F04 | 数学、相机与场景基础类型 | `spirula-core` | P0-F04, P1-F01 | 实现向量、矩阵和四元数；实现相机投影与坐标变换；定义场景和 splat 不变量 | 实现变换、投影、坐标约定和场景不变量；与 P0 fixtures 对照 | 当前 |
 | P1-F05 | 原子文件与 fixture harness | `spirula-io` | P0-F04, P1-F01 | 实现临时文件命名与原子替换；处理损坏和中断写入；提供可复用临时目录 fixture harness | 临时文件加原子替换；损坏、并发失败和恢复路径有测试 | 未开始 |
 | P1-F06 | workspace 基础检查 | workspace | P0-F06 | 固定 fmt/check/test/clippy 命令；固定 lint 与 feature 组合；检查 CLI 仅作入口适配 | 固化 lint、格式化、测试和本地检查命令；CLI 不含隐藏业务逻辑 | 未开始 |
 
@@ -263,5 +263,6 @@ feat(P6-F03): add Slint application shell
 Phase 0 已完成，证据见 `docs/phase-0/exit-report.md`。P1-F01（领域错误与稳定
 ID）已在 `spirula-core` 落地，契约补记见 `docs/phase-0/runtime-contracts.md`
 第 1.4 节。P1-F02（配置与版本化序列化）已在 `spirula-core` 落地，契约见
-`docs/phase-1/config.md`。下一步是 P1-F03：取消与进度原语；完成后更新本文件中的状态、
+`docs/phase-1/config.md`。P1-F03（取消与进度原语）已在 `spirula-core` 落地，契约见
+`docs/phase-1/cancellation.md`。下一步是 P1-F04：数学、相机与场景基础类型；完成后更新本文件中的状态、
 当前执行点和相关能力矩阵。
