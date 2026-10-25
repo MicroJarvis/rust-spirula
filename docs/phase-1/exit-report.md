@@ -76,7 +76,10 @@ payload/result retention contracts, dropped-control watermark, subscriber
 Drop capacity). Follow-up worker-boundary: `check_progress` calls
 `ProgressSnapshot::validate()`, kind-vs-payload LoadDone rejection,
 pre-mailbox sanitize/bound, bounded errors keep code/category/retryable/
-user_action.
+user_action. Later acceptance: Reset clears `last_outcome`; successful
+`Stop{save}` emits `Saving`+checkpoint; teardown deadline normalized to
+cancel budget and always joins; O(1) accepted-id watermark; honest
+ownership docs; Accepted/Rejected payload byte accounting.
 
 ## Scope and result
 

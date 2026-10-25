@@ -20,15 +20,23 @@ These fill the frozen sketches. They do not add error codes.
 
 ### Ownership and dependencies
 
-- One `ApplicationService` per process role under test. It is the only writer
-  of `SessionState`, `seq`, active `CommandId`/`RunId`, and drop counters.
-  Each instance allocates a unique `SessionId` (process-wide counter).
+- One `ApplicationService` per process role under test is the **unique logical
+  owner** of session state. All mutations of `SessionState`, `seq`, active
+  `CommandId`/`RunId`, history, and drop counters go through one `Mutex`
+  (caller `submit`/`Drop`, the owner loop, and tests). That is a serialized
+  owner-state binding, not a claim that only one OS thread ever touches the
+  mutex. Each instance allocates a unique `SessionId` (process-wide counter).
+  Command ids and run ids use separate counters so accepted-command expiry is
+  an O(1) watermark, not an unbounded set.
 - Public crate deps: `spirula-core` only. Allowed future edges to
   `spirula-io`/`spirula-train` stay unused here.
-- Exactly one owner thread serializes admission, worker-event apply, history,
-  snapshot, and notify. Rejected or admitted commands never spawn a thread.
-  The fake worker is one long-lived thread; it publishes through a bounded
-  worker→owner mailbox and never awaits a subscriber or log sink.
+- One dedicated owner thread applies worker mailboxes and drives shutdown.
+  Rejected or admitted commands never spawn a thread. The fake worker is one
+  long-lived thread; it publishes through a bounded worker→owner mailbox and
+  never awaits a subscriber or log sink. Service `Drop` always joins owner and
+  worker within the effective `teardown_deadline` (normalized to cover cancel
+  observation); it never detaches immortal threads or emits canonical events
+  after `ShutdownComplete`.
 
 ### Commands (P1-F07 surface)
 
@@ -39,9 +47,9 @@ Full payload names from the runtime contract stay reserved. This slice admits:
 | `ProbeLoad { label }` | Fake load: `Idle`/`Failed`/`Ready` → `Loading` → `Ready` |
 | `ProbeRun { steps }` | Fake multi-step work: `Ready` → `Preparing` → `Running` (maps to contract `Training`) |
 | `Pause` / `Resume` | Cooperative pause at the next fake step boundary |
-| `Stop { save }` | Cancel active probe; optional fake checkpoint label |
+| `Stop { save }` | Cancel active probe; `save=true` takes `Stopping`→`Saving`→checkpoint→`Ready` |
 | `Shutdown` | Cancel, drain, emit `ShutdownComplete`, close notify |
-| `Reset` | `Failed` → `Idle` |
+| `Reset` | `Failed` → `Idle` and clears `last_outcome` |
 
 `StartTraining` / real `LoadDataset` are not implemented. Submitting an
 unsupported payload is impossible in the type system; CLI wiring of those
@@ -160,8 +168,9 @@ unbounded control deque.
   only on publish disconnect).
 - `command_result(id)` → `Pending` | `Ready` | `Expired` | `Unknown`. Pending
   covers the active probe **and** outstanding `stop_owner` /
-  `shutdown_owner` identities. Accepted ids are remembered permanently so an
-  evicted result stays `Expired`, never `Unknown`.
+  `shutdown_owner` identities. Accepted command ids use a contiguous id space
+  and an O(1) `max_accepted` watermark so an evicted result stays `Expired`,
+  never `Unknown`, without an unbounded seen-set.
 - Every accepted command produces exactly one canonical terminal for its
   `command_id`: `Completed { outcome }` or `ShutdownComplete` (shutdown owner
   only). `Failed` is only a `RunOutcome` / `TerminalOutcome` payload.
@@ -179,13 +188,17 @@ unbounded control deque.
 
 ### Save-failure vs cancel (§4 vs §5)
 
+Successful `Stop{save:true}` follows the frozen machine:
+`Running|Paused` → `Stopping` → `Saving` → `CheckpointSaved` → `Ready`, with
+the run terminal `Canceled` carrying the checkpoint label.
+
 Runtime-contracts §4 lists `Stopping | save failed | Failed`. §5 states that
 save-on-cancel failure keeps the run `Canceled` with a `Warning` and leaves
-the previous checkpoint intact. **P1-F07 binding:** §5 wins for
-`Stop{save}` / cancel-driven save. The fake probe emits `Canceled` +
-`Warning` (`SP-IO-004`) and returns the session to `Ready`. The §4 `Failed`
-transition is reserved for a future **explicit Save** command failure after
-entering `Saving`, not for cancel save-on-stop. Tests cover the cancel path.
+the previous checkpoint intact. **P1-F07 binding for save failure:** §5 wins
+for cancel-driven save failure — `Canceled` + `Warning` (`SP-IO-004`) and
+`Stopping`→`Ready` without entering `Failed`. The §4 `Failed` transition is
+reserved for a future **explicit Save** command failure after entering
+`Saving`, not for cancel save-on-stop. Tests cover both paths.
 
 ### Progress, log, diagnostics
 

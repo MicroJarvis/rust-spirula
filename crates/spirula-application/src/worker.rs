@@ -141,14 +141,19 @@ impl WorkerHandle {
     pub(crate) fn send(&self, req: WorkerRequest) {
         let _ = self.tx.send(req);
     }
-}
 
-impl Drop for WorkerHandle {
-    fn drop(&mut self) {
+    /// Request shutdown and join. Idempotent if already joined.
+    pub(crate) fn shutdown_join(&mut self) {
         let _ = self.tx.send(WorkerRequest::Shutdown);
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+    }
+}
+
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        self.shutdown_join();
     }
 }
 

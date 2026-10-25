@@ -118,15 +118,21 @@ impl SessionLimits {
         if self.worker_step_delay.is_zero() {
             self.worker_step_delay = Duration::from_millis(1);
         }
-        if self.teardown_deadline.is_zero() {
-            self.teardown_deadline = Duration::from_millis(1);
-        }
         if self.cancel_poll_interval.is_zero() {
             self.cancel_poll_interval = Duration::from_millis(1);
         }
         let max_poll = Duration::from_millis(250).min(self.heartbeat_interval);
         if self.cancel_poll_interval > max_poll {
             self.cancel_poll_interval = max_poll;
+        }
+        // Teardown must cover cancel observation + drain/join; a 1ms deadline
+        // with a 250ms poll cannot claim "no survivors" while detaching.
+        let min_teardown = self
+            .cancel_poll_interval
+            .saturating_mul(4)
+            .saturating_add(Duration::from_millis(100));
+        if self.teardown_deadline < min_teardown {
+            self.teardown_deadline = min_teardown;
         }
         self
     }

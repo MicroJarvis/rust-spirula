@@ -77,7 +77,9 @@ struct State {
     stop_owner: Option<CommandId>,
     shutdown_owner: Option<CommandId>,
     shutdown_done: bool,
-    ids: IdGen,
+    /// Contiguous command identities (separate from run ids).
+    command_ids: IdGen,
+    run_ids: IdGen,
     latest_progress: Option<spirula_core::ProgressSnapshot>,
     /// Live save-on-cancel flag shared with the running fake worker.
     active_save_on_cancel: Option<Arc<AtomicBool>>,
@@ -168,7 +170,8 @@ impl ApplicationService {
             stop_owner: None,
             shutdown_owner: None,
             shutdown_done: false,
-            ids: IdGen::new(1),
+            command_ids: IdGen::new(1),
+            run_ids: IdGen::new(1),
             latest_progress: None,
             active_save_on_cancel: None,
         };
@@ -277,7 +280,7 @@ impl ApplicationService {
             return SubmitOutcome::Rejected { error };
         }
 
-        let id = CommandId::new(st.ids.next());
+        let id = CommandId::new(st.command_ids.next());
         let payload = command.payload.clone();
 
         // Pause/Resume/Reset apply immediately (no work-queue slot).
@@ -349,6 +352,8 @@ impl ApplicationService {
                         command: command.payload.clone(),
                     },
                 );
+                // Frozen Reset clears the failed snapshot error before Idle.
+                st.last_outcome = None;
                 transition(&mut st, &self.shared.notifier, SessionState::Idle, "reset");
                 complete_control(
                     &mut st,
@@ -535,41 +540,30 @@ impl Drop for ApplicationService {
             let _ = st.cancel.request(CancelReason::Shutdown);
         }
         let _ = self.submit(Command::new(CommandPayload::Shutdown));
-        let deadline = {
-            self.shared
-                .state
-                .lock()
-                .expect("state")
-                .limits
-                .teardown_deadline
-        };
+        let deadline = lock(&self.shared.state).limits.teardown_deadline;
         if let Some(handle) = self.owner.lock().expect("owner").take() {
             let start = Instant::now();
-            loop {
-                if handle.is_finished() {
-                    let _ = handle.join();
-                    break;
-                }
+            while !handle.is_finished() {
                 if start.elapsed() >= deadline {
-                    // Force-fail any still-pending identities so nothing stays Pending.
                     let mut st = lock(&self.shared.state);
-                    force_teardown_terminals(&mut st, &self.shared.notifier);
-                    // Detach: owner may still exit; avoid blocking Drop forever.
+                    if !st.shutdown_done {
+                        force_teardown_terminals(&mut st, &self.shared.notifier);
+                    }
+                    // Still join — never detach an immortal owner.
                     break;
                 }
-                thread::sleep(Duration::from_millis(2));
+                thread::sleep(Duration::from_millis(1));
             }
+            let _ = handle.join();
         } else {
             let mut st = lock(&self.shared.state);
-            force_teardown_terminals(&mut st, &self.shared.notifier);
+            if !st.shutdown_done {
+                force_teardown_terminals(&mut st, &self.shared.notifier);
+            }
         }
-        // Drop the worker handle inside shared (joins worker thread).
-        // Replace with a fresh channel pair is unnecessary; dropping Shared
-        // after this struct's fields... worker lives in Arc<Shared>. Clear it:
-        // We cannot move out of Arc easily; WorkerHandle::drop on Arc drop is OK
-        // if we joined owner. Request worker shutdown explicitly:
-        if let Ok(w) = self.shared.worker.lock() {
-            w.send(WorkerRequest::Shutdown);
+        // Join the fake worker before Drop returns (no survivors).
+        if let Ok(mut w) = self.shared.worker.lock() {
+            w.shutdown_join();
         }
     }
 }
@@ -620,7 +614,7 @@ fn admit_stop(st: &mut State, notifier: &Arc<Notifier>, payload: &CommandPayload
 
     // Idempotent: already have pending/owner stop while working or stopping.
     if st.stop_owner.is_some() || st.pending_stop.is_some() {
-        let id = CommandId::new(st.ids.next());
+        let id = CommandId::new(st.command_ids.next());
         st.history.note_accepted(id);
         publish_control(
             st,
@@ -654,7 +648,7 @@ fn admit_stop(st: &mut State, notifier: &Arc<Notifier>, payload: &CommandPayload
         return SubmitOutcome::Rejected { error };
     }
 
-    let id = CommandId::new(st.ids.next());
+    let id = CommandId::new(st.command_ids.next());
     st.history.note_accepted(id);
     publish_control(
         st,
@@ -679,7 +673,7 @@ fn admit_stop(st: &mut State, notifier: &Arc<Notifier>, payload: &CommandPayload
 
 fn admit_shutdown(st: &mut State, notifier: &Arc<Notifier>) -> SubmitOutcome {
     if let Some(existing) = st.shutdown_owner {
-        let id = CommandId::new(st.ids.next());
+        let id = CommandId::new(st.command_ids.next());
         st.history.note_accepted(id);
         publish_control(
             st,
@@ -697,7 +691,7 @@ fn admit_shutdown(st: &mut State, notifier: &Arc<Notifier>) -> SubmitOutcome {
         return SubmitOutcome::Accepted { id };
     }
 
-    let id = CommandId::new(st.ids.next());
+    let id = CommandId::new(st.command_ids.next());
     st.history.note_accepted(id);
     publish_control(
         st,
@@ -847,7 +841,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
         let _ = st.cancel.request(CancelReason::User);
     }
     *lock(&st.pause) = false;
-    let run_id = RunId::new(st.ids.next());
+    let run_id = RunId::new(st.run_ids.next());
     st.active_command = Some(id);
     st.active_run = Some(run_id);
     st.active_payload = Some(payload.clone());
@@ -1076,6 +1070,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             }
             // §5 save-on-cancel failure: keep Canceled + Warning; do not take §4
             // Stopping/save-failed → Failed (that path is for explicit Save).
+            // Successful Stop{save}: Stopping → Saving → checkpoint → Ready.
             if save_failed {
                 if let RunOutcome::Canceled { step, reason, .. } = &outcome {
                     outcome = RunOutcome::Canceled {
@@ -1097,6 +1092,28 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                     Some(run_id),
                     Event::Warning { error: warn },
                 );
+                if st.phase == SessionState::Stopping {
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Ready,
+                        "cancel_save_failed",
+                    );
+                } else if st.phase == SessionState::Loading {
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Idle,
+                        "run_terminal",
+                    );
+                } else {
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Ready,
+                        "run_terminal",
+                    );
+                }
             } else {
                 let checkpoint = match &outcome {
                     RunOutcome::Canceled {
@@ -1109,6 +1126,10 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                     _ => None,
                 };
                 if let Some((step, label)) = checkpoint {
+                    // Frozen: Stopping → Saving, checkpoint, then Ready.
+                    if st.phase == SessionState::Stopping {
+                        transition(&mut st, &shared.notifier, SessionState::Saving, "stop_save");
+                    }
                     publish_control(
                         &mut st,
                         &shared.notifier,
@@ -1116,19 +1137,21 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                         Some(run_id),
                         Event::CheckpointSaved { step, label },
                     );
+                    transition(&mut st, &shared.notifier, SessionState::Ready, "saved");
+                } else {
+                    let next = match &outcome {
+                        RunOutcome::Failed { .. } => SessionState::Failed,
+                        RunOutcome::Canceled { .. } | RunOutcome::Completed { .. } => {
+                            if st.phase == SessionState::Loading {
+                                SessionState::Idle
+                            } else {
+                                SessionState::Ready
+                            }
+                        }
+                    };
+                    transition(&mut st, &shared.notifier, next, "run_terminal");
                 }
             }
-            let next = match &outcome {
-                RunOutcome::Failed { .. } => SessionState::Failed,
-                RunOutcome::Canceled { .. } | RunOutcome::Completed { .. } => {
-                    if st.phase == SessionState::Loading {
-                        SessionState::Idle
-                    } else {
-                        SessionState::Ready
-                    }
-                }
-            };
-            transition(&mut st, &shared.notifier, next, "run_terminal");
             finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
             complete_pending_stop(&mut st, &shared.notifier);
         }
@@ -1152,13 +1175,27 @@ fn finish_active(
 ) {
     st.last_outcome = Some(outcome.clone());
     let rid = run_id.or(st.active_run.take());
-    publish_control(
-        st,
-        notifier,
-        Some(command_id),
-        rid,
-        Event::Completed { outcome },
-    );
+    if st.shutdown_done {
+        // No canonical events after ShutdownComplete; still retain the result.
+        let envelope = EventEnvelope {
+            event_version: 1,
+            session_id: st.session_id,
+            run_id: rid,
+            seq: st.seq,
+            command_id: Some(command_id),
+            monotonic_ms: st.monotonic_ms(),
+            event: Event::Completed { outcome },
+        };
+        st.history.store_result(command_id, envelope);
+    } else {
+        publish_control(
+            st,
+            notifier,
+            Some(command_id),
+            rid,
+            Event::Completed { outcome },
+        );
+    }
     st.active_command = None;
     st.active_run = None;
     st.active_payload = None;
@@ -1212,7 +1249,7 @@ fn force_teardown_terminals(st: &mut State, notifier: &Arc<Notifier>) {
     st.pending_stop = None;
     if !st.shutdown_done {
         if st.shutdown_owner.is_none() {
-            st.shutdown_owner = Some(CommandId::new(st.ids.next()));
+            st.shutdown_owner = Some(CommandId::new(st.command_ids.next()));
         }
         finish_shutdown(st, notifier);
     }
@@ -1223,7 +1260,7 @@ fn finish_shutdown(st: &mut State, notifier: &Arc<Notifier>) {
         .pending_shutdown
         .take()
         .or(st.shutdown_owner)
-        .unwrap_or_else(|| CommandId::new(st.ids.next()));
+        .unwrap_or_else(|| CommandId::new(st.command_ids.next()));
     transition(st, notifier, SessionState::Closed, "shutdown");
     publish_control(st, notifier, Some(id), None, Event::ShutdownComplete);
     st.shutdown_done = true;
@@ -1273,6 +1310,10 @@ fn publish_control(
     run_id: Option<RunId>,
     event: Event,
 ) {
+    // ShutdownComplete is the last canonical event; nothing after.
+    if st.shutdown_done {
+        return;
+    }
     let seq = st.next_seq();
     let envelope = EventEnvelope {
         event_version: 1,
@@ -1294,6 +1335,9 @@ fn publish_replaceable(
     run_id: Option<RunId>,
     event: Event,
 ) {
+    if st.shutdown_done {
+        return;
+    }
     let seq = st.next_seq();
     let envelope = EventEnvelope {
         event_version: 1,

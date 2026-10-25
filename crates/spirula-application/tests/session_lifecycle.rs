@@ -1040,6 +1040,7 @@ fn session_limits_normalize_zero_and_slow_poll() {
         label_max_bytes: 1,
         cancel_poll_interval: Duration::from_millis(500),
         heartbeat_interval: Duration::from_millis(100),
+        teardown_deadline: Duration::from_millis(1),
         ..SessionLimits::default()
     };
     let app = ApplicationService::start(raw);
@@ -1048,6 +1049,108 @@ fn session_limits_normalize_zero_and_slow_poll() {
     assert!(effective.label_max_bytes >= 32);
     assert!(effective.cancel_poll_interval <= Duration::from_millis(250));
     assert!(effective.cancel_poll_interval <= effective.heartbeat_interval);
+    // Teardown floor covers cancel observation; 1ms cannot silently win.
+    assert!(effective.teardown_deadline >= effective.cancel_poll_interval.saturating_mul(4));
+}
+
+#[test]
+fn reset_clears_failed_last_outcome() {
+    let app = service();
+    app.set_worker_behavior(FakeWorkerBehavior::Fail);
+    let id = accept(
+        &app,
+        CommandPayload::ProbeLoad {
+            label: "fail".into(),
+        },
+    );
+    wait_terminal(&app, id);
+    assert!(matches!(
+        app.snapshot().last_outcome,
+        Some(OutcomeView::Failed { .. })
+    ));
+    let reset = accept(&app, CommandPayload::Reset);
+    wait_terminal(&app, reset);
+    assert!(
+        !matches!(
+            app.snapshot().last_outcome,
+            Some(OutcomeView::Failed { .. })
+        ),
+        "Reset must clear error snapshot: {:?}",
+        app.snapshot()
+    );
+    assert_eq!(app.snapshot().state, SessionState::Idle);
+}
+
+#[test]
+fn saved_stop_enters_saving_then_ready() {
+    let mut limits = SessionLimits::for_test();
+    limits.notification_queue_capacity = 64;
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let (sub, _) = app.subscribe().expect("sub");
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let stop = accept(&app, CommandPayload::Stop { save: true });
+    wait_terminal(&app, run);
+    wait_terminal(&app, stop);
+    let mut saw_saving = false;
+    let mut saw_checkpoint = false;
+    while let Some(env) = sub.try_recv() {
+        match env.event {
+            Event::StateChanged {
+                to: SessionState::Saving,
+                ..
+            } => saw_saving = true,
+            Event::CheckpointSaved { .. } => saw_checkpoint = true,
+            _ => {}
+        }
+    }
+    assert!(saw_saving, "Stop{{save:true}} must enter Saving");
+    assert!(saw_checkpoint, "saved stop must emit CheckpointSaved");
+    assert_eq!(app.snapshot().state, SessionState::Ready);
+}
+
+#[test]
+fn forced_teardown_joins_and_ends_with_shutdown_complete() {
+    let mut limits = SessionLimits::for_test();
+    limits.cancel_poll_interval = Duration::from_millis(250);
+    limits.heartbeat_interval = Duration::from_secs(1);
+    limits.worker_step_delay = Duration::from_millis(500);
+    limits.teardown_deadline = Duration::from_millis(1);
+    limits.notification_queue_capacity = 128;
+    let app = ApplicationService::start(limits);
+    // Effective teardown must have been raised for cancel budget.
+    assert!(app.limits().teardown_deadline >= Duration::from_millis(1000));
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let (sub, _) = app.subscribe().expect("sub");
+    app.stall_gate().set_stalled(true);
+    let _run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    drop(app);
+    let mut saw_shutdown = false;
+    let mut after_shutdown = Vec::new();
+    while let Some(env) = sub.try_recv() {
+        if matches!(env.event, Event::ShutdownComplete) {
+            saw_shutdown = true;
+        } else if saw_shutdown {
+            after_shutdown.push(env.event);
+        }
+    }
+    assert!(saw_shutdown, "forced teardown must emit ShutdownComplete");
+    assert!(
+        after_shutdown.iter().all(|e| {
+            !matches!(
+                e,
+                Event::CommandAccepted { .. } | Event::Completed { .. } | Event::ShutdownComplete
+            )
+        }),
+        "no canonical Accepted/terminal after ShutdownComplete: {after_shutdown:?}"
+    );
 }
 
 #[test]

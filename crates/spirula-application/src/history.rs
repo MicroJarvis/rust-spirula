@@ -19,8 +19,10 @@ pub(crate) struct ControlHistory {
     result_retention: usize,
     results: HashMap<CommandId, EventEnvelope>,
     result_order: VecDeque<CommandId>,
-    /// Accepted command ids. Never forgotten so Expired cannot become Unknown.
-    seen_commands: HashSet<CommandId>,
+    /// Highest accepted command id (dedicated command id space, contiguous).
+    /// O(1) memory: any id in `1..=max_accepted` that is not Ready/Pending is
+    /// Expired — never Unknown after result-cache eviction.
+    max_accepted_command: u64,
 }
 
 impl ControlHistory {
@@ -35,12 +37,18 @@ impl ControlHistory {
             result_retention,
             results: HashMap::new(),
             result_order: VecDeque::new(),
-            seen_commands: HashSet::new(),
+            max_accepted_command: 0,
         }
     }
 
     pub(crate) fn note_accepted(&mut self, id: CommandId) {
-        self.seen_commands.insert(id);
+        self.max_accepted_command = self.max_accepted_command.max(id.get());
+    }
+
+    /// Retain a terminal for `command_result` without publishing (post-shutdown).
+    pub(crate) fn store_result(&mut self, id: CommandId, envelope: EventEnvelope) {
+        self.note_accepted(id);
+        self.retain_result(id, envelope);
     }
 
     fn drop_front(&mut self, drops: &mut DropCounters) {
@@ -85,7 +93,8 @@ impl ControlHistory {
         while self.result_order.len() > self.result_retention {
             if let Some(evict) = self.result_order.pop_front() {
                 self.results.remove(&evict);
-                // `seen_commands` keeps the id so command_result stays Expired.
+                // `max_accepted_command` keeps Expired semantics without a
+                // growing HashSet.
             }
         }
     }
@@ -122,7 +131,7 @@ impl ControlHistory {
         if active == Some(id) {
             return CommandResult::Pending;
         }
-        if self.seen_commands.contains(&id) {
+        if id.get() > 0 && id.get() <= self.max_accepted_command {
             CommandResult::Expired
         } else {
             CommandResult::Unknown

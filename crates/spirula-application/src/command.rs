@@ -85,6 +85,16 @@ impl CommandPayload {
             _ => Ok(()),
         }
     }
+
+    /// Approximate retained size for history byte accounting.
+    pub(crate) fn approx_bytes(&self) -> usize {
+        match self {
+            Self::ProbeLoad { label } => 16 + label.len(),
+            Self::ProbeRun { .. } => 16,
+            Self::Stop { .. } => 12,
+            Self::Pause | Self::Resume | Self::Shutdown | Self::Reset => 8,
+        }
+    }
 }
 
 /// Immediate admission result. Callers never block on work.

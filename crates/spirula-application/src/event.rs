@@ -141,8 +141,9 @@ impl Event {
             Self::Progress(p) => crate::bound::progress_approx_bytes(p),
             Self::Log { message, .. } => 32 + message.len(),
             Self::Warning { error } => crate::bound::error_approx_bytes(error),
-            Self::CommandAccepted { command } | Self::CommandRejected { command, .. } => {
-                48 + command.name().len()
+            Self::CommandAccepted { command } => 48 + command.approx_bytes(),
+            Self::CommandRejected { command, error } => {
+                48 + command.approx_bytes() + crate::bound::error_approx_bytes(error)
             }
             Self::Completed { outcome } => match outcome {
                 OutcomeView::Failed { error } => 64 + crate::bound::error_approx_bytes(error),
