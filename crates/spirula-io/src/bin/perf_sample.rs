@@ -1,18 +1,22 @@
 //! CPU micro-sample for P1-F08: generate a performance report, atomically
-//! publish it, then read it back. Accounted bytes come from an explicit
-//! counter; OS/GPU/timestamp fields stay unavailable with reasons.
+//! publish it, then read it back.
+//!
+//! Fixture bytes are hashed **and** executed. Config JSON is hashed **and**
+//! parsed to define chunk size, iterations, and the resident resource budget.
+//! Source revision/dirty remain explicitly unavailable (not inferred from CWD).
 
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Instant;
 
 use spirula_core::{
-    AccountedBytesTracker, DirtyStatus, EnvironmentInfo, ErrorCode, PERF_REPORT_VERSION,
-    PerfProvenance, PerfReport, PhaseTiming, ProcessStage, SourceRevision, UnavailableMetric,
-    process_exit_code,
+    DirtyStatus, EnvironmentInfo, ErrorCode, PERF_REPORT_VERSION, PerfProvenance, PerfReport,
+    PhaseTiming, ProcessStage, SourceRevision, UnavailableMetric, process_exit_code,
 };
-use spirula_io::{PublishOptions, load_perf_report, provenance_hashes, save_perf_report};
+use spirula_io::{
+    PublishOptions, canonical_sample_config_json, canonical_sample_fixture, load_perf_report,
+    run_measured_workload, save_perf_report,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -30,10 +34,9 @@ fn run() -> Result<(), spirula_core::DomainError> {
         .map(PathBuf::from)
         .unwrap_or_else(|| env::temp_dir().join("spirula-perf-sample-report.json"));
 
-    // Stand-in fixture/config payloads hashed into provenance (not guessed metrics).
-    let fixture_bytes = b"spirula-p1-f08-sample-fixture-v1";
-    let config_bytes = b"{\"sample\":true,\"feature\":\"P1-F08\"}";
-    let (fixture_sha256, config_sha256) = provenance_hashes(fixture_bytes, config_bytes);
+    let fixture_bytes = canonical_sample_fixture();
+    let config_bytes = canonical_sample_config_json().into_bytes();
+    let work = run_measured_workload(&fixture_bytes, &config_bytes)?;
 
     let rustc = option_env!("RUSTC_VERSION")
         .map(str::to_owned)
@@ -46,8 +49,8 @@ fn run() -> Result<(), spirula_core::DomainError> {
         });
     let environment = EnvironmentInfo::from_host(rustc)?;
     let provenance = PerfProvenance::try_new(
-        fixture_sha256,
-        config_sha256,
+        work.fixture_sha256.clone(),
+        work.config_sha256.clone(),
         SourceRevision::unavailable(
             "source revision digest unavailable: sample does not embed a git tree hash",
         )?,
@@ -57,28 +60,13 @@ fn run() -> Result<(), spirula_core::DomainError> {
         environment,
     )?;
 
-    const RESOURCE_BUDGET_BYTES: u64 = 256 * 1024;
-    const WORK_COUNT: u64 = 8;
-    let mut tracker = AccountedBytesTracker::new();
-    let phase_started = Instant::now();
-    for _ in 0..WORK_COUNT {
-        let chunk_len = 8 * 1024_u64;
-        tracker.preflight(chunk_len, RESOURCE_BUDGET_BYTES)?;
-        let chunk = vec![0u8; chunk_len as usize];
-        tracker.allocate(chunk_len)?;
-        let checksum = chunk.iter().fold(0u8, |acc, b| acc.wrapping_add(*b));
-        std::hint::black_box(checksum);
-        tracker.free(chunk_len)?;
-    }
-    let wall_time_ns = phase_started.elapsed().as_nanos() as u64;
-    let accounted = tracker.snapshot("explicit_counter")?;
-
+    let wall_time_ns = work.wall_time.as_nanos() as u64;
     let report = PerfReport::try_new(
         PERF_REPORT_VERSION,
-        "P1-F08",
+        work.config.feature.clone(),
         provenance,
-        accounted,
-        Some(RESOURCE_BUDGET_BYTES),
+        work.accounted.clone(),
+        Some(work.config.resource_budget_bytes),
         UnavailableMetric::try_new(
             "OS process peak (RSS/working-set) is not sampled in P1-F08; use accounted bytes",
         )?,
@@ -96,8 +84,8 @@ fn run() -> Result<(), spirula_core::DomainError> {
             "accounted_allocate_free",
             wall_time_ns,
             "std::time::Instant::elapsed",
-            Some(60_000_000_000),
-            Some(WORK_COUNT),
+            Some(work.config.phase_budget_ns),
+            Some(work.config.iterations),
         )?],
     )?;
     report.check_budgets()?;
@@ -116,7 +104,11 @@ fn run() -> Result<(), spirula_core::DomainError> {
 
     println!("wrote {}", out.display());
     println!(
-        "accounted allocated={} current={} peak={} source={} budget={}",
+        "fixture_sha256={} config_sha256={} checksum={}",
+        work.fixture_sha256, work.config_sha256, work.checksum
+    );
+    println!(
+        "accounted allocated={} current={} peak={} source={} resident_budget={}",
         loaded.accounted.allocated_bytes,
         loaded.accounted.current_bytes,
         loaded.accounted.peak_bytes,

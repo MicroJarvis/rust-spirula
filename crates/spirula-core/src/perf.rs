@@ -100,8 +100,22 @@ impl AccountedMemory {
         .map(|_| ())
     }
 
-    /// Fail when peak (or cumulative allocated) exceeds a byte budget.
+    /// Fail when live peak exceeds a resident-memory byte budget.
+    ///
+    /// Cumulative `allocated_bytes` is a volume counter and is **not** compared
+    /// to this limit (repeated allocate/free under the same live cap is allowed).
     pub fn check_budget(&self, limit_bytes: u64) -> Result<(), DomainError> {
+        if self.current_bytes > limit_bytes {
+            return Err(range_err(
+                "memory.accounted.current_bytes",
+                format!(
+                    "accounted current_bytes {} exceeds resource budget_bytes {limit_bytes}",
+                    self.current_bytes
+                ),
+                limit_bytes,
+                self.current_bytes,
+            ));
+        }
         if self.peak_bytes > limit_bytes {
             return Err(range_err(
                 "memory.accounted.peak_bytes",
@@ -111,17 +125,6 @@ impl AccountedMemory {
                 ),
                 limit_bytes,
                 self.peak_bytes,
-            ));
-        }
-        if self.allocated_bytes > limit_bytes {
-            return Err(range_err(
-                "memory.accounted.allocated_bytes",
-                format!(
-                    "accounted allocated_bytes {} exceeds resource budget_bytes {limit_bytes}",
-                    self.allocated_bytes
-                ),
-                limit_bytes,
-                self.allocated_bytes,
             ));
         }
         Ok(())
@@ -155,18 +158,12 @@ impl AccountedBytesTracker {
         self.peak_bytes
     }
 
-    /// Reject an allocation that would push peak/allocated past `limit_bytes`
-    /// without mutating the counter.
+    /// Reject an allocation that would push **live** current/peak past
+    /// `limit_bytes` without mutating the counter.
+    ///
+    /// Cumulative allocated volume is not a capacity check: allocate/free
+    /// reuse under the same resident cap is allowed.
     pub fn preflight(&self, bytes: u64, limit_bytes: u64) -> Result<(), DomainError> {
-        let next_allocated = self.allocated_bytes.checked_add(bytes).ok_or_else(|| {
-            DomainError::try_new(
-                ErrorCode::ValueOutOfRange,
-                "accounted allocated_bytes would overflow u64",
-            )
-            .expect("message")
-            .with_context(ContextKey::Field, "memory.accounted.allocated_bytes")
-            .expect("field")
-        })?;
         let next_current = self.current_bytes.checked_add(bytes).ok_or_else(|| {
             DomainError::try_new(
                 ErrorCode::ValueOutOfRange,
@@ -177,16 +174,27 @@ impl AccountedBytesTracker {
             .expect("field")
         })?;
         let next_peak = self.peak_bytes.max(next_current);
-        if next_peak > limit_bytes || next_allocated > limit_bytes {
+        if next_current > limit_bytes || next_peak > limit_bytes {
             return Err(range_err(
                 "memory.resource_budget_bytes",
                 format!(
-                    "preflight allocation of {bytes} bytes would exceed resource budget {limit_bytes}"
+                    "preflight allocation of {bytes} bytes would exceed resident resource budget {limit_bytes}"
                 ),
                 limit_bytes,
-                next_peak.max(next_allocated),
+                next_peak.max(next_current),
             ));
         }
+        // Still require cumulative volume not to overflow u64, but that is not
+        // the resident budget.
+        let _ = self.allocated_bytes.checked_add(bytes).ok_or_else(|| {
+            DomainError::try_new(
+                ErrorCode::ValueOutOfRange,
+                "accounted allocated_bytes would overflow u64",
+            )
+            .expect("message")
+            .with_context(ContextKey::Field, "memory.accounted.allocated_bytes")
+            .expect("field")
+        })?;
         Ok(())
     }
 
@@ -559,7 +567,8 @@ pub struct PerfReport {
     feature_id: String,
     pub provenance: PerfProvenance,
     pub accounted: AccountedMemory,
-    /// Optional host accounted-byte budget checked by [`Self::check_budgets`].
+    /// Optional resident (live/peak) host byte budget for [`Self::check_budgets`].
+    /// Cumulative `allocated_bytes` is not constrained by this field.
     pub resource_budget_bytes: Option<u64>,
     /// OS-wide or process RSS peak — never filled with accounted numbers.
     pub os_process_peak: UnavailableMetric,
@@ -742,12 +751,34 @@ mod tests {
     }
 
     #[test]
-    fn resource_byte_budget_overflow_fails() {
+    fn resource_byte_budget_overflow_fails_on_peak_not_volume() {
         let mut report = sample_report(Some(50), 10);
         report.resource_budget_bytes = Some(50);
-        report.accounted = AccountedMemory::try_new(80, 40, 80, "explicit_counter").unwrap();
+        // Cumulative volume 200 with peak 40 is fine under a 50-byte resident cap.
+        report.accounted = AccountedMemory::try_new(200, 0, 40, "explicit_counter").unwrap();
+        report.check_budgets().unwrap();
+        report.accounted = AccountedMemory::try_new(200, 0, 80, "explicit_counter").unwrap();
         let err = report.check_budgets().unwrap_err();
         assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    }
+
+    #[test]
+    fn resident_budget_allows_allocate_free_reuse() {
+        let mut t = AccountedBytesTracker::new();
+        t.preflight(64, 64).unwrap();
+        t.allocate(64).unwrap();
+        t.free(64).unwrap();
+        // Second cycle under the same live cap must succeed even though volume=128.
+        t.preflight(64, 64).unwrap();
+        t.allocate(64).unwrap();
+        t.free(64).unwrap();
+        assert_eq!(t.allocated_bytes(), 128);
+        assert_eq!(t.peak_bytes(), 64);
+        assert_eq!(t.current_bytes(), 0);
+        t.snapshot("explicit_counter")
+            .unwrap()
+            .check_budget(64)
+            .unwrap();
     }
 
     #[test]

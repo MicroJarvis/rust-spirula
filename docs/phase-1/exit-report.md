@@ -127,14 +127,15 @@ parent tip `3c85d92` (P1-F07 on main).
 ## Scope and result
 
 P1-F08 is complete: versioned `spirula-perf-report` contracts live in
-`spirula-core`; JSON + SHA-256 provenance (fixture/config + source
-revision/dirty status) + atomic publish/reload live in `spirula-io`;
-`spirula-perf-sample` generates and reads a CPU report with checked accounted
-bytes, resource byte budget/preflight, nanosecond phase timings, and explicit
-unavailable reasons for OS process peak, device memory, GPU counters, GPU
-timestamp-query timing, and absolute wall-clock timestamps. No train/GPU/UI
-runtime. Next feature is P1-F09. Branch remains unmerged until explicitly
-approved.
+`spirula-core`; JSON + SHA-256 provenance of **executed** fixture/config +
+source revision/dirty status + atomic publish/reload live in `spirula-io`;
+`spirula-perf-sample` runs a real allocate/copy/fold/free workload (8192×8
+under a resident 8192 budget), generates and reloads a report with checked
+accounted bytes, nanosecond timings, and explicit unavailable reasons for OS
+process peak, device memory, GPU counters, GPU timestamp-query timing, and
+absolute wall-clock timestamps. Source/dirty stay honestly unavailable. No
+train/GPU/UI runtime. Next feature is P1-F09. Branch remains unmerged until
+explicitly approved.
 
 ## Evidence
 

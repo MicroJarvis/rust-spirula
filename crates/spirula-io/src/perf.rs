@@ -589,6 +589,7 @@ mod tests {
     #[test]
     fn resource_and_phase_budget_overflow_detected() {
         let mut report = sample_report();
+        // Peak 64 under resident cap 16 fails; volume is irrelevant.
         report.resource_budget_bytes = Some(16);
         let err = report.check_budgets().unwrap_err();
         assert_eq!(err.code(), ErrorCode::ValueOutOfRange);

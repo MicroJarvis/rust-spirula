@@ -10,6 +10,7 @@ pub mod config_fs;
 pub mod fixtures;
 pub mod hash;
 pub mod perf;
+pub mod sample_workload;
 pub mod temp_harness;
 
 pub use atomic::{
@@ -23,5 +24,10 @@ pub use hash::{sha256_file, sha256_hex};
 pub use perf::{
     load_perf_report, parse_perf_report_bytes, parse_perf_report_str, provenance_hashes,
     report_to_json, save_perf_report,
+};
+pub use sample_workload::{
+    SAMPLE_CHUNK_BYTES, SAMPLE_ITERATIONS, SampleConfig, WorkloadResult,
+    canonical_sample_config_json, canonical_sample_fixture, expected_workload_checksum,
+    parse_sample_config, run_measured_workload,
 };
 pub use temp_harness::TempHarness;
