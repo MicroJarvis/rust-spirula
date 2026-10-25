@@ -418,3 +418,57 @@ fn writers_reject_invalid_closed_choices_and_keep_empty_compatibility() {
     assert_eq!(error.context_value(ContextKey::Field), Some("scene_center"));
     assert!(config.to_current_json().is_err());
 }
+
+#[test]
+fn preserved_save_keeps_signed_zero_edits() {
+    let scalar = r#"{"means_lr":0}"#;
+    let mut loaded = LoadedTrainConfig::parse(scalar).unwrap();
+    assert!(!loaded.config.means_lr.is_sign_negative());
+    let before = loaded.config.clone();
+    loaded.config.means_lr = -0.0;
+    assert!(!loaded.config.same_values(&before));
+    let saved = loaded.to_preserved_json().unwrap();
+    assert_ne!(saved, scalar);
+    assert!(saved.contains("\"means_lr\":-0"));
+    let again = LoadedTrainConfig::parse(&saved).unwrap();
+    assert_eq!(again.config.means_lr.to_bits(), (-0.0f32).to_bits());
+    assert!(again.config.means_lr.is_sign_negative());
+
+    let optional = r#"{"means_lr_final":0}"#;
+    let mut loaded = LoadedTrainConfig::parse(optional).unwrap();
+    let before = loaded.config.clone();
+    loaded.config.means_lr_final = Some(-0.0);
+    assert!(!loaded.config.same_values(&before));
+    let saved = loaded.to_preserved_json().unwrap();
+    assert!(saved.contains("\"means_lr_final\":-0"));
+    let again = LoadedTrainConfig::parse(&saved).unwrap();
+    assert_eq!(
+        again.config.means_lr_final.unwrap().to_bits(),
+        (-0.0f32).to_bits()
+    );
+
+    let vector = r#"{"background_color":[0,0,0]}"#;
+    let mut loaded = LoadedTrainConfig::parse(vector).unwrap();
+    let before = loaded.config.clone();
+    loaded.config.background_color[1] = -0.0;
+    assert!(!loaded.config.same_values(&before));
+    let saved = loaded.to_preserved_json().unwrap();
+    assert!(saved.contains("\"background_color\":[0,-0,0]"));
+    let again = LoadedTrainConfig::parse(&saved).unwrap();
+    assert_eq!(again.config.background_color[0].to_bits(), 0.0f32.to_bits());
+    assert_eq!(
+        again.config.background_color[1].to_bits(),
+        (-0.0f32).to_bits()
+    );
+    assert_eq!(again.config.background_color[2].to_bits(), 0.0f32.to_bits());
+
+    let nan_left = TrainConfig {
+        max_world_size: f32::NAN,
+        ..TrainConfig::default()
+    };
+    let nan_right = TrainConfig {
+        max_world_size: f32::from_bits(0x7fc0_0001),
+        ..TrainConfig::default()
+    };
+    assert!(nan_left.same_values(&nan_right));
+}

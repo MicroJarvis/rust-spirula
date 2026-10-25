@@ -93,7 +93,8 @@ rename or replace files. Backup and atomic replacement belong to P1-F05.
   defaults are not inserted.
 - That save does not insert `schema_version` into a legacy document.
 - If the typed values still match the loaded values, save returns the original
-  text unchanged.
+  text unchanged. Floats match by `f32` bit pattern: `+0` and `-0` are
+  different, and a sign-only edit is written as `-0`. NaN still matches NaN.
 - Promoting a document to the current form is explicit: `schema_version` 1,
   every known field, then the preserved unknown keys. That call returns text
   when `validate` succeeds. It does not rewrite a file.

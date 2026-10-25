@@ -699,7 +699,8 @@ impl Default for TrainConfig {
 }
 
 impl TrainConfig {
-    /// Field-wise equality. NaN matches NaN so a loaded non-finite value can round-trip.
+    /// Field-wise equality. Floats use their bit pattern, so `+0` and `-0` differ.
+    /// NaN matches NaN so a loaded non-finite value can round-trip.
     pub fn same_values(&self, other: &Self) -> bool {
         true && self.data == other.data
             && self.resume == other.resume
@@ -3313,7 +3314,10 @@ pub fn field_spec(name: &str) -> Option<&'static FieldSpec> {
 }
 
 fn f32_same(left: f32, right: f32) -> bool {
-    left == right || (left.is_nan() && right.is_nan())
+    if left.is_nan() && right.is_nan() {
+        return true;
+    }
+    left.to_bits() == right.to_bits()
 }
 
 fn opt_f32_same(left: Option<f32>, right: Option<f32>) -> bool {
