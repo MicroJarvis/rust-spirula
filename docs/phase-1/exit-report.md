@@ -104,7 +104,7 @@ unmerged until explicitly approved.
 | Crate | `crates/spirula-application` (deps: `spirula-core` only) |
 | Lifecycle regressions | `crates/spirula-application/tests/session_lifecycle.rs` (**44** tests) |
 | History unit regressions | `crates/spirula-application/src/history.rs` (`mod tests`, **3** tests) |
-| Reproducible gate | `cargo test -p spirula-application -- --test-threads=1` then `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded at commit) |
+| Reproducible gate | `cargo test -p spirula-application -- --test-threads=1` then `cargo run -p spirula-xtask -- verify` (**8/8** on tip `7e6e560`) |
 | HOLD-MERGE external probes | fresh rebuild of original18 + extra5 + panic1 (**24**/24) against this tip; ephemeral `/tmp` aids only |
 
 Supplemental ephemeral external probe binaries used during HOLD-MERGE review
