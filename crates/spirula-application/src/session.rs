@@ -11,7 +11,7 @@ use spirula_core::{CancelReason, CancelToken, ContextKey, DomainError, ErrorCode
 
 use crate::bound::{
     bound_command_payload, bound_error, bound_retained_label, check_label, check_log_message,
-    check_progress, check_reason,
+    check_progress, check_reason, sanitize_worker_event, validate_worker_terminal,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -459,7 +459,17 @@ impl ApplicationService {
 
     /// Inject a worker event (tests: stale/late runs). Progress uses try_send;
     /// terminals use the result mailbox.
+    ///
+    /// Events are validated/bounded **before** enqueue: malformed progress or
+    /// illegal terminals are dropped (`Ok`) without closing the active run;
+    /// oversized labels/errors are shrunk so the mailbox never retains them.
     pub fn inject_worker_event(&self, event: WorkerEvent) -> Result<(), DomainError> {
+        let limits = self.limits();
+        let Some(event) = sanitize_worker_event(event, &limits) else {
+            let mut st = lock(&self.shared.state);
+            st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+            return Ok(());
+        };
         let is_result = matches!(
             event,
             WorkerEvent::LoadDone { .. } | WorkerEvent::RunTerminal { .. }
@@ -958,7 +968,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
 
     match event {
         WorkerEvent::Progress { snapshot, .. } => {
-            if snapshot.validate().is_err() || check_progress(&snapshot, &st.limits).is_err() {
+            if check_progress(&snapshot, &st.limits).is_err() {
                 st.drops.progress = st.drops.progress.saturating_add(1);
                 return;
             }
@@ -982,9 +992,6 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 return;
             }
             st.log_tail.push(message.clone());
-            if st.log_tail.entries.len() == st.log_tail.capacity {
-                // capacity managed inside push
-            }
             publish_replaceable(
                 &mut st,
                 &shared.notifier,
@@ -997,8 +1004,10 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             );
         }
         WorkerEvent::LoadDone { label, .. } => {
-            // LoadDone is only valid while Loading; reject against Running probes.
-            if st.phase != SessionState::Loading {
+            // Kind vs active payload: LoadDone cannot complete ProbeRun even
+            // with matching run/command ids.
+            let is_load = matches!(st.active_payload, Some(CommandPayload::ProbeLoad { .. }));
+            if !is_load || st.phase != SessionState::Loading {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                 return;
             }
@@ -1028,13 +1037,12 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             final_progress,
             ..
         } => {
-            if let Err(_err) = validate_worker_terminal(&outcome) {
+            if validate_worker_terminal(&outcome).is_err() {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                 return;
             }
             // Canonical ordering: final progress before terminal (separate mailboxes).
             if let Some(snapshot) = final_progress
-                && snapshot.validate().is_ok()
                 && check_progress(&snapshot, &st.limits).is_ok()
             {
                 st.latest_progress = Some(snapshot.clone());
@@ -1125,38 +1133,6 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             complete_pending_stop(&mut st, &shared.notifier);
         }
     }
-}
-
-/// Mirror `spirula_core::progress::validate_outcome` (private there) so injected
-/// worker terminals cannot weaken Failed/Canceled contracts.
-fn validate_worker_terminal(outcome: &spirula_core::TerminalOutcome) -> Result<(), DomainError> {
-    use spirula_core::TerminalOutcome;
-    if let TerminalOutcome::Failed { error } = outcome
-        && error.code() == ErrorCode::Canceled
-    {
-        return Err(DomainError::try_new(
-            ErrorCode::InvalidArgument,
-            "cancellation is not a failed outcome",
-        )
-        .expect("message")
-        .with_context(ContextKey::Field, "outcome")
-        .expect("field"));
-    }
-    if let TerminalOutcome::Canceled {
-        saved_checkpoint: Some(path),
-        ..
-    } = outcome
-        && path.trim().is_empty()
-    {
-        return Err(DomainError::try_new(
-            ErrorCode::InvalidArgument,
-            "canceled outcome has an empty checkpoint path",
-        )
-        .expect("message")
-        .with_context(ContextKey::Field, "checkpoint")
-        .expect("field"));
-    }
-    Ok(())
 }
 
 fn complete_pending_stop(st: &mut State, notifier: &Arc<Notifier>) {

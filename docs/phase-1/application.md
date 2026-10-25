@@ -167,8 +167,15 @@ unbounded control deque.
   only). `Failed` is only a `RunOutcome` / `TerminalOutcome` payload.
   Injected worker terminals that violate core outcome rules
   (`Failed` with `SP-CAN-001`, blank `saved_checkpoint`) or wrong-kind
-  `LoadDone` while `Running` are rejected without closing the active run.
-  Malformed progress is dropped and never canonicalized.
+  `LoadDone` (cannot complete `ProbeRun` even with matching ids) are
+  rejected without closing the active run. `check_progress` requires
+  `ProgressSnapshot::validate()` (step≤total, finite unique non-blank
+  metrics) **and** the byte cap; malformed progress is never
+  canonicalized. Worker→owner enqueue and `inject_worker_event` sanitize
+  first: illegal events are dropped before the mailbox, oversized
+  load/checkpoint labels and errors are bounded before retention, and
+  bounded error views keep the original code/category plus any
+  `retryable_override` / `user_action`.
 
 ### Save-failure vs cancel (§4 vs §5)
 

@@ -15,6 +15,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 use spirula_core::{CancelReason, CancelToken, ProgressSnapshot, TerminalOutcome};
 
+use crate::bound::sanitize_worker_event;
 use crate::ids::{CommandId, RunId};
 use crate::limits::SessionLimits;
 
@@ -151,7 +152,14 @@ impl Drop for WorkerHandle {
     }
 }
 
-fn try_progress(progress_tx: &SyncSender<WorkerEvent>, event: WorkerEvent) -> bool {
+fn try_progress(
+    progress_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
+    event: WorkerEvent,
+) -> bool {
+    let Some(event) = sanitize_worker_event(event, limits) else {
+        return false;
+    };
     match progress_tx.try_send(event) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => false,
@@ -161,9 +169,11 @@ fn try_progress(progress_tx: &SyncSender<WorkerEvent>, event: WorkerEvent) -> bo
 
 /// Terminal/load results use a separate bounded mailbox. Blocking send is
 /// allowed here: the owner drains this before progress and never awaits
-/// subscribers while applying a result.
-fn forward_result(result_tx: &SyncSender<WorkerEvent>, event: WorkerEvent) {
-    let _ = result_tx.send(event);
+/// subscribers while applying a result. Payloads are bounded before enqueue.
+fn forward_result(result_tx: &SyncSender<WorkerEvent>, limits: &SessionLimits, event: WorkerEvent) {
+    if let Some(event) = sanitize_worker_event(event, limits) {
+        let _ = result_tx.send(event);
+    }
 }
 
 fn worker_loop(
@@ -199,7 +209,7 @@ fn worker_loop(
                     .is_err()
                     {
                         finish_canceled(
-                            &result_tx, run_id, command_id, 0, &cancel, None, false, None,
+                            &result_tx, &limits, run_id, command_id, 0, &cancel, None, false, None,
                         );
                         return;
                     }
@@ -215,6 +225,7 @@ fn worker_loop(
                             .expect("message");
                             forward_result(
                                 &result_tx,
+                                &limits,
                                 WorkerEvent::RunTerminal {
                                     run_id,
                                     command_id,
@@ -228,10 +239,11 @@ fn worker_loop(
                         FakeWorkerBehavior::Succeed | FakeWorkerBehavior::CancelSaveFail => {
                             forward_result(
                                 &result_tx,
+                                &limits,
                                 WorkerEvent::LoadDone {
                                     run_id,
                                     command_id,
-                                    label: bound_worker_label(label, &limits),
+                                    label,
                                 },
                             );
                         }
@@ -245,6 +257,7 @@ fn worker_loop(
                     .expect("message");
                     forward_result(
                         &result_tx,
+                        &limits,
                         WorkerEvent::RunTerminal {
                             run_id,
                             command_id,
@@ -288,6 +301,7 @@ fn worker_loop(
                     .expect("message");
                     forward_result(
                         &result_tx,
+                        &limits,
                         WorkerEvent::RunTerminal {
                             run_id,
                             command_id,
@@ -336,16 +350,15 @@ fn run_probe(
         .unwrap_or_else(Instant::now);
     let mut step = 0u64;
     let log_msg = format!("probe run start steps={steps}");
-    if log_msg.len() <= limits.log_message_max_bytes {
-        let _ = try_progress(
-            progress_tx,
-            WorkerEvent::Log {
-                run_id,
-                command_id,
-                message: log_msg,
-            },
-        );
-    }
+    let _ = try_progress(
+        progress_tx,
+        limits,
+        WorkerEvent::Log {
+            run_id,
+            command_id,
+            message: log_msg,
+        },
+    );
 
     while step < steps {
         if wait_sliced(
@@ -366,11 +379,11 @@ fn run_probe(
             let want_save = save_on_cancel.load(Ordering::Acquire);
             let save_failed =
                 want_save && matches!(*lock(behavior), FakeWorkerBehavior::CancelSaveFail);
-            let label = (want_save && !save_failed)
-                .then(|| bound_worker_label(format!("probe-stop-{step}"), limits));
+            let label = (want_save && !save_failed).then(|| format!("probe-stop-{step}"));
             let final_progress = Some(make_progress(step, steps, started.elapsed()));
             finish_canceled(
                 result_tx,
+                limits,
                 run_id,
                 command_id,
                 step,
@@ -385,6 +398,7 @@ fn run_probe(
         step += 1;
         publish_progress(
             progress_tx,
+            limits,
             run_id,
             command_id,
             step,
@@ -398,6 +412,7 @@ fn run_probe(
     // Also try progress mailbox; canonical copy rides with the terminal.
     let _ = try_progress(
         progress_tx,
+        limits,
         WorkerEvent::Progress {
             run_id,
             command_id,
@@ -415,6 +430,7 @@ fn run_probe(
             .expect("message");
             forward_result(
                 result_tx,
+                limits,
                 WorkerEvent::RunTerminal {
                     run_id,
                     command_id,
@@ -428,6 +444,7 @@ fn run_probe(
         FakeWorkerBehavior::Succeed | FakeWorkerBehavior::CancelSaveFail => {
             forward_result(
                 result_tx,
+                limits,
                 WorkerEvent::RunTerminal {
                     run_id,
                     command_id,
@@ -468,6 +485,7 @@ fn wait_sliced(
         if last_heartbeat.elapsed() >= limits.heartbeat_interval {
             publish_progress(
                 progress_tx,
+                limits,
                 run_id,
                 command_id,
                 step,
@@ -494,6 +512,7 @@ fn wait_sliced(
 #[allow(clippy::too_many_arguments)]
 fn finish_canceled(
     result_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
     run_id: RunId,
     command_id: CommandId,
     step: u64,
@@ -510,6 +529,7 @@ fn finish_canceled(
     };
     forward_result(
         result_tx,
+        limits,
         WorkerEvent::RunTerminal {
             run_id,
             command_id,
@@ -525,17 +545,9 @@ fn finish_canceled(
     );
 }
 
-/// Cap labels at the worker→owner enqueue boundary before retention.
-fn bound_worker_label(label: String, limits: &SessionLimits) -> String {
-    if label.len() > limits.label_max_bytes {
-        format!("[omitted {} bytes]", label.len())
-    } else {
-        label
-    }
-}
-
 fn publish_progress(
     progress_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
     run_id: RunId,
     command_id: CommandId,
     step: u64,
@@ -553,6 +565,7 @@ fn publish_progress(
     .expect("valid progress");
     let _ = try_progress(
         progress_tx,
+        limits,
         WorkerEvent::Progress {
             run_id,
             command_id,

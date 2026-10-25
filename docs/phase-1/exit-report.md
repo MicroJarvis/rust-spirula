@@ -73,7 +73,10 @@ parent tip `0c73ec1` (P1-F06 on main). HOLD-MERGE review fixes landed after
 `f6f5e0c` (unique SessionId, poison-free recovery, atomic admit, cancel
 isolation, Stop save flag, LoadDone/Stop race, final progress ordering,
 payload/result retention contracts, dropped-control watermark, subscriber
-Drop capacity).
+Drop capacity). Follow-up worker-boundary: `check_progress` calls
+`ProgressSnapshot::validate()`, kind-vs-payload LoadDone rejection,
+pre-mailbox sanitize/bound, bounded errors keep code/category/retryable/
+user_action.
 
 ## Scope and result
 

@@ -6,7 +6,7 @@ use spirula_application::{
     ApplicationService, Command, CommandPayload, CommandResult, Event, EventCursor,
     FakeWorkerBehavior, ReplayOutcome, SessionLimits, SessionState, SubmitOutcome, WorkerEvent,
 };
-use spirula_core::{ErrorCode, OutcomeView, ProgressSnapshot, TerminalOutcome};
+use spirula_core::{ErrorCode, OutcomeView, ProgressSnapshot, TerminalOutcome, UserAction};
 
 fn service() -> ApplicationService {
     ApplicationService::start(SessionLimits::for_test())
@@ -819,7 +819,7 @@ fn load_done_racing_stop_clears_stop_terminal() {
 }
 
 #[test]
-fn core_invalid_terminals_and_progress_rejected() {
+fn malformed_progress_and_terminal_rejected_then_valid_still_works() {
     let app = service();
     let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
     wait_terminal(&app, load);
@@ -829,26 +829,57 @@ fn core_invalid_terminals_and_progress_rejected() {
     let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
     assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
     let snap = app.snapshot();
-    let malformed = ProgressSnapshot {
+    let run_id = snap.active_run.unwrap();
+
+    // step > total
+    let step_past = ProgressSnapshot {
         step: 9,
         total_steps: Some(1),
         splats: 0,
         elapsed_ms: 0,
         eta_ms: None,
-        metrics: vec![spirula_core::ProgressMetric {
-            name: "".into(),
-            value: f64::NAN,
-        }],
+        metrics: vec![],
+    };
+    assert!(step_past.validate().is_err());
+    app.inject_worker_event(WorkerEvent::Progress {
+        run_id,
+        command_id: run,
+        snapshot: step_past,
+    })
+    .unwrap();
+
+    // blank + nonfinite + would-be-duplicate metrics
+    let malformed = ProgressSnapshot {
+        step: 1,
+        total_steps: Some(10),
+        splats: 0,
+        elapsed_ms: 0,
+        eta_ms: None,
+        metrics: vec![
+            spirula_core::ProgressMetric {
+                name: "".into(),
+                value: f64::NAN,
+            },
+            spirula_core::ProgressMetric {
+                name: "loss".into(),
+                value: 1.0,
+            },
+            spirula_core::ProgressMetric {
+                name: "loss".into(),
+                value: 2.0,
+            },
+        ],
     };
     assert!(malformed.validate().is_err());
     app.inject_worker_event(WorkerEvent::Progress {
-        run_id: snap.active_run.unwrap(),
+        run_id,
         command_id: run,
         snapshot: malformed,
     })
     .unwrap();
+
     app.inject_worker_event(WorkerEvent::RunTerminal {
-        run_id: snap.active_run.unwrap(),
+        run_id,
         command_id: run,
         outcome: TerminalOutcome::Failed {
             error: spirula_core::DomainError::try_new(ErrorCode::Canceled, "wrong").unwrap(),
@@ -859,7 +890,7 @@ fn core_invalid_terminals_and_progress_rejected() {
     })
     .unwrap();
     app.inject_worker_event(WorkerEvent::RunTerminal {
-        run_id: snap.active_run.unwrap(),
+        run_id,
         command_id: run,
         outcome: TerminalOutcome::Canceled {
             step: 0,
@@ -871,18 +902,122 @@ fn core_invalid_terminals_and_progress_rejected() {
         final_progress: None,
     })
     .unwrap();
-    app.inject_worker_event(WorkerEvent::LoadDone {
-        run_id: snap.active_run.unwrap(),
-        command_id: run,
-        label: "foreign".into(),
-    })
-    .unwrap();
+
     std::thread::sleep(Duration::from_millis(40));
     assert!(matches!(app.command_result(run), CommandResult::Pending));
     while let Some(env) = sub.try_recv() {
         if let Event::Progress(p) = env.event {
             assert!(p.validate().is_ok(), "malformed progress published: {p:?}");
         }
+    }
+
+    // Matching active identity still accepts a valid terminal afterward.
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id,
+        command_id: run,
+        outcome: TerminalOutcome::Completed { step: 3 },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: Some(ProgressSnapshot {
+            step: 3,
+            total_steps: Some(10),
+            splats: 0,
+            elapsed_ms: 1,
+            eta_ms: None,
+            metrics: vec![],
+        }),
+    })
+    .unwrap();
+    let env = wait_terminal(&app, run);
+    assert!(matches!(
+        env.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { step: 3 }
+        }
+    ));
+}
+
+#[test]
+fn wrong_kind_load_done_leaves_probe_run_intact() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let snap = app.snapshot();
+    let run_id = snap.active_run.unwrap();
+    app.inject_worker_event(WorkerEvent::LoadDone {
+        run_id,
+        command_id: run,
+        label: "foreign dataset".into(),
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(40));
+    assert!(matches!(app.command_result(run), CommandResult::Pending));
+    assert_eq!(app.snapshot().state, SessionState::Running);
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id,
+        command_id: run,
+        outcome: TerminalOutcome::Completed { step: 2 },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    let env = wait_terminal(&app, run);
+    assert!(matches!(
+        env.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { step: 2 }
+        }
+    ));
+}
+
+#[test]
+fn bound_error_preserves_code_category_retryable_user_action() {
+    let mut limits = SessionLimits::for_test();
+    limits.error_message_max_bytes = 32;
+    limits.error_event_max_bytes = 64;
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let snap = app.snapshot();
+    let oversized = spirula_core::DomainError::try_new(ErrorCode::Internal, "x".repeat(10_000))
+        .unwrap()
+        .with_retryable(true)
+        .with_user_action(UserAction::Retry);
+    assert_eq!(oversized.code(), ErrorCode::Internal);
+    assert_eq!(oversized.category(), ErrorCode::Internal.category());
+    assert!(oversized.retryable());
+    assert_eq!(oversized.user_action(), Some(UserAction::Retry));
+
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id: snap.active_run.unwrap(),
+        command_id: run,
+        outcome: TerminalOutcome::Failed { error: oversized },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    let env = wait_terminal(&app, run);
+    match env.event {
+        Event::Completed {
+            outcome: OutcomeView::Failed { error },
+        } => {
+            assert_eq!(error.code(), ErrorCode::Internal);
+            assert_eq!(error.category(), ErrorCode::Internal.category());
+            assert!(error.retryable());
+            assert_eq!(error.user_action(), Some(UserAction::Retry));
+            assert!(error.message().len() <= app.limits().error_message_max_bytes);
+        }
+        other => panic!("expected failed terminal, got {other:?}"),
     }
 }
 
