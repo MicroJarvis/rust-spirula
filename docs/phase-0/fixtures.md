@@ -160,8 +160,9 @@ the real readers and by P1-F02's versioned serialization.
   that comparison.
 - The PNG image is only header-checked in Phase 0. P3-F02 adds decode,
   orientation and mask coverage.
-- Checkpoint atomicity, version validation and corruption recovery are P1-F05
-  and P3-F07 scope; this fixture only covers a complete, well-formed save.
+- Single-file atomic publish is P1-F05. Checkpoint directory atomicity,
+  completion markers, version validation and corruption recovery remain
+  P3-F07 / P5-F05; this fixture only covers a complete, well-formed save.
 - The fixture set is intentionally small. It does not cover fisheye/equirect
   cameras, distortion fitting, multiple cameras, eval splits, masks, or SH
   degrees above zero; those arrive with the Phase 3 fixtures.

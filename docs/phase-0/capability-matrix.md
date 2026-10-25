@@ -38,7 +38,7 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-20 | checkpoint write | `EngineCheckpoint.cpp:354-390` | state blocks | `step-%09d.ckpt` | same layout; rewrite adds atomic replacement and completion marker | P5-F05 round trip | `spirula-io` | 未开始 |
 | C-DATA-21 | resume prerequisites | `checkpoint/Resume.cpp:78-140` | run dir/checkpoint | config + step | full-resume check, config.json required, scene_center legacy rule | P3-F07/P5-F05 | `spirula-io` | 未开始 |
 | C-DATA-22 | config read/write | `config/TrainConfig.h`, `config/TrainConfigJson.h` | flat JSON | typed config | flat flag keys, unknown ignored, missing defaults, no version today | P1-F02 + `fixtures/config` | `spirula-core` | 已完成 |
-| C-DATA-23 | atomic persistence | `core/AtomicFile.h:15-23` | bytes | file replace | temp + rename; reference checkpoints are not atomic | P1-F05 (crash/corrupt tests) | `spirula-io` | 未开始 |
+| C-DATA-23 | atomic persistence | `core/AtomicFile.h:15-23` | bytes | file replace | temp + rename; reference checkpoints are not atomic | P1-F05 (crash/corrupt tests) | `spirula-io` | 已完成 |
 | C-DATA-24 | mesh export formats | `mesh/MeshExport.h` | mesh | PLY/OBJ/glTF/GLB/STL | format set and color modes; no overwrite of input | P7-F04 round trip | `spirula-io` | 未开始 |
 
 ## Rendering and GPU
@@ -145,6 +145,11 @@ refer to [fixtures.md](fixtures.md).
 - `C-REN-01` has CPU splat checks for finite means, `wxyz` quaternions, log
   scales, and logit opacity (P1-F04). Device arrays and SH bands stay in
   P4-F01, and the PLY layout stays in P3-F06, so the row stays `进行中`.
+- `C-DATA-23` is implemented in `spirula-io` (P1-F05): unique sibling temps,
+  completeness checks, POSIX rename / Windows `MoveFileExW` replace, orphan
+  recovery, and the temp harness. Config save/migration with `{path}.bak`
+  finishes the P1-F02 filesystem contract. Checkpoint bundle schema and
+  completion markers remain P5-F05, so `C-DATA-20` stays `未开始`.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.

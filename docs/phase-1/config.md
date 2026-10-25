@@ -82,7 +82,7 @@ These differences are intentional. They do not add flags or renumber errors.
 ## Serialization
 
 `spirula-core` exposes string and document APIs only. It does not open,
-rename or replace files. Backup and atomic replacement belong to P1-F05.
+rename or replace files.
 
 - A document this crate originates carries `schema_version` 1 and then every
   known field in table order. Empty strings and disengaged optionals are
@@ -103,6 +103,18 @@ rename or replace files. Backup and atomic replacement belong to P1-F05.
   every known field, then the preserved unknown keys. That call returns text
   when `validate` succeeds. It does not rewrite a file.
 
+## Filesystem (P1-F05)
+
+`spirula-io` finishes the filesystem contract. Details are in
+[atomic.md](atomic.md).
+
+- `load_train_config` reads a path and parses with `LoadedTrainConfig::parse`.
+- `save_train_config` atomically replaces the path with preserved JSON after
+  validating the bytes parse and `TrainConfig::validate`.
+- `migrate_train_config` writes `{path}.bak` with the pre-migration bytes,
+  then atomically publishes current-form JSON. The reference still opens
+  `config.json` directly (`TrainerCore.cpp:759-768`); the rewrite does not.
+
 The Phase 0 checkpoint `config.json` is a legacy compatibility input. Readers
-accept it as written. Nothing in this feature changes that file so a test can
-pass.
+accept it as written. Fixture files under `fixtures/` are not rewritten by
+these APIs.

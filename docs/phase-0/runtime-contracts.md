@@ -452,7 +452,7 @@ Rules:
 | CLI failure | `error: <message>`, exit 1/2/130 | same, plus opt-in `(code: ...)` |
 | cancellation | atomics for training/SfM; no token for parse/load/export | one cooperative token with declared checkpoints |
 | session | process-global engine, one session | session-owned context, one application session per instance |
-| checkpoint write | direct writes, no completion marker | temp + atomic replace + completion marker (P1-F05/P5-F05) |
+| checkpoint write | direct writes, no completion marker | file-level temp + atomic replace (P1-F05); bundle completion marker (P5-F05) |
 | checkpoint version | `format_version` written but not validated | validate on load, reject unknown with `SP-FMT-003` |
 | config | no schema version | versioned reader with legacy defaults |
 | GPU errors | sticky string, step-level check | typed errors + diagnostics events, per-resource labels |

@@ -11,3 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 sha2.workspace = true
 serde_json.workspace = true
+spirula-core = { path = "../spirula-core" }
+
+[dev-dependencies]
+spirula-core = { path = "../spirula-core" }

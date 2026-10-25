@@ -99,10 +99,12 @@ cancellation, the GPU resource/shader boundary, and format versioning. They are
 recorded in [docs/phase-0/runtime-contracts.md](phase-0/runtime-contracts.md).
 P1-F01 implements that error catalog in `spirula-core` (`ErrorCode`,
 `DomainError`, context keys, CLI text and exit codes). P1-F02 implements the
-training-config document in the same crate; filesystem backup stays in
-P1-F05. P1-F03 implements the cooperative cancel token and progress/terminal
-payloads in `spirula-core`; session orchestration stays in P5-F01 and P6-F01.
-The primitive contract is
+training-config document in the same crate. P1-F05 implements atomic publish,
+orphan recovery, the temp harness, and config filesystem save/migration in
+`spirula-io` ([docs/phase-1/atomic.md](phase-1/atomic.md)); checkpoint bundle
+markers stay in P5-F05. P1-F03 implements the cooperative cancel token and
+progress/terminal payloads in `spirula-core`; session orchestration stays in
+P5-F01 and P6-F01. The primitive contract is
 [docs/phase-1/cancellation.md](phase-1/cancellation.md). P1-F04 adds the CPU
 math, pinhole projection, similarity, and splat value checks in
 [docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other lenses stay

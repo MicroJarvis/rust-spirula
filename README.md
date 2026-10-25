@@ -30,13 +30,10 @@ and fixtures with:
 cargo run -p spirula-xtask -- verify
 ```
 
-P1-F01 (domain errors and stable IDs), P1-F02 (versioned training
-config), P1-F03 (cancellation and progress primitives), and P1-F04 (math,
-pinhole camera, similarity, and splat checks) are implemented in
-`spirula-core`. The contracts are
-[docs/phase-1/config.md](docs/phase-1/config.md),
-[docs/phase-1/cancellation.md](docs/phase-1/cancellation.md), and
-[docs/phase-1/geometry.md](docs/phase-1/geometry.md). Full lenses, scene
-files, and splat files stay in P3. The next feature is P1-F05 (atomic files
-and fixture harness) in [docs/project-plan.md](docs/project-plan.md).
+P1-F01 through P1-F04 are implemented in `spirula-core`. P1-F05 (atomic
+publish, temp harness, and config filesystem save/migration) is implemented
+in `spirula-io`; see [docs/phase-1/atomic.md](docs/phase-1/atomic.md). Full
+lenses, scene files, and splat files stay in P3. Checkpoint bundle markers
+stay in P5-F05. The next feature is P1-F06 in
+[docs/project-plan.md](docs/project-plan.md).
 
