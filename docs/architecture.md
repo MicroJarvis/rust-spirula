@@ -12,20 +12,19 @@ are added only after the core path is stable.
 
 ```text
 spirula-ui ───────┐
-spirula-cli ──────┼──> spirula-application (planned)
+spirula-cli ──────┼──> spirula-application
                   │          │
-                  │          ├──> spirula-train ──> spirula-render ──> spirula-gpu
-                  │          ├──> spirula-io ──────> spirula-core
-                  │          └──> spirula-core
+                  │          ├──> spirula-train ──> spirula-render ──> spirula-gpu  (later)
+                  │          ├──> spirula-io ──────> spirula-core                 (later)
+                  │          └──> spirula-core   (P1-F07: only this edge is live)
                   └──> spirula-core
 ```
 
-The current skeleton keeps the future crate boundaries visible. An
-`spirula-application` orchestration crate is introduced by P1-F07 before GPU
-preview. It owns application sessions, admission, cancellation, snapshots and
-events. P1-F09 supplies the early CLI; P6-F01 integrates the full business
-services. `spirula-train` owns step scheduling, not a second application state
-machine. This is planned work, not an existing service.
+`spirula-application` exists as of P1-F07: unique session owner for admission,
+cancellation, recoverable control history, snapshots/cursors, and a fake probe
+worker. In this slice it depends only on `spirula-core` (no train/GPU/io).
+P1-F09 supplies the early CLI; P6-F01 integrates full business services.
+`spirula-train` owns step scheduling, not a second application state machine.
 
 ## Responsibilities
 
@@ -70,6 +69,13 @@ legacy field acceptance does not imply implemented training behavior. It calls
 render and GPU services through explicit interfaces and never knows about
 Slint widgets.
 
+### `spirula-application`
+
+Unique session owner: command admission, Stop/Shutdown control, cancel token,
+recoverable control history, snapshots/cursors, bounded notify fanout, and
+(for P1-F07) a fake probe worker. Public deps today: `spirula-core` only.
+Bindings: [phase-1/application.md](phase-1/application.md).
+
 ### `spirula-ui`
 
 Slint components, screen state, commands, validation feedback, and event
@@ -79,11 +85,10 @@ create GPU pipelines, or implement training rules.
 ### `spirula-cli`
 
 Argument parsing and process entry point. CLI commands will call the same
-application/session services as the desktop UI once `spirula-application`
-exists (P1-F07). Allowed workspace deps are `spirula-core` and
-`spirula-application` only (no direct IO/train/render/GPU). Until application
-lands, `main.rs` remains a skeleton placeholder; see
-[phase-1/workspace-checks.md](phase-1/workspace-checks.md).
+application/session services as the desktop UI (P1-F09). Allowed workspace
+deps are `spirula-core` and `spirula-application` only (no direct
+IO/train/render/GPU). `main.rs` remains a skeleton placeholder until P1-F09;
+see [phase-1/workspace-checks.md](phase-1/workspace-checks.md).
 
 ## GPU strategy
 
@@ -120,18 +125,18 @@ training-config document in the same crate. P1-F05 implements atomic publish,
 orphan recovery, the temp harness, and config filesystem save/migration in
 `spirula-io` ([docs/phase-1/atomic.md](phase-1/atomic.md)); checkpoint bundle
 markers stay in P5-F05. P1-F03 implements the cooperative cancel token and
-progress/terminal payloads in `spirula-core`; the application owner starts in
-P1-F07, training scheduling stays in P5-F01, and full integration in P6-F01. The primitive contract is
-[docs/phase-1/cancellation.md](phase-1/cancellation.md). P1-F04 adds the CPU
-math, pinhole projection, similarity, and splat value checks in
-[docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other lenses stay
-in P3-F01; scene files stay in P3-F05; splat files stay in P3-F06. P1-F06 fixes
-the workspace verification entry, lint inheritance, architecture path-edge
-policy, and CLI entry-adapter rule in
-[docs/phase-1/workspace-checks.md](phase-1/workspace-checks.md);
-`spirula-application` is introduced at P1-F07 (not deferred to Phase 6). A crate does not define
-its own error string, event shape, or schema version; it implements the
-catalog and envelope in that document.
+progress/terminal payloads in `spirula-core`; the application owner is
+`spirula-application` (P1-F07, [docs/phase-1/application.md](phase-1/application.md)),
+training scheduling stays in P5-F01, and full integration in P6-F01. The
+primitive contract is [docs/phase-1/cancellation.md](phase-1/cancellation.md).
+P1-F04 adds the CPU math, pinhole projection, similarity, and splat value
+checks in [docs/phase-1/geometry.md](phase-1/geometry.md). Fisheye and other
+lenses stay in P3-F01; scene files stay in P3-F05; splat files stay in P3-F06.
+P1-F06 fixes the workspace verification entry, lint inheritance, architecture
+path-edge policy, and CLI entry-adapter rule in
+[docs/phase-1/workspace-checks.md](phase-1/workspace-checks.md). A crate does
+not define its own error string, event shape, or schema version; it implements
+the catalog and envelope in that document.
 
 ## Compatibility model
 

@@ -61,6 +61,33 @@ Observed on this host (fresh verify after the P1-F06 changes):
 
 - No cross-compilation matrix was run; compile steps only pin the development
   machine’s rustc host triple.
-- `spirula-application` was not added; it is P1-F07 and remains unstarted.
 - Phase 1 is not finished: P1-F08 and P1-F09 are still unstarted.
 - Phase 2 GPU work (`P2-F01` onward) is unstarted.
+
+---
+
+# P1-F07 verification record
+
+Recorded: 2026-10-25, worktree `.worktrees/p1-f07` on branch `codex/p1-f07`,
+parent tip `0c73ec1` (P1-F06 on main).
+
+## Scope and result
+
+P1-F07 is complete: `spirula-application` is the unique headless session owner
+with bounded admission/history/notify, independent Stop/Shutdown control,
+fake probe worker, run-identity stale rejection, and lifecycle tests. No
+train/GPU deps. Disk diagnostics remain unavailable (in-memory log tail only);
+P1-F09 owns CLI disk integration. Next feature is P1-F08.
+
+## Evidence
+
+| item | location |
+|---|---|
+| Binding decisions | [application.md](application.md) |
+| Crate | `crates/spirula-application` (deps: `spirula-core` only) |
+| Tests | `crates/spirula-application/tests/session_lifecycle.rs` |
+
+## Non-claims
+
+- No real dataset load, training, GPU, Slint, or CLI SIGINT.
+- No rotated disk log sink (explicitly unavailable, not a finished stub).

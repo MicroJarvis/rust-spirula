@@ -5,6 +5,7 @@ members = [
     "crates/spirula-gpu",
     "crates/spirula-render",
     "crates/spirula-train",
+    "crates/spirula-application",
     "crates/spirula-ui",
     "crates/spirula-cli",
     "tools/xtask",

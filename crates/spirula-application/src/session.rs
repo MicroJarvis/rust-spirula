@@ -1,0 +1,1103 @@
+//! Unique application/session owner. One writer thread; bounded admission.
+
+use std::collections::VecDeque;
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use spirula_core::{CancelReason, CancelToken, ContextKey, DomainError, ErrorCode};
+
+use crate::bound::{bound_error, check_log_message, check_progress, check_reason};
+use crate::command::{Command, CommandPayload, SubmitOutcome};
+use crate::event::{
+    CommandResult, CursorError, DropCounters, Event, EventCursor, EventEnvelope, LogLevel,
+    ReplayOutcome, RunOutcome, Snapshot, outcome_from_terminal,
+};
+use crate::history::ControlHistory;
+use crate::ids::{CommandId, IdGen, RunId, SessionId};
+use crate::limits::SessionLimits;
+use crate::notify::{Notifier, Subscription};
+use crate::state::SessionState;
+use crate::worker::{FakeWorkerBehavior, StallGate, WorkerEvent, WorkerHandle, WorkerRequest};
+
+struct LogTail {
+    capacity: usize,
+    entries: VecDeque<String>,
+}
+
+impl LogTail {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn push(&mut self, message: String) {
+        if self.entries.len() >= self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(message);
+    }
+}
+
+struct PendingStop {
+    save: bool,
+}
+
+struct State {
+    session_id: SessionId,
+    limits: SessionLimits,
+    phase: SessionState,
+    seq: u64,
+    started: Instant,
+    drops: DropCounters,
+    history: ControlHistory,
+    log_tail: LogTail,
+    active_command: Option<CommandId>,
+    active_run: Option<RunId>,
+    active_payload: Option<CommandPayload>,
+    last_outcome: Option<RunOutcome>,
+    loaded_label: Option<String>,
+    cancel: CancelToken,
+    pause: Arc<Mutex<bool>>,
+    pending_stop: Option<PendingStop>,
+    pending_shutdown: Option<CommandId>,
+    /// First accepted Stop id that owns the cancel terminal when no probe runs.
+    stop_owner: Option<CommandId>,
+    shutdown_owner: Option<CommandId>,
+    shutdown_done: bool,
+    ids: IdGen,
+    latest_progress: Option<spirula_core::ProgressSnapshot>,
+    /// Save flag for in-flight stop applied to active probe.
+    active_stop_save: Option<bool>,
+}
+
+impl State {
+    fn snapshot(&self) -> Snapshot {
+        let cursor = EventCursor::new(self.session_id, self.seq);
+        Snapshot {
+            session_id: self.session_id,
+            seq: self.seq,
+            state: self.phase,
+            active_command: self.active_command,
+            active_run: self.active_run,
+            last_outcome: self.last_outcome.clone(),
+            drops: self.drops,
+            loaded_label: self.loaded_label.clone(),
+            cursor,
+        }
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        self.seq = self.seq.saturating_add(1);
+        self.seq
+    }
+
+    fn monotonic_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+}
+
+enum AdmittedWork {
+    Payload {
+        id: CommandId,
+        payload: CommandPayload,
+    },
+}
+
+struct Shared {
+    state: Mutex<State>,
+    notifier: Arc<Notifier>,
+    worker: Mutex<WorkerHandle>,
+    behavior: Arc<Mutex<FakeWorkerBehavior>>,
+    stall: StallGate,
+}
+
+/// Headless application/session service (P1-F07).
+pub struct ApplicationService {
+    shared: Arc<Shared>,
+    work_tx: SyncSender<AdmittedWork>,
+    /// Test injection into the progress mailbox (stale progress/log).
+    progress_inject_tx: SyncSender<WorkerEvent>,
+    /// Test injection into the result mailbox (late terminals).
+    result_inject_tx: SyncSender<WorkerEvent>,
+    owner: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl ApplicationService {
+    pub fn start(limits: SessionLimits) -> Self {
+        let session_id = SessionId::new(1);
+        let notifier = Notifier::new(&limits);
+        let behavior = Arc::new(Mutex::new(FakeWorkerBehavior::Succeed));
+        let stall = StallGate::new();
+        let (work_tx, work_rx) = mpsc::sync_channel(limits.command_queue_capacity.max(1));
+        let (progress_tx, progress_rx) =
+            mpsc::sync_channel(limits.worker_progress_queue_capacity.max(1));
+        let (result_tx, result_rx) = mpsc::sync_channel(limits.worker_result_queue_capacity.max(1));
+
+        let state = State {
+            session_id,
+            limits: limits.clone(),
+            phase: SessionState::Idle,
+            seq: 0,
+            started: Instant::now(),
+            drops: DropCounters::default(),
+            history: ControlHistory::new(&limits),
+            log_tail: LogTail::new(limits.log_tail_capacity),
+            active_command: None,
+            active_run: None,
+            active_payload: None,
+            last_outcome: None,
+            loaded_label: None,
+            cancel: CancelToken::new(),
+            pause: Arc::new(Mutex::new(false)),
+            pending_stop: None,
+            pending_shutdown: None,
+            stop_owner: None,
+            shutdown_owner: None,
+            shutdown_done: false,
+            ids: IdGen::new(1),
+            latest_progress: None,
+            active_stop_save: None,
+        };
+
+        let worker = WorkerHandle::spawn(
+            limits.clone(),
+            Arc::clone(&behavior),
+            progress_tx.clone(),
+            result_tx.clone(),
+        );
+        let shared = Arc::new(Shared {
+            state: Mutex::new(state),
+            notifier: Arc::clone(&notifier),
+            worker: Mutex::new(worker),
+            behavior: Arc::clone(&behavior),
+            stall,
+        });
+
+        let owner_shared = Arc::clone(&shared);
+        let owner = thread::Builder::new()
+            .name("spirula-app-owner".into())
+            .spawn(move || owner_loop(owner_shared, work_rx, progress_rx, result_rx))
+            .expect("spawn owner");
+
+        Self {
+            shared,
+            work_tx,
+            progress_inject_tx: progress_tx,
+            result_inject_tx: result_tx,
+            owner: Mutex::new(Some(owner)),
+        }
+    }
+
+    pub fn session_id(&self) -> SessionId {
+        self.shared.state.lock().expect("state").session_id
+    }
+
+    pub fn limits(&self) -> SessionLimits {
+        self.shared.state.lock().expect("state").limits.clone()
+    }
+
+    pub fn set_worker_behavior(&self, behavior: FakeWorkerBehavior) {
+        *self.shared.behavior.lock().expect("behavior") = behavior;
+    }
+
+    pub fn stall_gate(&self) -> StallGate {
+        self.shared.stall.share()
+    }
+
+    /// Submit a command. Never blocks on work; may reject when queues are full.
+    pub fn submit(&self, command: Command) -> SubmitOutcome {
+        let mut st = self.shared.state.lock().expect("state");
+        if st.shutdown_done || st.phase == SessionState::Closed {
+            return SubmitOutcome::Rejected {
+                error: sess_error(
+                    ErrorCode::InvalidState,
+                    "session is closed",
+                    command.payload.name(),
+                ),
+            };
+        }
+        if let Err(error) = command.payload.validate(&st.limits) {
+            let visible = error.without_source();
+            publish_rejected(
+                &mut st,
+                &self.shared.notifier,
+                command.payload,
+                visible.without_source(),
+            );
+            return SubmitOutcome::Rejected { error: visible };
+        }
+
+        // Stop / Shutdown: independent bounded slots + cancel.
+        if command.payload.is_stop() {
+            return admit_stop(&mut st, &self.shared.notifier, &command.payload);
+        }
+        if command.payload.is_shutdown() {
+            return admit_shutdown(&mut st, &self.shared.notifier);
+        }
+
+        // In-flight mutating probe blocks other mutating probes.
+        if command.payload.is_mutating_probe() && st.active_command.is_some() {
+            let error = sess_error(
+                ErrorCode::CommandInFlight,
+                "a mutating command is already in flight",
+                command.payload.name(),
+            );
+            publish_rejected(
+                &mut st,
+                &self.shared.notifier,
+                command.payload,
+                error.without_source(),
+            );
+            return SubmitOutcome::Rejected { error };
+        }
+
+        if let Err(error) = validate_in_state(st.phase, &command.payload) {
+            publish_rejected(
+                &mut st,
+                &self.shared.notifier,
+                command.payload,
+                error.without_source(),
+            );
+            return SubmitOutcome::Rejected { error };
+        }
+
+        let id = CommandId::new(st.ids.next());
+        let payload = command.payload.clone();
+
+        // Pause/Resume/Reset apply immediately (no work-queue slot).
+        match &payload {
+            CommandPayload::Pause => {
+                st.history.note_accepted(id);
+                publish_control(
+                    &mut st,
+                    &self.shared.notifier,
+                    Some(id),
+                    None,
+                    Event::CommandAccepted {
+                        command: command.payload.clone(),
+                    },
+                );
+                if st.phase == SessionState::Running {
+                    *st.pause.lock().expect("pause") = true;
+                    transition(
+                        &mut st,
+                        &self.shared.notifier,
+                        SessionState::Paused,
+                        "pause",
+                    );
+                }
+                complete_immediate(
+                    &mut st,
+                    &self.shared.notifier,
+                    id,
+                    RunOutcome::Completed { step: 0 },
+                );
+                return SubmitOutcome::Accepted { id };
+            }
+            CommandPayload::Resume => {
+                st.history.note_accepted(id);
+                publish_control(
+                    &mut st,
+                    &self.shared.notifier,
+                    Some(id),
+                    None,
+                    Event::CommandAccepted {
+                        command: command.payload.clone(),
+                    },
+                );
+                if st.phase == SessionState::Paused {
+                    *st.pause.lock().expect("pause") = false;
+                    transition(
+                        &mut st,
+                        &self.shared.notifier,
+                        SessionState::Running,
+                        "resume",
+                    );
+                }
+                complete_immediate(
+                    &mut st,
+                    &self.shared.notifier,
+                    id,
+                    RunOutcome::Completed { step: 0 },
+                );
+                return SubmitOutcome::Accepted { id };
+            }
+            CommandPayload::Reset => {
+                st.history.note_accepted(id);
+                publish_control(
+                    &mut st,
+                    &self.shared.notifier,
+                    Some(id),
+                    None,
+                    Event::CommandAccepted {
+                        command: command.payload.clone(),
+                    },
+                );
+                transition(&mut st, &self.shared.notifier, SessionState::Idle, "reset");
+                complete_immediate(
+                    &mut st,
+                    &self.shared.notifier,
+                    id,
+                    RunOutcome::Completed { step: 0 },
+                );
+                return SubmitOutcome::Accepted { id };
+            }
+            _ => {}
+        }
+
+        // Reserve a queue slot before acceptance so a full queue rejects with
+        // SP-SESS-003 and never leaves a command without a terminal path.
+        // Owner publishes CommandAccepted when dequeuing (avoids accept/start race).
+        drop(st);
+        match self.work_tx.try_send(AdmittedWork::Payload {
+            id,
+            payload: payload.clone(),
+        }) {
+            Ok(()) => {
+                let mut st = self.shared.state.lock().expect("state");
+                // Reserve in-flight identity before the owner thread starts work so
+                // concurrent submits and waiters cannot observe a false Idle/Ready gap.
+                st.history.note_accepted(id);
+                st.active_command = Some(id);
+                st.active_payload = Some(payload);
+                SubmitOutcome::Accepted { id }
+            }
+            Err(TrySendError::Full(_)) => {
+                let mut st = self.shared.state.lock().expect("state");
+                let error =
+                    sess_error(ErrorCode::CommandInFlight, "command queue is full", "queue");
+                publish_rejected(
+                    &mut st,
+                    &self.shared.notifier,
+                    payload,
+                    error.without_source(),
+                );
+                SubmitOutcome::Rejected { error }
+            }
+            Err(TrySendError::Disconnected(_)) => SubmitOutcome::Rejected {
+                error: sess_error(ErrorCode::InvalidState, "session owner stopped", "owner"),
+            },
+        }
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        self.shared.state.lock().expect("state").snapshot()
+    }
+
+    /// Subscribe and snapshot under one lock so the live stream boundary
+    /// matches the returned snapshot seq.
+    pub fn subscribe(&self) -> Option<(Subscription, Snapshot)> {
+        let st = self.shared.state.lock().expect("state");
+        let sub = self.shared.notifier.subscribe()?;
+        let snap = st.snapshot();
+        Some((sub, snap))
+    }
+
+    pub fn replay(&self, cursor: EventCursor) -> Result<ReplayOutcome, CursorError> {
+        let st = self.shared.state.lock().expect("state");
+        validate_cursor(&st, cursor)?;
+        Ok(st.history.replay_control_after(cursor.seq, st.snapshot()))
+    }
+
+    pub fn command_result(&self, id: CommandId) -> CommandResult {
+        let st = self.shared.state.lock().expect("state");
+        st.history.command_result(id, st.active_command)
+    }
+
+    /// Inject a worker event (tests: stale/late runs). Progress uses try_send;
+    /// terminals use the result mailbox.
+    pub fn inject_worker_event(&self, event: WorkerEvent) -> Result<(), DomainError> {
+        let is_result = matches!(
+            event,
+            WorkerEvent::LoadDone { .. } | WorkerEvent::RunTerminal { .. }
+        );
+        let tx = if is_result {
+            &self.result_inject_tx
+        } else {
+            &self.progress_inject_tx
+        };
+        match tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                let mut st = self.shared.state.lock().expect("state");
+                st.drops.worker_mailbox = st.drops.worker_mailbox.saturating_add(1);
+                Err(sess_error(
+                    ErrorCode::CommandInFlight,
+                    "worker event mailbox is full",
+                    "worker_mailbox",
+                ))
+            }
+            Err(TrySendError::Disconnected(_)) => Err(sess_error(
+                ErrorCode::InvalidState,
+                "session owner stopped",
+                "owner",
+            )),
+        }
+    }
+
+    pub fn log_tail(&self) -> Vec<String> {
+        self.shared
+            .state
+            .lock()
+            .expect("state")
+            .log_tail
+            .entries
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    pub fn wait_until<F>(&self, timeout: Duration, mut pred: F) -> bool
+    where
+        F: FnMut(&Snapshot) -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if pred(&self.snapshot()) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        pred(&self.snapshot())
+    }
+}
+
+impl Drop for ApplicationService {
+    fn drop(&mut self) {
+        let _ = self.submit(Command::new(CommandPayload::Shutdown));
+        if let Some(handle) = self.owner.lock().expect("owner").take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn validate_cursor(st: &State, cursor: EventCursor) -> Result<(), CursorError> {
+    if cursor.session_id != st.session_id {
+        return Err(CursorError::ForeignSession {
+            expected: st.session_id,
+            actual: cursor.session_id,
+            error: sess_error(
+                ErrorCode::InvalidState,
+                "cursor session_id does not match this session",
+                "cursor",
+            ),
+        });
+    }
+    if cursor.seq > st.seq {
+        return Err(CursorError::Future {
+            snapshot_seq: st.seq,
+            cursor_seq: cursor.seq,
+            error: DomainError::try_new(
+                ErrorCode::ValueOutOfRange,
+                "cursor seq is ahead of snapshot",
+            )
+            .expect("message")
+            .with_context(ContextKey::Field, "cursor.seq")
+            .expect("field")
+            .with_context(ContextKey::Expected, format!("<= {}", st.seq))
+            .expect("expected")
+            .with_context(ContextKey::Actual, cursor.seq.to_string())
+            .expect("actual"),
+        });
+    }
+    Ok(())
+}
+
+fn admit_stop(st: &mut State, notifier: &Arc<Notifier>, payload: &CommandPayload) -> SubmitOutcome {
+    let CommandPayload::Stop { save } = payload else {
+        unreachable!("admit_stop");
+    };
+    let save = *save;
+
+    // Idempotent: already have pending/owner stop while working or stopping.
+    if st.stop_owner.is_some() || st.pending_stop.is_some() {
+        let id = CommandId::new(st.ids.next());
+        st.history.note_accepted(id);
+        publish_control(
+            st,
+            notifier,
+            Some(id),
+            st.active_run,
+            Event::CommandAccepted {
+                command: payload.clone(),
+            },
+        );
+        // No second terminal — coalesced no-op completes immediately as Completed.
+        complete_immediate(st, notifier, id, RunOutcome::Completed { step: 0 });
+        return SubmitOutcome::Accepted { id };
+    }
+
+    if !matches!(
+        st.phase,
+        SessionState::Loading
+            | SessionState::Preparing
+            | SessionState::Running
+            | SessionState::Paused
+            | SessionState::Stopping
+    ) && st.active_command.is_none()
+    {
+        let error = sess_error(
+            ErrorCode::InvalidState,
+            "stop is invalid in the current state",
+            "stop",
+        );
+        publish_rejected(st, notifier, payload.clone(), error.without_source());
+        return SubmitOutcome::Rejected { error };
+    }
+
+    let id = CommandId::new(st.ids.next());
+    st.history.note_accepted(id);
+    publish_control(
+        st,
+        notifier,
+        Some(id),
+        st.active_run,
+        Event::CommandAccepted {
+            command: payload.clone(),
+        },
+    );
+    st.stop_owner = Some(id);
+    st.pending_stop = Some(PendingStop { save });
+    st.active_stop_save = Some(save);
+    let _ = st.cancel.request(CancelReason::User);
+    if st.phase == SessionState::Running || st.phase == SessionState::Paused {
+        transition(st, notifier, SessionState::Stopping, "stop");
+    }
+    SubmitOutcome::Accepted { id }
+}
+
+fn admit_shutdown(st: &mut State, notifier: &Arc<Notifier>) -> SubmitOutcome {
+    if let Some(existing) = st.shutdown_owner {
+        let id = CommandId::new(st.ids.next());
+        st.history.note_accepted(id);
+        publish_control(
+            st,
+            notifier,
+            Some(id),
+            None,
+            Event::CommandAccepted {
+                command: CommandPayload::Shutdown,
+            },
+        );
+        // Coalesced: no second ShutdownComplete — immediate Completed for duplicate.
+        complete_immediate(st, notifier, id, RunOutcome::Completed { step: 0 });
+        let _ = existing;
+        return SubmitOutcome::Accepted { id };
+    }
+
+    let id = CommandId::new(st.ids.next());
+    st.history.note_accepted(id);
+    publish_control(
+        st,
+        notifier,
+        Some(id),
+        None,
+        Event::CommandAccepted {
+            command: CommandPayload::Shutdown,
+        },
+    );
+    st.shutdown_owner = Some(id);
+    st.pending_shutdown = Some(id);
+    let _ = st.cancel.request(CancelReason::Shutdown);
+    SubmitOutcome::Accepted { id }
+}
+
+fn validate_in_state(phase: SessionState, payload: &CommandPayload) -> Result<(), DomainError> {
+    let ok = match payload {
+        CommandPayload::ProbeLoad { .. } => {
+            matches!(
+                phase,
+                SessionState::Idle | SessionState::Ready | SessionState::Failed
+            )
+        }
+        CommandPayload::ProbeRun { .. } => phase == SessionState::Ready,
+        CommandPayload::Pause => {
+            matches!(phase, SessionState::Running | SessionState::Paused)
+        }
+        CommandPayload::Resume => {
+            matches!(phase, SessionState::Paused | SessionState::Running)
+        }
+        CommandPayload::Reset => phase == SessionState::Failed,
+        CommandPayload::Stop { .. } | CommandPayload::Shutdown => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(sess_error(
+            ErrorCode::InvalidState,
+            "command is invalid in the current state",
+            payload.name(),
+        ))
+    }
+}
+
+fn owner_loop(
+    shared: Arc<Shared>,
+    work_rx: Receiver<AdmittedWork>,
+    progress_rx: Receiver<WorkerEvent>,
+    result_rx: Receiver<WorkerEvent>,
+) {
+    let poll = {
+        let st = shared.state.lock().expect("state");
+        st.limits.poll_interval()
+    };
+    loop {
+        {
+            let mut st = shared.state.lock().expect("state");
+            if st.shutdown_done {
+                break;
+            }
+            // Drive shutdown when idle (no active command).
+            if st.pending_shutdown.is_some() && st.active_command.is_none() {
+                finish_shutdown(&mut st, &shared.notifier);
+                break;
+            }
+        }
+
+        // Results first so a full progress mailbox cannot delay terminals.
+        let mut drained_result = false;
+        match result_rx.try_recv() {
+            Ok(event) => {
+                drained_result = true;
+                apply_worker_event(&shared, event);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                let mut st = shared.state.lock().expect("state");
+                if let Some(id) = st.active_command {
+                    let err = DomainError::try_new(
+                        ErrorCode::Internal,
+                        "fake worker result channel disconnected",
+                    )
+                    .expect("message");
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        id,
+                        RunOutcome::Failed { error: err },
+                        None,
+                    );
+                }
+            }
+        }
+
+        match work_rx.try_recv() {
+            Ok(AdmittedWork::Payload { id, payload }) => {
+                start_work(&shared, id, payload);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {}
+        }
+
+        match progress_rx.try_recv() {
+            Ok(event) => apply_worker_event(&shared, event),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {}
+        }
+
+        if !drained_result {
+            thread::sleep(poll.min(Duration::from_millis(5)));
+        }
+    }
+}
+
+fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
+    let mut st = shared.state.lock().expect("state");
+    publish_control(
+        &mut st,
+        &shared.notifier,
+        Some(id),
+        None,
+        Event::CommandAccepted {
+            command: payload.clone(),
+        },
+    );
+    if st.shutdown_done || st.phase == SessionState::Closed {
+        complete_immediate(
+            &mut st,
+            &shared.notifier,
+            id,
+            RunOutcome::Canceled {
+                step: 0,
+                reason: CancelReason::Shutdown,
+                saved_checkpoint: None,
+            },
+        );
+        return;
+    }
+    // Fresh cancel token per probe generation, inheriting any Stop/Shutdown
+    // that won while this command was only reserved on the work queue.
+    let prior = st.cancel.reason();
+    st.cancel = CancelToken::new();
+    if let Some(reason) = prior {
+        let _ = st.cancel.request(reason);
+    }
+    if st.pending_shutdown.is_some() {
+        let _ = st.cancel.request(CancelReason::Shutdown);
+    } else if st.pending_stop.is_some() {
+        let _ = st.cancel.request(CancelReason::User);
+    }
+    *st.pause.lock().expect("pause") = false;
+    let run_id = RunId::new(st.ids.next());
+    st.active_command = Some(id);
+    st.active_run = Some(run_id);
+    st.active_payload = Some(payload.clone());
+    st.latest_progress = None;
+    st.active_stop_save = None;
+
+    let cancel = st.cancel.clone();
+    let pause = Arc::clone(&st.pause);
+    let stall = shared.stall.clone_arc();
+    let limits_delay = st.limits.clone();
+    let _ = limits_delay;
+
+    match payload {
+        CommandPayload::ProbeLoad { label } => {
+            transition(
+                &mut st,
+                &shared.notifier,
+                SessionState::Loading,
+                "probe_load",
+            );
+            drop(st);
+            shared
+                .worker
+                .lock()
+                .expect("worker")
+                .send(WorkerRequest::Load {
+                    run_id,
+                    command_id: id,
+                    label,
+                    cancel,
+                });
+        }
+        CommandPayload::ProbeRun { steps } => {
+            transition(
+                &mut st,
+                &shared.notifier,
+                SessionState::Preparing,
+                "probe_run",
+            );
+            publish_control(
+                &mut st,
+                &shared.notifier,
+                Some(id),
+                Some(run_id),
+                Event::ProbeStarted { steps },
+            );
+            transition(
+                &mut st,
+                &shared.notifier,
+                SessionState::Running,
+                "probe_prepared",
+            );
+            let save_on_cancel = st.pending_stop.as_ref().map(|p| p.save).unwrap_or(true);
+            drop(st);
+            shared
+                .worker
+                .lock()
+                .expect("worker")
+                .send(WorkerRequest::Run {
+                    run_id,
+                    command_id: id,
+                    steps,
+                    cancel,
+                    pause,
+                    stall,
+                    save_on_cancel,
+                });
+        }
+        other => {
+            complete_immediate(
+                &mut st,
+                &shared.notifier,
+                id,
+                RunOutcome::Failed {
+                    error: sess_error(
+                        ErrorCode::Internal,
+                        "unexpected queued payload",
+                        other.name(),
+                    ),
+                },
+            );
+        }
+    }
+}
+
+fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
+    let mut st = shared.state.lock().expect("state");
+    let (run_id, command_id) = match &event {
+        WorkerEvent::Progress {
+            run_id, command_id, ..
+        }
+        | WorkerEvent::Log {
+            run_id, command_id, ..
+        }
+        | WorkerEvent::LoadDone {
+            run_id, command_id, ..
+        }
+        | WorkerEvent::RunTerminal {
+            run_id, command_id, ..
+        } => (*run_id, *command_id),
+    };
+
+    if st.active_run != Some(run_id) || st.active_command != Some(command_id) {
+        st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+        return;
+    }
+
+    match event {
+        WorkerEvent::Progress { snapshot, .. } => {
+            if check_progress(&snapshot, &st.limits).is_err() {
+                st.drops.progress = st.drops.progress.saturating_add(1);
+                return;
+            }
+            // Latest-wins replaceable; not control history. Seq still advances
+            // for live subscribers; intentional gaps vs control replay.
+            if st.latest_progress.is_some() {
+                st.drops.progress = st.drops.progress.saturating_add(1);
+            }
+            st.latest_progress = Some(snapshot.clone());
+            publish_replaceable(
+                &mut st,
+                &shared.notifier,
+                Some(command_id),
+                Some(run_id),
+                Event::Progress(snapshot),
+            );
+        }
+        WorkerEvent::Log { message, .. } => {
+            if check_log_message(&message, &st.limits).is_err() {
+                st.drops.log = st.drops.log.saturating_add(1);
+                return;
+            }
+            st.log_tail.push(message.clone());
+            if st.log_tail.entries.len() == st.log_tail.capacity {
+                // capacity managed inside push
+            }
+            publish_replaceable(
+                &mut st,
+                &shared.notifier,
+                Some(command_id),
+                Some(run_id),
+                Event::Log {
+                    level: LogLevel::Info,
+                    message,
+                },
+            );
+        }
+        WorkerEvent::LoadDone { label, .. } => {
+            if let Err(err) = check_reason("probe_loaded", &st.limits) {
+                let _ = err;
+            }
+            st.loaded_label = Some(label.clone());
+            publish_control(
+                &mut st,
+                &shared.notifier,
+                Some(command_id),
+                Some(run_id),
+                Event::ProbeLoaded { label },
+            );
+            transition(&mut st, &shared.notifier, SessionState::Ready, "load_done");
+            finish_active(
+                &mut st,
+                &shared.notifier,
+                command_id,
+                RunOutcome::Completed { step: 0 },
+                Some(run_id),
+            );
+        }
+        WorkerEvent::RunTerminal {
+            outcome,
+            checkpoint_label,
+            ..
+        } => {
+            let mut outcome = outcome_from_terminal(outcome);
+            if let RunOutcome::Failed { error } = &outcome {
+                outcome = RunOutcome::Failed {
+                    error: bound_error(error, &st.limits),
+                };
+            }
+            let checkpoint = match &outcome {
+                RunOutcome::Canceled {
+                    step,
+                    saved_checkpoint,
+                    ..
+                } => checkpoint_label
+                    .or_else(|| saved_checkpoint.clone())
+                    .map(|label| (*step, label)),
+                _ => None,
+            };
+            if let Some((step, label)) = checkpoint {
+                publish_control(
+                    &mut st,
+                    &shared.notifier,
+                    Some(command_id),
+                    Some(run_id),
+                    Event::CheckpointSaved { step, label },
+                );
+            }
+            let next = match &outcome {
+                RunOutcome::Failed { .. } => SessionState::Failed,
+                RunOutcome::Canceled { .. } | RunOutcome::Completed { .. } => {
+                    if st.phase == SessionState::Loading {
+                        SessionState::Idle
+                    } else {
+                        SessionState::Ready
+                    }
+                }
+            };
+            transition(&mut st, &shared.notifier, next, "run_terminal");
+            finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
+            // Stop is a separate accepted command: exactly one terminal of its own.
+            if let Some(stop_id) = st.stop_owner.take() {
+                complete_immediate(
+                    &mut st,
+                    &shared.notifier,
+                    stop_id,
+                    RunOutcome::Completed { step: 0 },
+                );
+            }
+            st.pending_stop = None;
+            st.active_stop_save = None;
+        }
+    }
+}
+
+fn finish_active(
+    st: &mut State,
+    notifier: &Arc<Notifier>,
+    command_id: CommandId,
+    outcome: RunOutcome,
+    run_id: Option<RunId>,
+) {
+    st.last_outcome = Some(outcome.clone());
+    publish_control(
+        st,
+        notifier,
+        Some(command_id),
+        run_id.or(st.active_run),
+        Event::Completed { outcome },
+    );
+    st.active_command = None;
+    st.active_run = None;
+    st.active_payload = None;
+    st.latest_progress = None;
+}
+
+fn complete_immediate(
+    st: &mut State,
+    notifier: &Arc<Notifier>,
+    command_id: CommandId,
+    outcome: RunOutcome,
+) {
+    st.last_outcome = Some(outcome.clone());
+    publish_control(
+        st,
+        notifier,
+        Some(command_id),
+        None,
+        Event::Completed { outcome },
+    );
+}
+
+fn finish_shutdown(st: &mut State, notifier: &Arc<Notifier>) {
+    let id = st
+        .pending_shutdown
+        .take()
+        .or(st.shutdown_owner)
+        .unwrap_or_else(|| CommandId::new(st.ids.next()));
+    transition(st, notifier, SessionState::Closed, "shutdown");
+    publish_control(st, notifier, Some(id), None, Event::ShutdownComplete);
+    st.shutdown_done = true;
+    notifier.close();
+}
+
+fn transition(st: &mut State, notifier: &Arc<Notifier>, to: SessionState, reason: &str) {
+    if st.phase == to {
+        return;
+    }
+    let reason = if check_reason(reason, &st.limits).is_ok() {
+        reason.to_string()
+    } else {
+        "transition".to_string()
+    };
+    let from = st.phase;
+    st.phase = to;
+    publish_control(
+        st,
+        notifier,
+        st.active_command,
+        st.active_run,
+        Event::StateChanged { from, to, reason },
+    );
+}
+
+fn publish_rejected(
+    st: &mut State,
+    notifier: &Arc<Notifier>,
+    command: CommandPayload,
+    error: DomainError,
+) {
+    let error = bound_error(&error, &st.limits);
+    publish_control(
+        st,
+        notifier,
+        None,
+        None,
+        Event::CommandRejected { command, error },
+    );
+}
+
+fn publish_control(
+    st: &mut State,
+    notifier: &Arc<Notifier>,
+    command_id: Option<CommandId>,
+    run_id: Option<RunId>,
+    event: Event,
+) {
+    let seq = st.next_seq();
+    let envelope = EventEnvelope {
+        event_version: 1,
+        session_id: st.session_id,
+        run_id,
+        seq,
+        command_id,
+        monotonic_ms: st.monotonic_ms(),
+        event,
+    };
+    st.history.push_control(envelope.clone(), &mut st.drops);
+    notifier.publish(&envelope, &mut st.drops);
+}
+
+fn publish_replaceable(
+    st: &mut State,
+    notifier: &Arc<Notifier>,
+    command_id: Option<CommandId>,
+    run_id: Option<RunId>,
+    event: Event,
+) {
+    let seq = st.next_seq();
+    let envelope = EventEnvelope {
+        event_version: 1,
+        session_id: st.session_id,
+        run_id,
+        seq,
+        command_id,
+        monotonic_ms: st.monotonic_ms(),
+        event,
+    };
+    // Not retained in control history (intentional gaps on replay).
+    notifier.publish(&envelope, &mut st.drops);
+}
+
+fn sess_error(code: ErrorCode, message: &str, command: &str) -> DomainError {
+    DomainError::try_new(code, message)
+        .expect("message")
+        .with_context(ContextKey::Command, command)
+        .expect("command")
+}

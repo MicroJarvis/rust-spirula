@@ -1,0 +1,15 @@
+[package]
+name = "spirula-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Unique session owner: commands, cancel, history, and fake workers"
+publish = false
+
+[dependencies]
+spirula-core = { path = "../spirula-core" }
+
+[lints]
+workspace = true

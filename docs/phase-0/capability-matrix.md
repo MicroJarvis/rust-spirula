@@ -108,8 +108,8 @@ refer to [fixtures.md](fixtures.md).
 | C-CLI-05 | device selection flag | `cli/main.cpp:287-349` | index/name/uuid/auto | device | prints a table, warns on known-bad devices | P6-F02/P2-F01 | `spirula-cli`/`spirula-gpu` | 未开始 |
 | C-CLI-06 | resume command | `cli/main.cpp:539-542`, `checkpoint/Resume.h` | run dir/checkpoint | resumed session | explicit flags override checkpoint config | P6-F02/P5-F05 | `spirula-cli` | 未开始 |
 | C-CLI-07 | subcommands other than train | `Main.cpp:71-106`, `Tools.h:52-62` | argv | tool output | sfm/sam/mesh/geometry/dense/e57/lidar/partition/encode later | P8/P7 target features | `spirula-cli` | 未开始 |
-| C-APP-01 | command/event session API | (new; reference is `TrainerSession` + GUI worker) | commands | events | one application owner, bounded history/snapshots, source seq gaps and resync | P1-F07/P6-F01 | `spirula-application` | 未开始 |
-| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P1-F07/P1-F09/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中 |
+| C-APP-01 | command/event session API | (new; reference is `TrainerSession` + GUI worker) | commands | events | one application owner, bounded history/snapshots, source seq gaps and resync | P1-F07/P6-F01 | `spirula-application` | 进行中（P1-F07 fake probe owner；真实业务 P6-F01） |
+| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P1-F07/P1-F09/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中（P1-F03+P1-F07；SIGINT P1-F09） |
 
 ## Cross-cutting
 
