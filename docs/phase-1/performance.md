@@ -16,10 +16,13 @@ optional device fields into one `memory.json`. P1-F08 does **not** copy that
 shape. It records:
 
 - application-**accounted** allocated / current / peak bytes from an explicit
-  checked counter (`current <= peak <= allocated`);
-- optional **resident** resource byte budget (live current/peak only) with
-  preflight rejection before allocate; cumulative `allocated_bytes` remains a
-  volume counter and is not a capacity limit;
+  checked counter (`current <= peak <= allocated`), with `source` naming the
+  counted scope (the CPU sample counts only the per-iteration work buffer);
+- optional **scoped resident** resource byte budget (live current/peak of that
+  accounted scope only) with preflight rejection before allocate using
+  `SP-GPU-004` / `AllocationFailed`; cumulative `allocated_bytes` remains a
+  volume counter and is not a capacity limit; the budget is **not** process
+  RSS / working-set enforcement;
 - phase wall time in **nanoseconds** (with optional `work_count` for batched
   samples) plus optional time budget;
 - fixture and config content SHA-256 of the **executed** fixture bytes and the
@@ -43,11 +46,16 @@ Guessed or proxy numbers must never be labeled as measured.
   reason), and `dirty` (`clean` / `dirty` / `unavailable` + reason). The sample
   keeps source/dirty unavailable (it does not invent a CWD git identity).
   Environment records OS, arch, and rustc (or an explicit unavailable note).
-- `memory.accounted` is the only measured host memory section in F08.
-  `memory.resource_budget_bytes` is an optional **resident** cap: when set,
-  `PerfReport::check_budgets` and `AccountedBytesTracker::preflight` fail only
-  if live current/peak would exceed it. Repeated allocate/free under the same
-  cap is allowed even when cumulative allocated volume grows.
+- `memory.accounted` is the only measured host memory section in F08. Its
+  `source` must state the scope. The sample uses
+  `explicit_counter:per_iteration_work_buffer_only`: fixture bytes, config JSON,
+  report serialization, and allocator metadata may exist outside that counter.
+- `memory.resource_budget_bytes` is an optional **scoped resident** cap: when
+  set, `PerfReport::check_budgets` and `AccountedBytesTracker::preflight` fail
+  with `AllocationFailed` only if accounted live current/peak would exceed it.
+  Repeated allocate/free under the same cap is allowed even when cumulative
+  allocated volume grows. An 8192-byte sample cap is not a claim about total
+  process RSS.
 - Tracker `allocate` / `free` use checked arithmetic and leave state unchanged
   on overflow/underflow.
 - Fields `os_process_peak`, `device_memory`, `gpu`, `gpu_timestamp_query`, and
@@ -56,18 +64,19 @@ Guessed or proxy numbers must never be labeled as measured.
   wall-clock timestamp fields.
 - Each phase records `name`, `wall_time_ns`, `source` (for example
   `std::time::Instant::elapsed`), optional `budget_ns`, and optional
-  `work_count`. `check_budgets` fails with `SP-INP-003` on time or resident
-  resource overflow after revalidating the report.
+  `work_count`. `check_budgets` fails with `SP-INP-003` on time overflow and
+  `SP-GPU-004` on scoped resident resource overflow after revalidating the
+  report.
 - `PerfReport::validate` (also called from save/serialize) rechecks **all**
   publicly mutable nested fields so blanked environment strings or mutated
   memory/phase values cannot be persisted for a reader to reject later.
 - Persistence uses `spirula-io` atomic publish (unique sibling temp + replace).
 - The sample workload (`spirula-io::run_measured_workload`) hashes an 8192-byte
   patterned fixture and a config JSON (`chunk_bytes=8192`, `iterations=8`,
-  `resource_budget_bytes=8192`). It allocates a real buffer, copies the opaque
-  fixture, folds a volatile checksum (observable output), frees, and repeats.
-  Release builds must keep that allocation/read path; debug-only evidence is
-  not sufficient.
+  `resource_budget_bytes=8192`). It allocates a real work buffer, copies the
+  opaque fixture via safe `Read` + `black_box`, folds an observable checksum
+  (no `unsafe`), frees, and repeats. Release builds must keep that
+  allocation/read path; debug-only evidence is not sufficient.
 
 ## Template for later features
 
@@ -120,4 +129,6 @@ cargo run -p spirula-xtask -- verify
   timestamp measurement.
 - No training, render, or application-session orchestration.
 - No claim that cumulative allocated volume is a resident capacity budget.
+- No claim that the sample’s scoped work-buffer budget equals process RSS or
+  enforces total process memory.
 - Phase 9 still owns cross-feature baseline aggregation (P9-F02).

@@ -26,7 +26,7 @@ pub use perf::{
     report_to_json, save_perf_report,
 };
 pub use sample_workload::{
-    SAMPLE_CHUNK_BYTES, SAMPLE_ITERATIONS, SampleConfig, WorkloadResult,
+    SAMPLE_ACCOUNTED_SOURCE, SAMPLE_CHUNK_BYTES, SAMPLE_ITERATIONS, SampleConfig, WorkloadResult,
     canonical_sample_config_json, canonical_sample_fixture, expected_workload_checksum,
     parse_sample_config, run_measured_workload,
 };

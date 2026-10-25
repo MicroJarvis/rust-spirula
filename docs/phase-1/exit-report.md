@@ -130,12 +130,12 @@ P1-F08 is complete: versioned `spirula-perf-report` contracts live in
 `spirula-core`; JSON + SHA-256 provenance of **executed** fixture/config +
 source revision/dirty status + atomic publish/reload live in `spirula-io`;
 `spirula-perf-sample` runs a real allocate/copy/fold/free workload (8192×8
-under a resident 8192 budget), generates and reloads a report with checked
-accounted bytes, nanosecond timings, and explicit unavailable reasons for OS
-process peak, device memory, GPU counters, GPU timestamp-query timing, and
-absolute wall-clock timestamps. Source/dirty stay honestly unavailable. No
-train/GPU/UI runtime. Next feature is P1-F09. Branch remains unmerged until
-explicitly approved.
+under a **scoped** resident 8192 work-buffer budget — not process RSS),
+generates and reloads a report with checked accounted bytes, nanosecond
+timings, and explicit unavailable reasons for OS process peak, device memory,
+GPU counters, GPU timestamp-query timing, and absolute wall-clock timestamps.
+Source/dirty stay honestly unavailable. No train/GPU/UI runtime. Next feature
+is P1-F09. Branch remains unmerged until explicitly approved.
 
 ## Evidence
 
@@ -151,7 +151,7 @@ explicitly approved.
 
 ## Non-claims
 
-- No OS RSS / working-set sampling.
+- No OS RSS / working-set sampling or process-wide memory enforcement.
 - No GPU adapter, device-memory, GPU timestamp-query, or absolute wall-clock
   timestamp measurement.
 - No per-feature baselines beyond the infrastructure sample (those land with

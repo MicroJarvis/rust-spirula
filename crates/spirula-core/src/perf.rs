@@ -38,16 +38,23 @@ impl UnavailableMetric {
 /// Application-accounted host bytes. Values come from an explicit counter the
 /// caller updates on allocate/free — not from OS RSS or device queries.
 ///
+/// The `source` string must describe **what** is counted. A sample may count
+/// only the per-iteration work buffer while fixture/config/report payloads and
+/// allocator metadata remain outside the counter; [`Self::check_budget`] then
+/// caps that scoped live/peak only and must not be read as process-wide RSS
+/// enforcement.
+///
 /// Invariant: `current_bytes <= peak_bytes <= allocated_bytes`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountedMemory {
-    /// Cumulative bytes requested through the accounted path.
+    /// Cumulative bytes requested through the accounted path (volume counter).
     pub allocated_bytes: u64,
     /// Bytes still held by the accounted path.
     pub current_bytes: u64,
     /// High-water mark of `current_bytes`.
     pub peak_bytes: u64,
-    /// How the numbers were produced (for example `explicit_counter`).
+    /// Scope + method (for example
+    /// `explicit_counter:per_iteration_work_buffer_only`).
     source: String,
 }
 
@@ -100,16 +107,18 @@ impl AccountedMemory {
         .map(|_| ())
     }
 
-    /// Fail when live peak exceeds a resident-memory byte budget.
+    /// Fail when scoped live current/peak exceeds a resident-memory byte budget.
     ///
     /// Cumulative `allocated_bytes` is a volume counter and is **not** compared
     /// to this limit (repeated allocate/free under the same live cap is allowed).
+    /// This is not process-wide RSS enforcement — only the bytes described by
+    /// [`Self::source`] are checked.
     pub fn check_budget(&self, limit_bytes: u64) -> Result<(), DomainError> {
         if self.current_bytes > limit_bytes {
-            return Err(range_err(
+            return Err(allocation_budget_err(
                 "memory.accounted.current_bytes",
                 format!(
-                    "accounted current_bytes {} exceeds resource budget_bytes {limit_bytes}",
+                    "accounted current_bytes {} exceeds scoped resource budget_bytes {limit_bytes}",
                     self.current_bytes
                 ),
                 limit_bytes,
@@ -117,10 +126,10 @@ impl AccountedMemory {
             ));
         }
         if self.peak_bytes > limit_bytes {
-            return Err(range_err(
+            return Err(allocation_budget_err(
                 "memory.accounted.peak_bytes",
                 format!(
-                    "accounted peak_bytes {} exceeds resource budget_bytes {limit_bytes}",
+                    "accounted peak_bytes {} exceeds scoped resource budget_bytes {limit_bytes}",
                     self.peak_bytes
                 ),
                 limit_bytes,
@@ -175,10 +184,10 @@ impl AccountedBytesTracker {
         })?;
         let next_peak = self.peak_bytes.max(next_current);
         if next_current > limit_bytes || next_peak > limit_bytes {
-            return Err(range_err(
+            return Err(allocation_budget_err(
                 "memory.resource_budget_bytes",
                 format!(
-                    "preflight allocation of {bytes} bytes would exceed resident resource budget {limit_bytes}"
+                    "preflight accounted allocation of {bytes} bytes would exceed scoped resident budget {limit_bytes}"
                 ),
                 limit_bytes,
                 next_peak.max(next_current),
@@ -537,6 +546,26 @@ fn range_err(
         .expect("actual")
 }
 
+/// Resident accounted-budget failure uses the catalog resource-allocation code
+/// (`SP-GPU-004` / [`ErrorCode::AllocationFailed`]) with a scoped host message.
+fn allocation_budget_err(
+    field: impl Into<String>,
+    message: impl Into<String>,
+    expected: u64,
+    actual: u64,
+) -> DomainError {
+    DomainError::try_new(ErrorCode::AllocationFailed, message.into())
+        .expect("message")
+        .with_context(ContextKey::Field, field.into())
+        .expect("field")
+        .with_context(ContextKey::Resource, "accounted_work_buffer")
+        .expect("resource")
+        .with_context(ContextKey::Expected, expected.to_string())
+        .expect("expected")
+        .with_context(ContextKey::Actual, actual.to_string())
+        .expect("actual")
+}
+
 fn unsupported_version(actual: u64) -> DomainError {
     DomainError::try_new(
         ErrorCode::UnsupportedVersion,
@@ -759,7 +788,7 @@ mod tests {
         report.check_budgets().unwrap();
         report.accounted = AccountedMemory::try_new(200, 0, 80, "explicit_counter").unwrap();
         let err = report.check_budgets().unwrap_err();
-        assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(err.code(), ErrorCode::AllocationFailed);
     }
 
     #[test]
@@ -775,7 +804,7 @@ mod tests {
         assert_eq!(t.allocated_bytes(), 128);
         assert_eq!(t.peak_bytes(), 64);
         assert_eq!(t.current_bytes(), 0);
-        t.snapshot("explicit_counter")
+        t.snapshot("explicit_counter:per_iteration_work_buffer_only")
             .unwrap()
             .check_budget(64)
             .unwrap();
@@ -801,7 +830,11 @@ mod tests {
     fn tracker_preflight_rejects_over_budget() {
         let t = AccountedBytesTracker::new();
         let err = t.preflight(64, 32).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(err.code(), ErrorCode::AllocationFailed);
+        assert_eq!(
+            err.context_value(ContextKey::Resource),
+            Some("accounted_work_buffer")
+        );
     }
 
     #[test]

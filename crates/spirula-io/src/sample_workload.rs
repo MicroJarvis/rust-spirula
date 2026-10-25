@@ -1,10 +1,13 @@
 //! CPU sample workload for P1-F08.
 //!
 //! The hashed fixture bytes are the measured input. The hashed config JSON
-//! defines chunk size, iteration count, and the resident resource budget.
+//! defines chunk size, iteration count, and the scoped resident resource
+//! budget. Accounted bytes cover **only** the per-iteration work buffer
+//! (`chunk_bytes`); fixture/config/report payloads and allocator metadata are
+//! outside this counter, so the budget is not process-wide RSS enforcement.
 //! Release builds must keep a real allocation + byte-consuming fold; opaque
-//! input and an observable checksum prevent the optimizer from deleting the
-//! work while still reporting accounted bytes.
+//! `black_box` input and an observable checksum prevent the optimizer from
+//! deleting the work.
 
 use std::hint::black_box;
 use std::io::{Cursor, Read};
@@ -24,6 +27,9 @@ pub const SAMPLE_CHUNK_BYTES: usize = 8192;
 
 /// Default iteration count from the sample config.
 pub const SAMPLE_ITERATIONS: u64 = 8;
+
+/// Accounted-memory `source` for this sample: only the work buffer is counted.
+pub const SAMPLE_ACCOUNTED_SOURCE: &str = "explicit_counter:per_iteration_work_buffer_only";
 
 /// Parsed sample configuration. Values come from the hashed config document.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,7 +277,7 @@ pub fn run_measured_workload(
         .expect("actual"));
     }
 
-    let accounted = tracker.snapshot("explicit_counter")?;
+    let accounted = tracker.snapshot(SAMPLE_ACCOUNTED_SOURCE)?;
     accounted.check_budget(config.resource_budget_bytes)?;
 
     Ok(WorkloadResult {
@@ -307,6 +313,7 @@ mod tests {
         assert_eq!(result.accounted.peak_bytes, 8192);
         assert_eq!(result.accounted.current_bytes, 0);
         assert_eq!(result.accounted.allocated_bytes, 8192 * 8);
+        assert_eq!(result.accounted.source(), SAMPLE_ACCOUNTED_SOURCE);
         assert_eq!(result.checksum, result.expected_checksum);
         assert_ne!(result.checksum, 0);
     }

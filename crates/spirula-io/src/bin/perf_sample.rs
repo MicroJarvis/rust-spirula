@@ -108,7 +108,7 @@ fn run() -> Result<(), spirula_core::DomainError> {
         work.fixture_sha256, work.config_sha256, work.checksum
     );
     println!(
-        "accounted allocated={} current={} peak={} source={} resident_budget={}",
+        "accounted allocated={} current={} peak={} source={} scoped_resident_budget={} (work buffer only; not process RSS)",
         loaded.accounted.allocated_bytes,
         loaded.accounted.current_bytes,
         loaded.accounted.peak_bytes,
