@@ -8,8 +8,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use spirula_core::{
-    AccountedBytesTracker, EnvironmentInfo, ErrorCode, PERF_REPORT_VERSION, PerfProvenance,
-    PerfReport, PhaseTiming, ProcessStage, UnavailableMetric, process_exit_code,
+    AccountedBytesTracker, DirtyStatus, EnvironmentInfo, ErrorCode, PERF_REPORT_VERSION,
+    PerfProvenance, PerfReport, PhaseTiming, ProcessStage, SourceRevision, UnavailableMetric,
+    process_exit_code,
 };
 use spirula_io::{PublishOptions, load_perf_report, provenance_hashes, save_perf_report};
 
@@ -44,19 +45,32 @@ fn run() -> Result<(), spirula_core::DomainError> {
             )
         });
     let environment = EnvironmentInfo::from_host(rustc)?;
-    let provenance = PerfProvenance::try_new(fixture_sha256, config_sha256, environment)?;
+    let provenance = PerfProvenance::try_new(
+        fixture_sha256,
+        config_sha256,
+        SourceRevision::unavailable(
+            "source revision digest unavailable: sample does not embed a git tree hash",
+        )?,
+        DirtyStatus::unavailable(
+            "working-tree dirty status unavailable: sample does not inspect git status",
+        )?,
+        environment,
+    )?;
 
+    const RESOURCE_BUDGET_BYTES: u64 = 256 * 1024;
+    const WORK_COUNT: u64 = 8;
     let mut tracker = AccountedBytesTracker::new();
     let phase_started = Instant::now();
-    {
-        let chunk = vec![0u8; 64 * 1024];
-        tracker.allocate(chunk.len() as u64);
-        // Touch bytes so the allocation is not optimized away.
+    for _ in 0..WORK_COUNT {
+        let chunk_len = 8 * 1024_u64;
+        tracker.preflight(chunk_len, RESOURCE_BUDGET_BYTES)?;
+        let chunk = vec![0u8; chunk_len as usize];
+        tracker.allocate(chunk_len)?;
         let checksum = chunk.iter().fold(0u8, |acc, b| acc.wrapping_add(*b));
         std::hint::black_box(checksum);
-        tracker.free(chunk.len() as u64);
+        tracker.free(chunk_len)?;
     }
-    let wall_time_ms = phase_started.elapsed().as_millis() as u64;
+    let wall_time_ns = phase_started.elapsed().as_nanos() as u64;
     let accounted = tracker.snapshot("explicit_counter")?;
 
     let report = PerfReport::try_new(
@@ -64,23 +78,26 @@ fn run() -> Result<(), spirula_core::DomainError> {
         "P1-F08",
         provenance,
         accounted,
+        Some(RESOURCE_BUDGET_BYTES),
         UnavailableMetric::try_new(
             "OS process peak (RSS/working-set) is not sampled in P1-F08; use accounted bytes",
         )?,
         UnavailableMetric::try_new(
             "device-wide GPU memory is unavailable: P1-F08 has no GPU runtime path",
         )?,
+        UnavailableMetric::try_new("GPU counters unavailable: P1-F08 has no GPU runtime path")?,
         UnavailableMetric::try_new(
-            "GPU timing/counters unavailable: P1-F08 has no GPU runtime path",
+            "GPU timestamp-query timing unavailable: P1-F08 has no GPU runtime path",
         )?,
         UnavailableMetric::try_new(
             "absolute wall-clock timestamps are not claimed; only phase durations are recorded",
         )?,
         vec![PhaseTiming::try_new(
             "accounted_allocate_free",
-            wall_time_ms,
+            wall_time_ns,
             "std::time::Instant::elapsed",
-            Some(60_000),
+            Some(60_000_000_000),
+            Some(WORK_COUNT),
         )?],
     )?;
     report.check_budgets()?;
@@ -99,16 +116,18 @@ fn run() -> Result<(), spirula_core::DomainError> {
 
     println!("wrote {}", out.display());
     println!(
-        "accounted allocated={} current={} peak={} source={}",
+        "accounted allocated={} current={} peak={} source={} budget={}",
         loaded.accounted.allocated_bytes,
         loaded.accounted.current_bytes,
         loaded.accounted.peak_bytes,
-        loaded.accounted.source()
+        loaded.accounted.source(),
+        loaded.resource_budget_bytes.unwrap_or(0)
     );
     println!(
-        "phases={} first_wall_ms={}",
+        "phases={} first_wall_ns={} work_count={}",
         loaded.phases.len(),
-        loaded.phases[0].wall_time_ms
+        loaded.phases[0].wall_time_ns,
+        loaded.phases[0].work_count.unwrap_or(0)
     );
     Ok(())
 }

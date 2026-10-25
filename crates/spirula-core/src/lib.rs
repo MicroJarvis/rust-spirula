@@ -43,8 +43,9 @@ pub use error::{
 pub use json_doc::{JsonKind, JsonNumber, JsonValue, parse_json};
 pub use math::{Mat3, Quat, Vec2, Vec3};
 pub use perf::{
-    AccountedBytesTracker, AccountedMemory, EnvironmentInfo, PERF_REPORT_SCHEMA,
-    PERF_REPORT_VERSION, PerfProvenance, PerfReport, PhaseTiming, UnavailableMetric,
+    AccountedBytesTracker, AccountedMemory, DirtyStatus, EnvironmentInfo, PERF_REPORT_SCHEMA,
+    PERF_REPORT_VERSION, PerfProvenance, PerfReport, PhaseTiming, SourceRevision,
+    UnavailableMetric, parse_schema_version,
 };
 pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,

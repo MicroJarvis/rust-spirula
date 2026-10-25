@@ -127,12 +127,14 @@ parent tip `3c85d92` (P1-F07 on main).
 ## Scope and result
 
 P1-F08 is complete: versioned `spirula-perf-report` contracts live in
-`spirula-core`; JSON + SHA-256 provenance + atomic publish/reload live in
-`spirula-io`; `spirula-perf-sample` generates and reads a CPU report with
-accounted allocated/current/peak bytes, phase wall time/source/budget, and
-explicit unavailable reasons for OS process peak, device memory, GPU, and
-absolute timestamps. No train/GPU/UI runtime. Next feature is P1-F09. Branch
-remains unmerged until explicitly approved.
+`spirula-core`; JSON + SHA-256 provenance (fixture/config + source
+revision/dirty status) + atomic publish/reload live in `spirula-io`;
+`spirula-perf-sample` generates and reads a CPU report with checked accounted
+bytes, resource byte budget/preflight, nanosecond phase timings, and explicit
+unavailable reasons for OS process peak, device memory, GPU counters, GPU
+timestamp-query timing, and absolute wall-clock timestamps. No train/GPU/UI
+runtime. Next feature is P1-F09. Branch remains unmerged until explicitly
+approved.
 
 ## Evidence
 
@@ -149,6 +151,7 @@ remains unmerged until explicitly approved.
 ## Non-claims
 
 - No OS RSS / working-set sampling.
-- No GPU adapter, device-memory, or wall-clock timestamp measurement.
+- No GPU adapter, device-memory, GPU timestamp-query, or absolute wall-clock
+  timestamp measurement.
 - No per-feature baselines beyond the infrastructure sample (those land with
   later slices; aggregation remains P9-F02).
