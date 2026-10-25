@@ -40,7 +40,7 @@ Observed on this host (fresh verify after the P1-F06 changes):
 |---|---|
 | fixtures | pass (checksummed fixture set) |
 | docs | pass (feature rows, links, completed-feature artifacts, error catalog) |
-| policy | pass (8 members, lint inheritance, architecture edges, CLI entry-only, feature combinations `[default]`, host `aarch64-apple-darwin`) |
+| policy | pass (8 members, lint inheritance, target architecture edges, CLI dep shape, feature combinations `[default]`, host `aarch64-apple-darwin`) |
 | fmt / check / test / clippy / diff | pass |
 | `spirula-xtask verify` | ok (8 checks: fixtures, docs, policy, fmt, check, test, clippy, diff) |
 | optional features | none declared; `default` is the only meaningful combination |

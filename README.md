@@ -30,9 +30,9 @@ cargo run -p spirula-xtask -- verify
 ```
 
 That command runs fixture and document checks, workspace policy (lint
-inheritance, architecture path edges, declared feature combinations, CLI
-entry-only shape), and the fixed `fmt` / `check` / `test` / `clippy` gate on
-the host triple only. Details:
+inheritance, target architecture path edges, declared feature combinations,
+CLI dependency shape), and the fixed `fmt` / `check` / `test` / `clippy` gate
+on the host triple only. Details:
 [docs/phase-1/workspace-checks.md](docs/phase-1/workspace-checks.md).
 
 P1-F01 through P1-F04 live in `spirula-core`. P1-F05 (atomic publish, temp

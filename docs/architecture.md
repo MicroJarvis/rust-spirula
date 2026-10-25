@@ -71,8 +71,10 @@ create GPU pipelines, or implement training rules.
 
 Argument parsing and process entry point. CLI commands will call the same
 application/session services as the desktop UI once `spirula-application`
-exists (Phase 6). Until then the crate is an entry adapter only: no path
-dependencies on IO/train/render/GPU, and no nested business modules.
+exists (Phase 6). Allowed workspace deps are `spirula-core` and
+`spirula-application` only (no direct IO/train/render/GPU). Until application
+lands, `main.rs` remains a skeleton placeholder; see
+[phase-1/workspace-checks.md](phase-1/workspace-checks.md).
 
 ## GPU strategy
 

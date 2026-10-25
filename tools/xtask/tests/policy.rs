@@ -5,8 +5,8 @@ fn workspace_policy_matches_live_manifests() {
     let report = check_workspace_policy(&workspace_root()).expect("policy check");
     assert_eq!(report.members, 8, "skeleton workspace member count");
     assert_eq!(
-        report.path_edges, 2,
-        "expected spirula-io→core and spirula-xtask→io only"
+        report.path_edges, 3,
+        "expected io→core (normal+dev) and xtask→io in the live tree"
     );
     assert_eq!(
         report.optional_features, 0,

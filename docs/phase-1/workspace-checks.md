@@ -37,36 +37,54 @@ after a verified whole-`OsStr` prefix strip, and Windows `MoveFileExW` FFI.
 
 ## Feature combinations
 
-Cargo metadata is the source of truth. When no optional features are declared
-(current tree), the only meaningful combination is `default`, and
-`clippy --all-features` is equivalent to default. When optional features appear,
-policy requires the gate to cover `--all-features` for clippy and check; the
-gate must be extended before those features can land.
+Cargo metadata is the source of truth for declared optional features. Policy
+records only meaningful combinations:
+
+- no optional features → `{ default }` (current tree); `clippy --all-features`
+  is equivalent to default and stays in the gate
+- optional features present → `{ default, all-features }`, and the gate must
+  cover `--all-features` for **check**, **test**, and **clippy**
+
+Policy does **not** invent `--no-default-features` or placeholder features.
+Extend the gate when real optional features land; do not add features only to
+exercise the matrix.
 
 ## Architecture edges
 
-Policy allowlists path dependencies among `spirula-*` crates:
+Policy allowlists **target** workspace path edges (unused edges are fine):
 
-| crate | allowed path deps |
+| crate | allowed workspace path deps |
 |---|---|
 | `spirula-core` | — |
 | `spirula-io` | `spirula-core` |
-| `spirula-gpu` / `render` / `train` / `ui` | — (skeleton) |
-| `spirula-cli` | — (entry adapter only) |
-| `spirula-xtask` | `spirula-io` (tooling) |
+| `spirula-gpu` | `spirula-core` |
+| `spirula-render` | `spirula-core`, `spirula-gpu` |
+| `spirula-train` | `spirula-core`, `spirula-io`, `spirula-render`, `spirula-gpu` |
+| `spirula-application` | `spirula-core`, `spirula-io`, `spirula-train` (when added) |
+| `spirula-ui` | `spirula-core`, `spirula-application` |
+| `spirula-cli` | `spirula-core`, `spirula-application` |
+| `spirula-xtask` | `spirula-io`, `spirula-core` (tooling) |
 
-`spirula-application` must not be a workspace member and must not appear as a
-dependency until Phase 6. UI/CLI business orchestration stays absent.
+`spirula-application` is planned, not banned: when it is a workspace member,
+edges are validated like any other crate. Dependencies are inspected by package
+identity (rename aliases do not hide a forbidden package). Every path
+dependency is considered, including non-`spirula-*` local paths (rejected).
+
+Additional external / layer rules:
+
+- `spirula-core` must not take GPU/UI/OS runtime crates (`wgpu`, `slint`,
+  `tokio`, `nix`, `windows`, …) as normal, dev, or build deps.
+- `spirula-ui` must not take `spirula-io` / `train` / `render` / `gpu` path deps
+  (normal or dev); route through application.
 
 ## CLI entry adapter
 
-Until P6-F01, `spirula-cli` must:
-
-- declare no `spirula-*` path dependencies;
-- contain only `src/main.rs` (no nested modules);
-- avoid referencing domain crates by Rust path.
-
-Hidden training, IO, GPU, or session logic in the CLI package fails policy.
+Policy enforces **dependency** shape for `spirula-cli`: only
+`spirula-core` and `spirula-application` are allowed workspace edges. It does
+**not** AST-scan `main.rs` for business logic (`std::fs`, inline training, and
+similar would not be detected). The current `main.rs` is a documented skeleton
+placeholder until Phase 6 wires application commands; keep business orchestration
+out of this crate by convention and review, not by substring bans.
 
 ## Commands
 

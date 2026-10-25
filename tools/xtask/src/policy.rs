@@ -1,12 +1,14 @@
-//! Workspace policy checks for P1-F06: lint inheritance, architecture
-//! dependency edges, declared feature combinations, and CLI entry-only shape.
+//! Workspace policy checks for P1-F06: lint inheritance, target-architecture
+//! dependency edges, declared feature combinations, and CLI dependency shape.
 //!
 //! These checks inspect real Cargo metadata and manifests. They do not invent
-//! target triples or claim Windows/cross builds ran.
+//! target triples or claim Windows/cross builds ran. They do not AST-scan CLI
+//! sources for “business logic”; CLI limits are dependency boundaries plus a
+//! documented skeleton placeholder.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
@@ -23,24 +25,81 @@ pub struct PolicyReport {
     pub host_targets_checked: Vec<String>,
 }
 
-/// Allowed path dependency edges among workspace crates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DepKind {
+    Normal,
+    Dev,
+    Build,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DepRef {
+    /// Cargo package name (identity), not the import rename.
+    name: String,
+    rename: Option<String>,
+    kind: DepKind,
+    is_path: bool,
+}
+
+/// Target-architecture allowed **workspace** path edges.
 ///
-/// `spirula-application` is intentionally absent until Phase 6; no member may
-/// depend on it, and it must not appear as a workspace member yet.
-fn allowed_path_deps(crate_name: &str) -> Option<&'static [&'static str]> {
+/// Unused edges are fine (skeleton crates). Planned crates such as
+/// `spirula-application` are listed so they validate when added; they are not
+/// banned until Phase 6.
+fn allowed_workspace_deps(crate_name: &str) -> Option<&'static [&'static str]> {
     Some(match crate_name {
         "spirula-core" => &[],
         "spirula-io" => &["spirula-core"],
-        "spirula-gpu" => &[],
-        "spirula-render" => &[],
-        "spirula-train" => &[],
-        "spirula-ui" => &[],
-        // Entry adapter only until P6 introduces spirula-application.
-        "spirula-cli" => &[],
-        // Tooling may read io fixtures; it is not a runtime layer.
-        "spirula-xtask" => &["spirula-io"],
+        "spirula-gpu" => &["spirula-core"],
+        "spirula-render" => &["spirula-core", "spirula-gpu"],
+        // Architecture text: train calls render and GPU through explicit
+        // interfaces; diagram is train → render → gpu.
+        "spirula-train" => &[
+            "spirula-core",
+            "spirula-io",
+            "spirula-render",
+            "spirula-gpu",
+        ],
+        "spirula-application" => &["spirula-core", "spirula-io", "spirula-train"],
+        "spirula-ui" => &["spirula-core", "spirula-application"],
+        "spirula-cli" => &["spirula-core", "spirula-application"],
+        // Tooling only; not a runtime layer.
+        "spirula-xtask" => &["spirula-io", "spirula-core"],
         _ => return None,
     })
+}
+
+/// External crates that `spirula-core` must never take (normal/dev/build).
+fn core_forbidden_external(name: &str) -> bool {
+    matches!(
+        name,
+        "wgpu"
+            | "slint"
+            | "ash"
+            | "metal"
+            | "glow"
+            | "glutin"
+            | "winit"
+            | "tokio"
+            | "async-std"
+            | "nix"
+            | "windows"
+            | "winapi"
+            | "objc"
+            | "objc2"
+            | "cocoa"
+            | "gtk"
+            | "tao"
+    ) || name.starts_with("wgpu-")
+        || name.starts_with("slint-")
+}
+
+/// Workspace crates UI must not depend on directly (use application instead).
+fn ui_forbidden_workspace(name: &str) -> bool {
+    matches!(
+        name,
+        "spirula-gpu" | "spirula-io" | "spirula-train" | "spirula-render"
+    )
 }
 
 /// Fixed host gate steps plus policy conclusions about feature coverage.
@@ -49,68 +108,28 @@ pub fn check_workspace_policy(root: &Path) -> Result<PolicyReport, String> {
     let packages = workspace_packages(&metadata)?;
     let package_names: BTreeSet<String> = packages.iter().map(|(name, _)| name.clone()).collect();
 
-    if package_names.contains("spirula-application") {
-        return Err(
-            "spirula-application is present as a workspace member; Phase 6 owns that crate — remove it until P6-F01"
-                .to_owned(),
-        );
-    }
-
     let mut path_edges = 0;
     let mut optional_features = BTreeSet::new();
 
     for (name, pkg) in &packages {
-        let allowed = allowed_path_deps(name).ok_or_else(|| {
-            format!("workspace member `{name}` has no architecture allowlist entry")
-        })?;
-        let allowed_set: BTreeSet<&str> = allowed.iter().copied().collect();
-
         let manifest_path = pkg
             .get("manifest_path")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("{name}: missing manifest_path in cargo metadata"))?;
         ensure_workspace_lints(Path::new(manifest_path), name)?;
 
-        let deps = path_crate_deps(pkg);
-        for dep in &deps {
-            path_edges += 1;
-            if dep == "spirula-application" {
-                return Err(format!(
-                    "{name} depends on spirula-application; that crate is absent until Phase 6"
-                ));
-            }
-            if !dep.starts_with("spirula-") && dep != "spirula-xtask" {
-                // Non-workspace path deps are unexpected in this repo.
-                return Err(format!(
-                    "{name} has unexpected path dependency `{dep}` (not a spirula-* crate)"
-                ));
-            }
-            if !allowed_set.contains(dep.as_str()) {
-                return Err(format!(
-                    "architecture boundary violation: `{name}` → `{dep}` is not an allowed edge"
-                ));
-            }
-            if !package_names.contains(dep) {
-                return Err(format!(
-                    "{name} depends on `{dep}`, but `{dep}` is not a workspace member"
-                ));
-            }
-        }
-        for extra in allowed_set {
-            // Allowed but unused edges are fine (skeleton crates).
-            let _ = extra;
-        }
+        let deps = collect_deps(pkg);
+        path_edges += deps.iter().filter(|dep| dep.is_path).count();
+        validate_member_dependencies(name, &deps, &package_names)?;
 
         for feature in optional_feature_names(pkg) {
             optional_features.insert(format!("{name}/{feature}"));
         }
     }
 
-    check_cli_entry_only(root, &packages)?;
     let combinations = feature_combinations(optional_features.len());
     check_gate_covers_features(&combinations)?;
 
-    // Honest host coverage: only the current host triple is exercised by verify.
     let host = host_target_triple()?;
     let host_targets_checked = vec![host];
 
@@ -121,6 +140,84 @@ pub fn check_workspace_policy(root: &Path) -> Result<PolicyReport, String> {
         feature_combinations: combinations,
         host_targets_checked,
     })
+}
+
+fn validate_member_dependencies(
+    crate_name: &str,
+    deps: &[DepRef],
+    members: &BTreeSet<String>,
+) -> Result<(), String> {
+    let allowed = allowed_workspace_deps(crate_name).ok_or_else(|| {
+        format!("workspace member `{crate_name}` has no architecture allowlist entry")
+    })?;
+    let allowed_set: BTreeSet<&str> = allowed.iter().copied().collect();
+
+    for dep in deps {
+        let label = dep_label(dep);
+
+        if dep.is_path {
+            // Path deps are local packages: must be known workspace members and
+            // on the allowlist. Aliases (`rename`) do not change package identity.
+            if !dep.name.starts_with("spirula-") {
+                return Err(format!(
+                    "{crate_name}: path dependency {label} is not a spirula-* workspace crate"
+                ));
+            }
+            if !members.contains(&dep.name) {
+                return Err(format!(
+                    "{crate_name}: path dependency {label} is not a workspace member"
+                ));
+            }
+            if crate_name == "spirula-ui" && ui_forbidden_workspace(&dep.name) {
+                return Err(format!(
+                    "spirula-ui must not depend on `{}` directly ({}); route through spirula-application",
+                    dep.name,
+                    kind_name(dep.kind)
+                ));
+            }
+            if !allowed_set.contains(dep.name.as_str()) {
+                return Err(format!(
+                    "architecture boundary violation: `{crate_name}` → `{}` ({}) is not an allowed edge",
+                    dep.name,
+                    kind_name(dep.kind)
+                ));
+            }
+        } else {
+            // External / registry / git deps.
+            if crate_name == "spirula-core" && core_forbidden_external(&dep.name) {
+                return Err(format!(
+                    "spirula-core must not depend on {label}; domain layer stays free of GPU/UI/OS runtimes"
+                ));
+            }
+            // Non-path spirula-* should not appear as registry deps in this repo.
+            if dep.name.starts_with("spirula-") {
+                return Err(format!(
+                    "{crate_name}: spirula-* dependency {label} must be a path workspace member"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dep_label(dep: &DepRef) -> String {
+    match &dep.rename {
+        Some(rename) => format!(
+            "`{}` (package `{}`, {})",
+            rename,
+            dep.name,
+            kind_name(dep.kind)
+        ),
+        None => format!("`{}` ({})", dep.name, kind_name(dep.kind)),
+    }
+}
+
+fn kind_name(kind: DepKind) -> &'static str {
+    match kind {
+        DepKind::Normal => "normal",
+        DepKind::Dev => "dev",
+        DepKind::Build => "build",
+    }
 }
 
 fn cargo_metadata(root: &Path) -> Result<Value, String> {
@@ -173,26 +270,33 @@ fn workspace_packages(metadata: &Value) -> Result<Vec<(String, Value)>, String> 
     Ok(out)
 }
 
-fn path_crate_deps(pkg: &Value) -> Vec<String> {
-    let mut deps = BTreeSet::new();
+fn collect_deps(pkg: &Value) -> Vec<DepRef> {
+    let mut deps = Vec::new();
     let Some(list) = pkg.get("dependencies").and_then(Value::as_array) else {
-        return Vec::new();
+        return deps;
     };
     for dep in list {
         let Some(name) = dep.get("name").and_then(Value::as_str) else {
             continue;
         };
-        // Path deps in metadata have a non-null `path` (or source absent for path).
+        let kind = match dep.get("kind").and_then(Value::as_str) {
+            Some("dev") => DepKind::Dev,
+            Some("build") => DepKind::Build,
+            _ => DepKind::Normal,
+        };
+        let rename = dep.get("rename").and_then(Value::as_str).map(str::to_owned);
+        // Path members have `source: null`. Registry/git deps have a source URL.
+        // Prefer an explicit `path` field when cargo metadata provides one.
         let is_path = dep.get("path").and_then(Value::as_str).is_some()
-            || dep
-                .get("source")
-                .map(|source| source.is_null())
-                .unwrap_or(false);
-        if is_path && name.starts_with("spirula-") {
-            deps.insert(name.to_owned());
-        }
+            || dep.get("source").is_some_and(Value::is_null);
+        deps.push(DepRef {
+            name: name.to_owned(),
+            rename,
+            kind,
+            is_path,
+        });
     }
-    deps.into_iter().collect()
+    deps
 }
 
 fn optional_feature_names(pkg: &Value) -> Vec<String> {
@@ -206,6 +310,8 @@ fn optional_feature_names(pkg: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Declared meaningful combinations only — never invent `--no-default-features`
+/// or placeholder feature names.
 fn feature_combinations(optional_count: usize) -> Vec<String> {
     let mut combos = vec!["default".to_owned()];
     if optional_count > 0 {
@@ -214,38 +320,14 @@ fn feature_combinations(optional_count: usize) -> Vec<String> {
     combos
 }
 
+fn cargo_gate_covers(steps: &[crate::gate::GateStep], name_prefix: &str, flag: &str) -> bool {
+    steps.iter().any(|step| {
+        step.program == "cargo" && step.name.starts_with(name_prefix) && step.args.contains(&flag)
+    })
+}
+
 fn check_gate_covers_features(combinations: &[String]) -> Result<(), String> {
     let steps = workspace_gate_steps();
-    let clippy = steps
-        .iter()
-        .find(|step| step.name == "clippy")
-        .ok_or_else(|| "workspace gate is missing the clippy step".to_owned())?;
-    if combinations.iter().any(|name| name == "all-features")
-        && !clippy.args.contains(&"--all-features")
-    {
-        return Err(
-            "optional crate features are declared, but the clippy gate does not pass --all-features"
-                .to_owned(),
-        );
-    }
-    // When optional features exist, check/test must also cover --all-features.
-    if combinations.iter().any(|name| name == "all-features") {
-        let check = steps
-            .iter()
-            .find(|step| step.name == "check")
-            .ok_or_else(|| "workspace gate is missing the check step".to_owned())?;
-        if !check.args.contains(&"--all-features")
-            && !steps.iter().any(|step| {
-                step.name == "check-all-features" && step.args.contains(&"--all-features")
-            })
-        {
-            return Err(
-                "optional crate features are declared, but no check gate covers --all-features"
-                    .to_owned(),
-            );
-        }
-    }
-    // Never claim a foreign target was part of the fixed gate.
     for step in steps {
         if step.args.contains(&"--target") {
             return Err(format!(
@@ -253,6 +335,29 @@ fn check_gate_covers_features(combinations: &[String]) -> Result<(), String> {
                 step.name
             ));
         }
+    }
+
+    if !combinations.iter().any(|name| name == "all-features") {
+        return Ok(());
+    }
+
+    if !cargo_gate_covers(steps, "clippy", "--all-features") {
+        return Err(
+            "optional crate features are declared, but no clippy gate covers --all-features"
+                .to_owned(),
+        );
+    }
+    if !cargo_gate_covers(steps, "check", "--all-features") {
+        return Err(
+            "optional crate features are declared, but no check gate covers --all-features"
+                .to_owned(),
+        );
+    }
+    if !cargo_gate_covers(steps, "test", "--all-features") {
+        return Err(
+            "optional crate features are declared, but no test gate covers --all-features"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -283,68 +388,6 @@ fn manifest_inherits_workspace_lints(text: &str) -> bool {
     false
 }
 
-fn check_cli_entry_only(root: &Path, packages: &[(String, Value)]) -> Result<(), String> {
-    let cli = packages
-        .iter()
-        .find(|(name, _)| name == "spirula-cli")
-        .ok_or_else(|| "spirula-cli is missing from the workspace".to_owned())?;
-    let deps = path_crate_deps(&cli.1);
-    if !deps.is_empty() {
-        return Err(format!(
-            "spirula-cli must stay an entry adapter until spirula-application exists; found path deps {deps:?}"
-        ));
-    }
-
-    let src = root.join("crates/spirula-cli/src");
-    let mut files = list_rust_files(&src)?;
-    files.sort();
-    if files != [src.join("main.rs")] {
-        return Err(format!(
-            "spirula-cli must contain only src/main.rs until application lands; found {files:?}"
-        ));
-    }
-
-    let main = fs::read_to_string(src.join("main.rs"))
-        .map_err(|error| format!("reading spirula-cli main: {error}"))?;
-    // Structural bans: no module tree and no direct pulls of domain crates.
-    if main.contains("mod ") {
-        return Err("spirula-cli main.rs must not declare modules yet".to_owned());
-    }
-    for banned in [
-        "spirula_io",
-        "spirula_train",
-        "spirula_render",
-        "spirula_gpu",
-        "spirula_ui",
-        "spirula_application",
-    ] {
-        if main.contains(banned) {
-            return Err(format!(
-                "spirula-cli main.rs references `{banned}`; keep business logic out of the entry adapter"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn list_rust_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|error| format!("reading {}: {error}", dir.display()))? {
-        let entry = entry.map_err(|error| format!("reading {}: {error}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            return Err(format!(
-                "spirula-cli must not nest source directories yet ({})",
-                path.display()
-            ));
-        }
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    Ok(files)
-}
-
 fn host_target_triple() -> Result<String, String> {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
     let output = Command::new(rustc)
@@ -363,7 +406,7 @@ fn host_target_triple() -> Result<String, String> {
     Err("rustc -vV did not report host".to_owned())
 }
 
-/// Parse path edges from a metadata package map for unit tests.
+/// Target allowlist table for docs/tests.
 pub fn allowed_edge_table() -> BTreeMap<&'static str, &'static [&'static str]> {
     [
         "spirula-core",
@@ -371,18 +414,50 @@ pub fn allowed_edge_table() -> BTreeMap<&'static str, &'static [&'static str]> {
         "spirula-gpu",
         "spirula-render",
         "spirula-train",
+        "spirula-application",
         "spirula-ui",
         "spirula-cli",
         "spirula-xtask",
     ]
     .into_iter()
-    .map(|name| (name, allowed_path_deps(name).expect("allowlisted")))
+    .map(|name| (name, allowed_workspace_deps(name).expect("allowlisted")))
     .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn members(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    fn path_dep(name: &str, kind: DepKind) -> DepRef {
+        DepRef {
+            name: name.to_owned(),
+            rename: None,
+            kind,
+            is_path: true,
+        }
+    }
+
+    fn path_dep_renamed(package: &str, rename: &str, kind: DepKind) -> DepRef {
+        DepRef {
+            name: package.to_owned(),
+            rename: Some(rename.to_owned()),
+            kind,
+            is_path: true,
+        }
+    }
+
+    fn external_dep(name: &str, kind: DepKind) -> DepRef {
+        DepRef {
+            name: name.to_owned(),
+            rename: None,
+            kind,
+            is_path: false,
+        }
+    }
 
     #[test]
     fn lint_inheritance_parser_accepts_workspace_table() {
@@ -395,16 +470,177 @@ mod tests {
     }
 
     #[test]
-    fn architecture_allowlist_keeps_cli_and_core_isolated() {
+    fn target_allowlist_matches_architecture() {
         let table = allowed_edge_table();
         assert!(table["spirula-core"].is_empty());
-        assert!(table["spirula-cli"].is_empty());
         assert_eq!(table["spirula-io"], &["spirula-core"]);
-        assert!(!table.contains_key("spirula-application"));
+        assert_eq!(table["spirula-gpu"], &["spirula-core"]);
+        assert_eq!(table["spirula-render"], &["spirula-core", "spirula-gpu"]);
+        assert!(table["spirula-train"].contains(&"spirula-io"));
+        assert!(table["spirula-train"].contains(&"spirula-gpu"));
+        assert_eq!(
+            table["spirula-ui"],
+            &["spirula-core", "spirula-application"]
+        );
+        assert_eq!(
+            table["spirula-cli"],
+            &["spirula-core", "spirula-application"]
+        );
+        assert!(table.contains_key("spirula-application"));
     }
 
     #[test]
-    fn feature_combinations_stay_default_without_optional_features() {
+    fn mutated_metadata_rejects_forbidden_edges() {
+        let workspace = members(&[
+            "spirula-core",
+            "spirula-io",
+            "spirula-gpu",
+            "spirula-render",
+            "spirula-train",
+            "spirula-ui",
+            "spirula-cli",
+            "spirula-application",
+        ]);
+
+        assert!(
+            validate_member_dependencies(
+                "spirula-gpu",
+                &[path_dep("spirula-core", DepKind::Normal)],
+                &workspace
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_member_dependencies(
+                "spirula-render",
+                &[
+                    path_dep("spirula-core", DepKind::Normal),
+                    path_dep("spirula-gpu", DepKind::Normal),
+                ],
+                &workspace
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_member_dependencies(
+                "spirula-train",
+                &[
+                    path_dep("spirula-core", DepKind::Normal),
+                    path_dep("spirula-io", DepKind::Normal),
+                    path_dep("spirula-render", DepKind::Normal),
+                    path_dep("spirula-gpu", DepKind::Normal),
+                ],
+                &workspace
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_member_dependencies(
+                "spirula-cli",
+                &[
+                    path_dep("spirula-core", DepKind::Normal),
+                    path_dep("spirula-application", DepKind::Normal),
+                ],
+                &workspace
+            )
+            .is_ok()
+        );
+
+        let core_wgpu = validate_member_dependencies(
+            "spirula-core",
+            &[external_dep("wgpu", DepKind::Normal)],
+            &workspace,
+        );
+        assert!(core_wgpu.is_err(), "{core_wgpu:?}");
+
+        let core_wgpu_dev = validate_member_dependencies(
+            "spirula-core",
+            &[external_dep("wgpu", DepKind::Dev)],
+            &workspace,
+        );
+        assert!(core_wgpu_dev.is_err(), "{core_wgpu_dev:?}");
+
+        let ui_io = validate_member_dependencies(
+            "spirula-ui",
+            &[path_dep("spirula-io", DepKind::Normal)],
+            &workspace,
+        );
+        assert!(ui_io.is_err(), "{ui_io:?}");
+
+        let ui_train_dev = validate_member_dependencies(
+            "spirula-ui",
+            &[path_dep("spirula-train", DepKind::Dev)],
+            &workspace,
+        );
+        assert!(ui_train_dev.is_err(), "{ui_train_dev:?}");
+
+        let arbitrary_path = validate_member_dependencies(
+            "spirula-io",
+            &[path_dep("local-helper", DepKind::Normal)],
+            &workspace,
+        );
+        assert!(arbitrary_path.is_err(), "{arbitrary_path:?}");
+
+        let aliased_gpu = validate_member_dependencies(
+            "spirula-cli",
+            &[path_dep_renamed(
+                "spirula-gpu",
+                "harmless_alias",
+                DepKind::Normal,
+            )],
+            &workspace,
+        );
+        assert!(aliased_gpu.is_err(), "{aliased_gpu:?}");
+
+        let missing_member = validate_member_dependencies(
+            "spirula-ui",
+            &[path_dep("spirula-application", DepKind::Normal)],
+            &members(&["spirula-ui", "spirula-core"]),
+        );
+        assert!(missing_member.is_err(), "{missing_member:?}");
+    }
+
+    #[test]
+    fn collect_deps_keeps_non_spirula_path_entries() {
+        let pkg = serde_json::json!({
+            "dependencies": [
+                {
+                    "name": "local-helper",
+                    "source": null,
+                    "kind": null,
+                    "rename": null
+                },
+                {
+                    "name": "spirula-gpu",
+                    "source": null,
+                    "kind": "dev",
+                    "rename": "gfx"
+                },
+                {
+                    "name": "serde",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "kind": null,
+                    "rename": null
+                }
+            ]
+        });
+        let deps = collect_deps(&pkg);
+        assert_eq!(deps.len(), 3);
+        assert!(
+            deps.iter()
+                .any(|dep| dep.name == "local-helper" && dep.is_path)
+        );
+        assert!(deps.iter().any(|dep| {
+            dep.name == "spirula-gpu"
+                && dep.rename.as_deref() == Some("gfx")
+                && dep.kind == DepKind::Dev
+                && dep.is_path
+        }));
+        assert!(deps.iter().any(|dep| dep.name == "serde" && !dep.is_path));
+    }
+
+    #[test]
+    fn feature_combinations_stay_declared_only() {
         assert_eq!(feature_combinations(0), vec!["default".to_owned()]);
         assert_eq!(
             feature_combinations(2),
@@ -413,11 +649,14 @@ mod tests {
     }
 
     #[test]
-    fn gate_rejects_target_flags_and_requires_all_features_when_needed() {
+    fn gate_requires_check_and_test_for_all_features() {
         assert!(check_gate_covers_features(&["default".to_owned()]).is_ok());
         let err = check_gate_covers_features(&["default".to_owned(), "all-features".to_owned()]);
-        // Current gate clippy has --all-features but check does not; with
-        // optional features that must fail until the gate grows.
         assert!(err.is_err(), "{err:?}");
+        let message = err.unwrap_err();
+        assert!(
+            message.contains("check") || message.contains("test"),
+            "{message}"
+        );
     }
 }

@@ -16,7 +16,8 @@ pub struct GateStep {
 /// Feature coverage: when no optional features are declared, `check`/`test`
 /// default features and `clippy --all-features` are equivalent. When optional
 /// features appear, [`crate::policy::check_workspace_policy`] requires the gate
-/// to cover `--all-features` explicitly.
+/// to cover `--all-features` on check, test, and clippy (extend this table;
+/// do not invent `--no-default-features`).
 pub fn workspace_gate_steps() -> &'static [GateStep] {
     &[
         GateStep {
