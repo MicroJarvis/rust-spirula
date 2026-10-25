@@ -10,6 +10,7 @@
 //! There is no delete-then-rename window: the destination is replaced only by
 //! a same-directory rename / `MoveFileExW`.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -167,8 +168,9 @@ where
 ///
 /// Acquires the same exclusive lease writers use. If a publisher still holds
 /// the lease, returns `SP-SESS-003` and deletes nothing. Only names that match
-/// the strict `{file}.spirula-tmp.{pid}.{seq}` pattern are removed; the live
-/// destination and arbitrary similarly-prefixed files are left alone.
+/// the strict `{file}.spirula-tmp.{pid}.{seq}` pattern with the destination's
+/// native [`OsStr`] identity are removed; lossy UTF-8 collapsing is not used,
+/// so distinct non-UTF-8 basenames cannot steal each other's temps.
 pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, DomainError> {
     let parent = parent_dir(destination);
     let _lease = acquire_publish_lease(destination)?;
@@ -184,10 +186,7 @@ pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, Domai
     for entry in entries {
         let entry = entry.map_err(|error| map_io(ErrorCode::ReadFailed, parent, error))?;
         let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !is_strict_publish_temp_name(file_name, name) {
+        if !is_strict_publish_temp_name(file_name, &name) {
             continue;
         }
         let path = entry.path();
@@ -199,10 +198,7 @@ pub fn recover_publish_orphans(destination: &Path) -> Result<Vec<PathBuf>, Domai
 
 /// Whether `path` is a strict publish temp for `destination`.
 pub fn is_publish_temp(destination: &Path, path: &Path) -> bool {
-    match (
-        destination_file_name(destination),
-        path.file_name().and_then(|name| name.to_str()),
-    ) {
+    match (destination_file_name(destination), path.file_name()) {
         (Ok(file_name), Some(name)) => is_strict_publish_temp_name(file_name, name),
         _ => false,
     }
@@ -219,26 +215,52 @@ pub fn parent_dir(path: &Path) -> &Path {
     }
 }
 
-fn destination_file_name(destination: &Path) -> Result<&str, DomainError> {
-    destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            DomainError::try_new(
-                ErrorCode::InvalidArgument,
-                "destination path has no UTF-8 file name",
-            )
-            .expect("message")
-            .with_context(ContextKey::Path, destination.display().to_string())
-            .expect("path")
-        })
+fn destination_file_name(destination: &Path) -> Result<&OsStr, DomainError> {
+    destination.file_name().ok_or_else(|| {
+        DomainError::try_new(
+            ErrorCode::InvalidArgument,
+            "destination path has no file name",
+        )
+        .expect("message")
+        .with_context(ContextKey::Path, destination.display().to_string())
+        .expect("path")
+    })
 }
 
-fn is_strict_publish_temp_name(destination_file_name: &str, candidate: &str) -> bool {
-    let Some(rest) = candidate.strip_prefix(destination_file_name) else {
+fn publish_temp_name(file_name: &OsStr, pid: u32, seq: u64) -> OsString {
+    let mut name = OsString::from(file_name);
+    name.push(TEMP_MARKER);
+    name.push(pid.to_string());
+    name.push(".");
+    name.push(seq.to_string());
+    name
+}
+
+fn publish_lock_name(file_name: &OsStr) -> OsString {
+    let mut name = OsString::from(file_name);
+    name.push(LOCK_SUFFIX);
+    name
+}
+
+fn strip_os_prefix<'a>(value: &'a OsStr, prefix: &OsStr) -> Option<&'a OsStr> {
+    let value_bytes = value.as_encoded_bytes();
+    let prefix_bytes = prefix.as_encoded_bytes();
+    if !value_bytes.starts_with(prefix_bytes) {
+        return None;
+    }
+    // Prefixes are whole `OsStr` values we concatenated, so the remainder is a
+    // valid encoded `OsStr` on every supported platform.
+    Some(unsafe { OsStr::from_encoded_bytes_unchecked(&value_bytes[prefix_bytes.len()..]) })
+}
+
+fn is_strict_publish_temp_name(destination_file_name: &OsStr, candidate: &OsStr) -> bool {
+    let Some(rest) = strip_os_prefix(candidate, destination_file_name) else {
         return false;
     };
-    let Some(rest) = rest.strip_prefix(TEMP_MARKER) else {
+    let Some(rest) = strip_os_prefix(rest, OsStr::new(TEMP_MARKER)) else {
+        return false;
+    };
+    let Some(rest) = rest.to_str() else {
         return false;
     };
     let mut parts = rest.split('.');
@@ -254,7 +276,7 @@ fn is_decimal_token(token: &str) -> bool {
 
 fn lock_path(destination: &Path) -> Result<PathBuf, DomainError> {
     let file_name = destination_file_name(destination)?;
-    Ok(parent_dir(destination).join(format!("{file_name}{LOCK_SUFFIX}")))
+    Ok(parent_dir(destination).join(publish_lock_name(file_name)))
 }
 
 fn acquire_publish_lease(destination: &Path) -> Result<PublishLease, DomainError> {
@@ -279,7 +301,7 @@ fn create_temp_sibling(destination: &Path) -> Result<(PathBuf, File), DomainErro
     let file_name = destination_file_name(destination)?;
     for _ in 0..32 {
         let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let name = format!("{file_name}{TEMP_MARKER}{}.{seq}", std::process::id());
+        let name = publish_temp_name(file_name, std::process::id(), seq);
         let path = parent.join(name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => return Ok((path, file)),

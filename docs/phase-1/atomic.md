@@ -29,6 +29,10 @@ non-atomic checkpoints.
 
 - An empty `parent()` (bare relatives such as `config.json`) is normalized to
   `.` for temps, locks, `read_dir`, and directory sync.
+- Temp and lock basenames keep the destination's native `OsString` identity.
+  Matching uses encoded-byte prefixes, not `to_string_lossy`, so distinct
+  non-UTF-8 names (for example `a\xFF` vs `a\xFE`) cannot share a recovery
+  prefix.
 - A publish takes an exclusive lease file `{file_name}.spirula-lock` with
   `create_new`, then creates a unique sibling
   `{file_name}.spirula-tmp.{pid}.{seq}` with `create_new` and **keeps that
@@ -60,7 +64,10 @@ non-atomic checkpoints.
   similarly-prefixed user files and the live destination are left alone.
 - `TempHarness` allocates with `create_dir` and retries on `AlreadyExists`. It
   never adopts or deletes a preexisting directory; `Drop` removes only the
-  root this harness created. Children must stay relative and must not escape.
+  root this harness created. Children must stay relative, must not include
+  `..` / root / `Prefix` (including Windows drive-relative `C:foo`), and
+  owned creation walks ancestors with `symlink_metadata` so a symlink inside
+  the root cannot redirect writes outside.
 - Config load/save/migrate live here. Save/migrate require
   `loaded.source_text()` to match the live file (`SP-SESS-001` on stale
   snapshots). Migration validates the new document before any backup write,

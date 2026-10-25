@@ -374,6 +374,93 @@ fn temp_harness_rejects_escape_and_cleans_only_its_root() {
     assert!(!second_root.exists());
 }
 
+#[cfg(windows)]
+#[test]
+fn temp_harness_rejects_drive_relative_prefix_on_windows() {
+    let harness = TempHarness::new().unwrap();
+    // `C:relative` is not absolute, but Component::Prefix must still be rejected.
+    assert!(harness.child(r"C:relative").is_err());
+    assert!(harness.prepare_file(r"C:relative").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn temp_harness_rejects_symlink_escape_on_unix() {
+    use std::os::unix::fs::symlink;
+
+    let harness = TempHarness::new().unwrap();
+    let outside = TempHarness::new().unwrap();
+    let victim = outside.create_file("secret.txt").unwrap();
+    fs::write(&victim, b"keep").unwrap();
+    symlink(outside.path(), harness.path().join("escape")).unwrap();
+
+    assert!(harness.prepare_file("escape/secret.txt").is_err());
+    assert!(harness.create_file("escape/pwned.txt").is_err());
+    assert_eq!(fs::read(&victim).unwrap(), b"keep");
+    assert!(!outside.path().join("pwned.txt").exists());
+
+    symlink(&victim, harness.path().join("alias.txt")).unwrap();
+    assert!(harness.create_file("alias.txt").is_err());
+    assert_eq!(fs::read(&victim).unwrap(), b"keep");
+}
+
+#[cfg(unix)]
+#[test]
+fn publish_temp_matching_preserves_os_string_identity() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    // Lossy UTF-8 collapses 0xFF and 0xFE; native OsStr matching must not.
+    let name_a = OsString::from_vec(vec![b'a', 0xff]);
+    let name_b = OsString::from_vec(vec![b'a', 0xfe]);
+    assert_eq!(name_a.to_string_lossy(), name_b.to_string_lossy());
+    assert_ne!(name_a, name_b);
+
+    let path_a = PathBuf::from(&name_a);
+    let path_b = PathBuf::from(&name_b);
+    let mut orphan_a = name_a.clone();
+    orphan_a.push(".spirula-tmp.1.1");
+    let orphan_a = PathBuf::from(orphan_a);
+
+    assert!(is_publish_temp(&path_a, &orphan_a));
+    assert!(!is_publish_temp(&path_b, &orphan_a));
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+#[test]
+fn recover_preserves_native_os_string_temp_identity_on_linux() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let harness = TempHarness::new().unwrap();
+    let name_a = OsString::from_vec(vec![b'a', 0xff]);
+    let name_b = OsString::from_vec(vec![b'a', 0xfe]);
+
+    let path_a = harness.path().join(&name_a);
+    let path_b = harness.path().join(&name_b);
+    fs::write(&path_a, b"A").unwrap();
+    fs::write(&path_b, b"B").unwrap();
+
+    let mut orphan_a = name_a.clone();
+    orphan_a.push(".spirula-tmp.1.1");
+    let orphan_a = harness.path().join(orphan_a);
+    fs::write(&orphan_a, b"temp-A").unwrap();
+
+    assert!(is_publish_temp(&path_a, &orphan_a));
+    assert!(!is_publish_temp(&path_b, &orphan_a));
+
+    let removed = recover_publish_orphans(&path_b).unwrap();
+    assert!(removed.is_empty());
+    assert!(orphan_a.exists());
+
+    let removed = recover_publish_orphans(&path_a).unwrap();
+    assert_eq!(removed, vec![orphan_a.clone()]);
+    assert!(!orphan_a.exists());
+    assert_eq!(fs::read(&path_a).unwrap(), b"A");
+    assert_eq!(fs::read(&path_b).unwrap(), b"B");
+}
+
 #[test]
 fn current_config_roundtrip_through_filesystem() {
     let harness = TempHarness::new().unwrap();
