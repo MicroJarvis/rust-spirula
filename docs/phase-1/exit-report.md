@@ -144,7 +144,7 @@ remains unmerged until explicitly approved.
 | Sample binary | `cargo run -p spirula-io --bin spirula-perf-sample -- <path>` |
 | Contract tests | `cargo test -p spirula-core perf -- --test-threads=1` |
 | IO tests | `cargo test -p spirula-io perf -- --test-threads=1` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded at commit) |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip ) |
 
 ## Non-claims
 
