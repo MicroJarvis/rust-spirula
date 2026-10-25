@@ -1062,6 +1062,152 @@ fn session_limits_normalize_zero_and_slow_poll() {
 }
 
 #[test]
+fn tiny_error_caps_fit_bound_error_fallback() {
+    let raw = SessionLimits {
+        error_message_max_bytes: 0,
+        context_value_max_bytes: 0,
+        error_event_max_bytes: 0,
+        control_history_max_bytes: 65536,
+        ..SessionLimits::for_test()
+    };
+    let app = ApplicationService::start(raw);
+    let (sub, _) = app.subscribe().unwrap();
+    let _ = app.submit(Command::new(CommandPayload::ProbeRun { steps: 0 }));
+    let env = sub.try_recv().expect("reject event");
+    match env.event {
+        Event::CommandRejected { error, .. } => {
+            let n = 64
+                + error.message().len()
+                + error
+                    .context()
+                    .iter()
+                    .map(|(k, v)| k.as_str().len() + v.len() + 8)
+                    .sum::<usize>();
+            assert!(
+                n <= app.limits().error_event_max_bytes,
+                "retained error {n} > cap {}: {error:?}",
+                app.limits().error_event_max_bytes
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn checkpoint_saved_matches_canceled_terminal_label() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let (sub, _) = app.subscribe().unwrap();
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let run_id = app.snapshot().active_run.unwrap();
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id,
+        command_id: run,
+        outcome: TerminalOutcome::Canceled {
+            step: 0,
+            reason: spirula_core::CancelReason::User,
+            saved_checkpoint: Some("checkpoint-A".into()),
+        },
+        checkpoint_label: Some("checkpoint-B".into()),
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    let result = wait_terminal(&app, run);
+    let terminal_label = match result.event {
+        Event::Completed {
+            outcome: OutcomeView::Canceled {
+                saved_checkpoint, ..
+            },
+        } => saved_checkpoint,
+        other => panic!("{other:?}"),
+    };
+    let mut saw = false;
+    while let Some(env) = sub.try_recv() {
+        if let Event::CheckpointSaved { label, .. } = env.event {
+            assert_eq!(Some(label), terminal_label);
+            saw = true;
+        }
+    }
+    assert!(saw || terminal_label.as_deref() == Some("checkpoint-A"));
+}
+
+#[test]
+fn save_failed_does_not_force_failed_outcome_to_ready() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let run_id = app.snapshot().active_run.unwrap();
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id,
+        command_id: run,
+        outcome: TerminalOutcome::Failed {
+            error: spirula_core::DomainError::try_new(ErrorCode::Internal, "real failure").unwrap(),
+        },
+        checkpoint_label: None,
+        save_failed: true,
+        final_progress: None,
+    })
+    .unwrap();
+    let _ = wait_terminal(&app, run);
+    assert_eq!(app.snapshot().state, SessionState::Failed);
+}
+
+#[test]
+fn invalid_final_progress_keeps_run_pending_for_later_valid() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let run_id = app.snapshot().active_run.unwrap();
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id,
+        command_id: run,
+        outcome: TerminalOutcome::Completed { step: 1 },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: Some(ProgressSnapshot {
+            step: 9,
+            total_steps: Some(1),
+            splats: 0,
+            elapsed_ms: 0,
+            eta_ms: None,
+            metrics: vec![],
+        }),
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(matches!(app.command_result(run), CommandResult::Pending));
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id,
+        command_id: run,
+        outcome: TerminalOutcome::Completed { step: 1 },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    let env = wait_terminal(&app, run);
+    assert!(matches!(
+        env.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { step: 1 }
+        }
+    ));
+}
+
+#[test]
 fn long_lifetime_accepted_ids_stay_expired_under_budget() {
     let mut limits = SessionLimits::for_test();
     limits.result_retention = 2;

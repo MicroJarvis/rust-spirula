@@ -116,10 +116,15 @@ impl SessionLimits {
         self.reason_max_bytes = self.reason_max_bytes.max(32);
         self.log_message_max_bytes = self.log_message_max_bytes.max(32);
         self.progress_max_bytes = self.progress_max_bytes.max(64);
-        self.error_message_max_bytes = self.error_message_max_bytes.max(64);
-        self.context_value_max_bytes = self.context_value_max_bytes.max(32);
+        self.error_message_max_bytes = self
+            .error_message_max_bytes
+            .max(crate::bound::OVERSIZED_ERROR_MESSAGE.len());
+        self.context_value_max_bytes = self.context_value_max_bytes.max(16);
+        // Cap must fit the actual overflow substitute (`oversized` + optional
+        // field context), not a longer template that itself exceeds the floor.
         self.error_event_max_bytes = self
             .error_event_max_bytes
+            .max(crate::bound::min_fallback_error_event_bytes())
             .max(self.error_message_max_bytes.saturating_add(64));
         // History byte floor fits one legal max control event (rejected load
         // with max label + max error view + envelope overhead). Oversized

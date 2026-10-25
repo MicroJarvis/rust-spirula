@@ -117,35 +117,56 @@ pub(crate) fn validate_worker_terminal(outcome: &TerminalOutcome) -> Result<(), 
     Ok(())
 }
 
+/// Short overflow substitute message. Kept tiny so it always fits floors.
+pub(crate) const OVERSIZED_ERROR_MESSAGE: &str = "oversized";
+
+/// Minimum `error_event_max_bytes` that can hold a bare fallback (code + short
+/// message, no context). Used by [`SessionLimits::normalized`].
+pub(crate) fn min_fallback_error_event_bytes() -> usize {
+    64 + OVERSIZED_ERROR_MESSAGE.len()
+}
+
 /// Event-visible error copy that fits retention caps, or a bounded substitute.
 ///
 /// The substitute keeps the original stable [`ErrorCode`] (hence category),
-/// plus any `retryable_override` and `user_action`. Only message/context are
-/// replaced with a short overflow description.
+/// plus any `retryable_override` and `user_action`. Message/context shrink
+/// until the view fits `error_event_max_bytes` (never retain an oversized
+/// fallback).
 pub(crate) fn bound_error(error: &DomainError, limits: &SessionLimits) -> DomainError {
     let visible = error.without_source();
     if error_fits(&visible, limits) {
         return visible;
     }
     let mut substitute =
-        DomainError::try_new(visible.code(), "error payload exceeds retention limit")
-            .expect("message");
+        DomainError::try_new(visible.code(), OVERSIZED_ERROR_MESSAGE).expect("message");
     if let Some(retryable) = visible.retryable_override() {
         substitute = substitute.with_retryable(retryable);
     }
     if let Some(action) = visible.user_action() {
         substitute = substitute.with_user_action(action);
     }
-    substitute
+    // Add a short field context only while the result still fits the cap.
+    if let Ok(with_field) = DomainError::try_new(visible.code(), OVERSIZED_ERROR_MESSAGE)
+        .expect("message")
         .with_context(ContextKey::Field, "error_payload")
-        .expect("field")
-        .with_context(
-            ContextKey::Expected,
-            format!("<= {} bytes", limits.error_event_max_bytes),
-        )
-        .expect("expected")
-        .with_context(ContextKey::Actual, error_approx_bytes(&visible).to_string())
-        .expect("actual")
+    {
+        let mut with_field = with_field;
+        if let Some(retryable) = visible.retryable_override() {
+            with_field = with_field.with_retryable(retryable);
+        }
+        if let Some(action) = visible.user_action() {
+            with_field = with_field.with_user_action(action);
+        }
+        if error_fits(&with_field, limits) {
+            return with_field;
+        }
+    }
+    debug_assert!(
+        error_approx_bytes(&substitute) <= limits.error_event_max_bytes
+            || limits.error_event_max_bytes < min_fallback_error_event_bytes(),
+        "fallback must fit normalized error_event_max_bytes"
+    );
+    substitute
 }
 
 /// Shrink command payloads before control-history retention (reject events).
@@ -233,11 +254,16 @@ pub(crate) fn sanitize_worker_event(
             final_progress,
         } => {
             validate_worker_terminal(&outcome).ok()?;
-            let outcome = bound_terminal_outcome(outcome, limits);
-            let checkpoint_label =
-                checkpoint_label.map(|label| bound_retained_label(label, limits));
-            let final_progress = final_progress
-                .and_then(|snapshot| check_progress(&snapshot, limits).ok().map(|_| snapshot));
+            // Present final_progress must validate; never strip-and-close.
+            if let Some(ref snapshot) = final_progress {
+                check_progress(snapshot, limits).ok()?;
+            }
+            // `save_failed` only applies to Canceled (§5). Ignore it on Failed
+            // so a Failed terminal cannot be forced into Ready.
+            let save_failed = save_failed && matches!(outcome, TerminalOutcome::Canceled { .. });
+            // One canonical checkpoint label for CheckpointSaved + terminal.
+            let (outcome, checkpoint_label) =
+                align_canceled_checkpoint(outcome, checkpoint_label, limits);
             Some(WorkerEvent::RunTerminal {
                 run_id,
                 command_id,
@@ -250,21 +276,58 @@ pub(crate) fn sanitize_worker_event(
     }
 }
 
-fn bound_terminal_outcome(outcome: TerminalOutcome, limits: &SessionLimits) -> TerminalOutcome {
+/// Owner-side check: present `final_progress` must validate (never
+/// strip-and-close). `save_failed` with non-Canceled is ignored upstream.
+pub(crate) fn validate_run_terminal_bundle(
+    outcome: &TerminalOutcome,
+    save_failed: bool,
+    final_progress: Option<&ProgressSnapshot>,
+    limits: &SessionLimits,
+) -> Result<(), DomainError> {
+    let _ = (outcome, save_failed);
+    if let Some(snapshot) = final_progress {
+        check_progress(snapshot, limits)?;
+    }
+    Ok(())
+}
+
+/// Prefer `saved_checkpoint` when both labels are present; keep CheckpointSaved
+/// and the terminal outcome on the same string.
+fn align_canceled_checkpoint(
+    outcome: TerminalOutcome,
+    checkpoint_label: Option<String>,
+    limits: &SessionLimits,
+) -> (TerminalOutcome, Option<String>) {
     match outcome {
-        TerminalOutcome::Completed { step } => TerminalOutcome::Completed { step },
         TerminalOutcome::Canceled {
             step,
             reason,
             saved_checkpoint,
-        } => TerminalOutcome::Canceled {
-            step,
-            reason,
-            saved_checkpoint: saved_checkpoint.map(|label| bound_retained_label(label, limits)),
-        },
-        TerminalOutcome::Failed { error } => TerminalOutcome::Failed {
-            error: bound_error(&error, limits),
-        },
+        } => {
+            let canonical = match (saved_checkpoint, checkpoint_label) {
+                (Some(saved), Some(label)) if saved == label => Some(saved),
+                (Some(saved), Some(_)) => Some(saved), // disagree → outcome wins
+                (Some(saved), None) => Some(saved),
+                (None, Some(label)) => Some(label),
+                (None, None) => None,
+            }
+            .map(|label| bound_retained_label(label, limits));
+            (
+                TerminalOutcome::Canceled {
+                    step,
+                    reason,
+                    saved_checkpoint: canonical.clone(),
+                },
+                canonical,
+            )
+        }
+        TerminalOutcome::Failed { error } => (
+            TerminalOutcome::Failed {
+                error: bound_error(&error, limits),
+            },
+            None,
+        ),
+        other => (other, None),
     }
 }
 

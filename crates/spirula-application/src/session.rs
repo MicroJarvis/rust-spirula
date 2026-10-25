@@ -13,7 +13,8 @@ use spirula_core::{CancelReason, CancelToken, ContextKey, DomainError, ErrorCode
 
 use crate::bound::{
     bound_command_payload, bound_error, bound_retained_label, check_label, check_log_message,
-    check_progress, check_reason, sanitize_worker_event, validate_worker_terminal,
+    check_progress, check_reason, sanitize_worker_event, validate_run_terminal_bundle,
+    validate_worker_terminal,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1033,15 +1034,27 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             final_progress,
             ..
         } => {
-            if validate_worker_terminal(&outcome).is_err() {
+            // Defense in depth: contradictory / malformed bundles stay Pending.
+            if validate_worker_terminal(&outcome).is_err()
+                || validate_run_terminal_bundle(
+                    &outcome,
+                    save_failed,
+                    final_progress.as_ref(),
+                    &st.limits,
+                )
+                .is_err()
+            {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                 return;
             }
+            let _ = checkpoint_label; // canonical label lives on outcome after sanitize
+            // `save_failed` only pairs with Canceled; never hide Failed → Ready.
+            let save_failed =
+                save_failed && matches!(outcome, spirula_core::TerminalOutcome::Canceled { .. });
             // Canonical ordering: final progress before terminal (separate mailboxes).
-            if let Some(snapshot) = final_progress
-                && check_progress(&snapshot, &st.limits).is_ok()
-            {
-                st.latest_progress = Some(snapshot.clone());
+            // Present final_progress was validated; never strip-and-close.
+            if let Some(snapshot) = final_progress {
+                st.latest_progress.replace(snapshot.clone());
                 publish_replaceable(
                     &mut st,
                     &shared.notifier,
@@ -1070,17 +1083,18 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                         .map(|label| bound_retained_label(label, &st.limits)),
                 };
             }
-            // §5 save-on-cancel failure: keep Canceled + Warning; do not take §4
-            // Stopping/save-failed → Failed (that path is for explicit Save).
+            // §5 save-on-cancel failure: only with Canceled.
             // Successful Stop{save}: Stopping → Saving → checkpoint → Ready.
             if save_failed {
-                if let RunOutcome::Canceled { step, reason, .. } = &outcome {
-                    outcome = RunOutcome::Canceled {
-                        step: *step,
-                        reason: *reason,
-                        saved_checkpoint: None,
-                    };
-                }
+                let RunOutcome::Canceled { step, reason, .. } = &outcome else {
+                    st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                    return;
+                };
+                outcome = RunOutcome::Canceled {
+                    step: *step,
+                    reason: *reason,
+                    saved_checkpoint: None,
+                };
                 let warn = DomainError::try_new(
                     ErrorCode::WriteFailed,
                     "save-on-cancel failed; previous checkpoint remains intact",
@@ -1117,18 +1131,16 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                     );
                 }
             } else {
+                // CheckpointSaved label must match terminal saved_checkpoint.
                 let checkpoint = match &outcome {
                     RunOutcome::Canceled {
                         step,
-                        saved_checkpoint,
+                        saved_checkpoint: Some(label),
                         ..
-                    } => checkpoint_label
-                        .or_else(|| saved_checkpoint.clone())
-                        .map(|label| (*step, bound_retained_label(label, &st.limits))),
+                    } => Some((*step, label.clone())),
                     _ => None,
                 };
                 if let Some((step, label)) = checkpoint {
-                    // Frozen: Stopping → Saving, checkpoint, then Ready.
                     if st.phase == SessionState::Stopping {
                         transition(&mut st, &shared.notifier, SessionState::Saving, "stop_save");
                     }

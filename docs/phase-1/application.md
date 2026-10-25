@@ -195,7 +195,12 @@ unbounded control deque.
   first: illegal events are dropped before the mailbox, oversized
   load/checkpoint labels and errors are bounded before retention, and
   bounded error views keep the original code/category plus any
-  `retryable_override` / `user_action`.
+  `retryable_override` / `user_action`, and the overflow substitute always
+  fits `error_event_max_bytes`. A `RunTerminal` bundle is coherent before
+  enqueue: disagreeing checkpoint labels canonicalize to
+  `saved_checkpoint`; `save_failed` applies only to `Canceled` (Failed stays
+  Failed); present `final_progress` must validate or the whole terminal is
+  dropped and the active command stays `Pending` for a later valid result.
 
 ### Save-failure vs cancel (§4 vs §5)
 
