@@ -95,12 +95,18 @@ unmerged until explicitly approved.
 
 ## Evidence
 
-| item | location |
+| item | location / command |
 |---|---|
 | Binding decisions | [application.md](application.md) |
 | Crate | `crates/spirula-application` (deps: `spirula-core` only) |
-| Tests | `crates/spirula-application/tests/session_lifecycle.rs` |
-| External reviewer probes | `/tmp/spirula-f07-review/probes.rs` (15/15) |
+| Lifecycle regressions | `crates/spirula-application/tests/session_lifecycle.rs` (**43** tests) |
+| History unit regressions | `crates/spirula-application/src/history.rs` (`mod tests`, **3** tests) |
+| Reproducible gate | `cargo test -p spirula-application -- --test-threads=1` then `cargo run -p spirula-xtask -- verify` (**8/8** on tip `cdb0655`) |
+
+Supplemental ephemeral external probe binaries used during HOLD-MERGE review
+are not checked in; treat them as non-reproducible reviewer aids only. The
+authoritative, machine-independent evidence is the crate tests and xtask
+verify above.
 
 ## Non-claims
 

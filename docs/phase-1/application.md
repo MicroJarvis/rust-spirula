@@ -116,11 +116,13 @@ values.
 
 Core `DomainError` APIs are unchanged. The owner copies event-visible errors
 with `without_source()` and **rejects retention** of an oversized copy:
-terminal publication still happens, but the retained/emitted error is a new
-`DomainError` built with existing constructors (`ErrorCode::InvalidArgument`
-or the original code when already short) carrying a short fixed message and
-`field=error_payload` — never by mutating core validation or treating
-`SP-CAN-001` as `Failed`. Fake probes only emit short catalog-built errors.
+terminal publication still happens, but the retained/emitted view is a new
+`DomainError` that **keeps the original stable `ErrorCode` (hence category)
+plus any `retryable_override` / `user_action`**, with a short fixed message
+(`oversized`) and optional `field=error_payload` context only when that still
+fits `error_event_max_bytes` — never by rewriting the code to
+`InvalidArgument`, mutating core validation, or treating `SP-CAN-001` as
+`Failed`. Fake probes only emit short catalog-built errors.
 
 Additional structure bounds:
 
