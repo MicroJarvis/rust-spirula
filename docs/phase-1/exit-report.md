@@ -69,7 +69,11 @@ Observed on this host (fresh verify after the P1-F06 changes):
 # P1-F07 verification record
 
 Recorded: 2026-10-25, worktree `.worktrees/p1-f07` on branch `codex/p1-f07`,
-parent tip `0c73ec1` (P1-F06 on main).
+parent tip `0c73ec1` (P1-F06 on main). HOLD-MERGE review fixes landed after
+`f6f5e0c` (unique SessionId, poison-free recovery, atomic admit, cancel
+isolation, Stop save flag, LoadDone/Stop race, final progress ordering,
+payload/result retention contracts, dropped-control watermark, subscriber
+Drop capacity).
 
 ## Scope and result
 
@@ -77,7 +81,8 @@ P1-F07 is complete: `spirula-application` is the unique headless session owner
 with bounded admission/history/notify, independent Stop/Shutdown control,
 fake probe worker, run-identity stale rejection, and lifecycle tests. No
 train/GPU deps. Disk diagnostics remain unavailable (in-memory log tail only);
-P1-F09 owns CLI disk integration. Next feature is P1-F08.
+P1-F09 owns CLI disk integration. Next feature is P1-F08. Branch remains
+unmerged until explicitly approved.
 
 ## Evidence
 
@@ -86,6 +91,7 @@ P1-F09 owns CLI disk integration. Next feature is P1-F08.
 | Binding decisions | [application.md](application.md) |
 | Crate | `crates/spirula-application` (deps: `spirula-core` only) |
 | Tests | `crates/spirula-application/tests/session_lifecycle.rs` |
+| External reviewer probes | `/tmp/spirula-f07-review/probes.rs` (15/15) |
 
 ## Non-claims
 

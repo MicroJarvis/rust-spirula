@@ -3,6 +3,10 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Process-wide session identity allocator. Each [`ApplicationService`] gets a
+/// unique id so concurrent instances are distinguishable.
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
 /// One application/session instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(u64);
@@ -10,6 +14,10 @@ pub struct SessionId(u64);
 impl SessionId {
     pub fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    pub(crate) fn allocate() -> Self {
+        Self(NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed))
     }
 
     pub fn get(self) -> u64 {

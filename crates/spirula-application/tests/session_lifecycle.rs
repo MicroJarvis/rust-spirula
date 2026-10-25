@@ -306,6 +306,7 @@ fn late_run_terminal_after_completion_is_stale() {
         outcome: TerminalOutcome::Completed { step: 99 },
         checkpoint_label: None,
         save_failed: false,
+        final_progress: None,
     })
     .ok();
     assert!(app.wait_until(Duration::from_secs(1), |s| {
@@ -531,4 +532,424 @@ impl EventIsControl for Event {
     fn is_control(&self) -> bool {
         !matches!(self, Event::Progress(_) | Event::Log { .. })
     }
+}
+
+#[test]
+fn session_identity_is_unique_per_service() {
+    let a = service();
+    let b = service();
+    assert_ne!(a.session_id(), b.session_id());
+}
+
+#[test]
+fn concurrent_admission_preserves_all_accepted_terminals() {
+    use std::sync::{Arc, Barrier};
+    for round in 0..50 {
+        let app = Arc::new(service());
+        let barrier = Arc::new(Barrier::new(5));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let app = Arc::clone(&app);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                app.submit(Command::new(CommandPayload::ProbeLoad {
+                    label: "ds".into(),
+                }))
+            }));
+        }
+        barrier.wait();
+        let ids: Vec<_> = handles
+            .into_iter()
+            .filter_map(|h| match h.join().unwrap() {
+                SubmitOutcome::Accepted { id } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            app.wait_until(Duration::from_millis(500), |_| {
+                ids.iter()
+                    .all(|id| matches!(app.command_result(*id), CommandResult::Ready(_)))
+            }),
+            "round {round} accepted {ids:?} results {:?}",
+            ids.iter()
+                .map(|id| app.command_result(*id))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn queued_shutdown_drains_accepted_work_with_terminals() {
+    let mut limits = SessionLimits::for_test();
+    limits.command_queue_capacity = 4;
+    limits.worker_step_delay = Duration::from_millis(30);
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 20 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let shut = accept(&app, CommandPayload::Shutdown);
+    app.stall_gate().set_stalled(false);
+    let run_env = wait_terminal(&app, run);
+    let shut_env = wait_terminal(&app, shut);
+    assert!(matches!(
+        run_env.event,
+        Event::Completed {
+            outcome: OutcomeView::Canceled { .. }
+        }
+    ));
+    assert!(matches!(shut_env.event, Event::ShutdownComplete));
+    assert_eq!(app.snapshot().state, SessionState::Closed);
+}
+
+#[test]
+fn fresh_run_after_stop_does_not_inherit_cancel() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let stop = accept(&app, CommandPayload::Stop { save: true });
+    wait_terminal(&app, run);
+    wait_terminal(&app, stop);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(false);
+    let run2 = accept(&app, CommandPayload::ProbeRun { steps: 1 });
+    let env = wait_terminal(&app, run2);
+    assert!(
+        matches!(
+            env.event,
+            Event::Completed {
+                outcome: OutcomeView::Completed { step: 1 }
+            }
+        ),
+        "{env:?}"
+    );
+}
+
+#[test]
+fn panic_recovery_allows_behavior_reset() {
+    let app = service();
+    app.set_worker_behavior(FakeWorkerBehavior::Panic);
+    let load = accept(
+        &app,
+        CommandPayload::ProbeLoad {
+            label: "panic".into(),
+        },
+    );
+    wait_terminal(&app, load);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.set_worker_behavior(FakeWorkerBehavior::Succeed)
+        }))
+        .is_ok(),
+        "behavior mutex must not stay poisoned"
+    );
+    accept(&app, CommandPayload::Reset);
+    wait_idle(&app);
+    let load2 = accept(&app, CommandPayload::ProbeLoad { label: "ok".into() });
+    let env = wait_terminal(&app, load2);
+    assert!(matches!(
+        env.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { .. }
+        }
+    ));
+}
+
+#[test]
+fn final_progress_precedes_terminal_on_live_stream() {
+    let mut limits = SessionLimits::for_test();
+    limits.notification_queue_capacity = 64;
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    let (sub, _) = app.subscribe().expect("sub");
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 1 });
+    wait_terminal(&app, run);
+    let mut saw_final = false;
+    while let Some(env) = sub.try_recv() {
+        if env.command_id == Some(run) {
+            match env.event {
+                Event::Progress(p) if p.step == 1 => saw_final = true,
+                Event::Completed { .. } => {
+                    assert!(saw_final, "terminal preceded final progress");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn progress_only_gaps_do_not_force_resync() {
+    let mut limits = SessionLimits::for_test();
+    limits.control_history_capacity = 2;
+    limits.notification_queue_capacity = 64;
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let cursor = app.snapshot().cursor;
+    std::thread::sleep(Duration::from_millis(90));
+    let snap = app.snapshot();
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id: snap.active_run.unwrap(),
+        command_id: run,
+        outcome: TerminalOutcome::Completed { step: 0 },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    wait_terminal(&app, run);
+    assert!(
+        matches!(app.replay(cursor), Ok(ReplayOutcome::ControlEvents(_))),
+        "{:?} cursor={cursor:?}",
+        app.replay(cursor)
+    );
+}
+
+#[test]
+fn oldest_result_stays_expired_not_unknown() {
+    let mut limits = SessionLimits::for_test();
+    limits.result_retention = 1;
+    let app = ApplicationService::start(limits);
+    let first = accept(&app, CommandPayload::ProbeLoad { label: "a".into() });
+    wait_terminal(&app, first);
+    wait_ready(&app);
+    for i in 0..8 {
+        let id = accept(&app, CommandPayload::ProbeRun { steps: 1 });
+        wait_terminal(&app, id);
+        wait_ready(&app);
+        let _ = i;
+    }
+    assert!(
+        matches!(app.command_result(first), CommandResult::Expired),
+        "{:?}",
+        app.command_result(first)
+    );
+}
+
+#[test]
+fn oversized_reject_label_not_retained_verbatim() {
+    let app = service();
+    let _ = app.submit(Command::new(CommandPayload::ProbeLoad {
+        label: "x".repeat(1_000_000),
+    }));
+    let cursor = EventCursor::new(app.session_id(), 0);
+    match app.replay(cursor).unwrap() {
+        ReplayOutcome::ControlEvents(events) => {
+            for env in events {
+                if let Event::CommandRejected {
+                    command: CommandPayload::ProbeLoad { label },
+                    ..
+                } = env.event
+                {
+                    assert!(
+                        label.len() <= app.limits().label_max_bytes,
+                        "retained {} bytes",
+                        label.len()
+                    );
+                }
+            }
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn stop_save_false_reaches_running_worker() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let stop = accept(&app, CommandPayload::Stop { save: false });
+    let result = wait_terminal(&app, run);
+    wait_terminal(&app, stop);
+    assert!(
+        matches!(
+            result.event,
+            Event::Completed {
+                outcome: OutcomeView::Canceled {
+                    saved_checkpoint: None,
+                    ..
+                }
+            }
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn load_done_racing_stop_clears_stop_terminal() {
+    let mut limits = SessionLimits::for_test();
+    limits.worker_step_delay = Duration::from_millis(200);
+    let app = ApplicationService::start(limits);
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Loading));
+    let snap = app.snapshot();
+    let stop = accept(&app, CommandPayload::Stop { save: false });
+    app.inject_worker_event(WorkerEvent::LoadDone {
+        run_id: snap.active_run.unwrap(),
+        command_id: load,
+        label: "ds".into(),
+    })
+    .unwrap();
+    wait_terminal(&app, load);
+    assert!(
+        app.wait_until(Duration::from_secs(1), |_| {
+            matches!(app.command_result(stop), CommandResult::Ready(_))
+        }),
+        "{:?}",
+        app.command_result(stop)
+    );
+}
+
+#[test]
+fn core_invalid_terminals_and_progress_rejected() {
+    let app = service();
+    let load = accept(&app, CommandPayload::ProbeLoad { label: "ds".into() });
+    wait_terminal(&app, load);
+    wait_ready(&app);
+    app.stall_gate().set_stalled(true);
+    let (sub, _) = app.subscribe().expect("sub");
+    let run = accept(&app, CommandPayload::ProbeRun { steps: 10 });
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.state == SessionState::Running));
+    let snap = app.snapshot();
+    let malformed = ProgressSnapshot {
+        step: 9,
+        total_steps: Some(1),
+        splats: 0,
+        elapsed_ms: 0,
+        eta_ms: None,
+        metrics: vec![spirula_core::ProgressMetric {
+            name: "".into(),
+            value: f64::NAN,
+        }],
+    };
+    assert!(malformed.validate().is_err());
+    app.inject_worker_event(WorkerEvent::Progress {
+        run_id: snap.active_run.unwrap(),
+        command_id: run,
+        snapshot: malformed,
+    })
+    .unwrap();
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id: snap.active_run.unwrap(),
+        command_id: run,
+        outcome: TerminalOutcome::Failed {
+            error: spirula_core::DomainError::try_new(ErrorCode::Canceled, "wrong").unwrap(),
+        },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    app.inject_worker_event(WorkerEvent::RunTerminal {
+        run_id: snap.active_run.unwrap(),
+        command_id: run,
+        outcome: TerminalOutcome::Canceled {
+            step: 0,
+            reason: spirula_core::CancelReason::User,
+            saved_checkpoint: Some(" ".into()),
+        },
+        checkpoint_label: None,
+        save_failed: false,
+        final_progress: None,
+    })
+    .unwrap();
+    app.inject_worker_event(WorkerEvent::LoadDone {
+        run_id: snap.active_run.unwrap(),
+        command_id: run,
+        label: "foreign".into(),
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(40));
+    assert!(matches!(app.command_result(run), CommandResult::Pending));
+    while let Some(env) = sub.try_recv() {
+        if let Event::Progress(p) = env.event {
+            assert!(p.validate().is_ok(), "malformed progress published: {p:?}");
+        }
+    }
+}
+
+#[test]
+fn dropped_subscription_releases_fanout_slot() {
+    let mut limits = SessionLimits::for_test();
+    limits.max_subscribers = 1;
+    let app = ApplicationService::start(limits);
+    drop(app.subscribe().unwrap());
+    assert!(
+        app.subscribe().is_ok(),
+        "dropped subscriber must release capacity"
+    );
+}
+
+#[test]
+fn session_limits_normalize_zero_and_slow_poll() {
+    let raw = SessionLimits {
+        command_queue_capacity: 0,
+        label_max_bytes: 1,
+        cancel_poll_interval: Duration::from_millis(500),
+        heartbeat_interval: Duration::from_millis(100),
+        ..SessionLimits::default()
+    };
+    let app = ApplicationService::start(raw);
+    let effective = app.limits();
+    assert!(effective.command_queue_capacity >= 1);
+    assert!(effective.label_max_bytes >= 32);
+    assert!(effective.cancel_poll_interval <= Duration::from_millis(250));
+    assert!(effective.cancel_poll_interval <= effective.heartbeat_interval);
+}
+
+#[test]
+fn resync_retained_terminals_include_result_cache() {
+    let mut limits = SessionLimits::for_test();
+    limits.control_history_capacity = 2;
+    limits.control_history_max_bytes = 512;
+    limits.result_retention = 8;
+    limits.label_max_bytes = 64;
+    let app = ApplicationService::start(limits);
+    let first = accept(
+        &app,
+        CommandPayload::ProbeLoad {
+            label: "keep".into(),
+        },
+    );
+    wait_terminal(&app, first);
+    wait_ready(&app);
+    // Overflow the control ring with rejections while the load terminal stays
+    // in the result cache.
+    for i in 0..12 {
+        let _ = app.submit(Command::new(CommandPayload::ProbeRun { steps: 0 }));
+        let _ = i;
+    }
+    let cursor = EventCursor::new(app.session_id(), 0);
+    match app.replay(cursor).expect("replay") {
+        ReplayOutcome::ResyncRequired {
+            retained_terminals, ..
+        } => {
+            assert!(
+                retained_terminals
+                    .iter()
+                    .any(|e| e.command_id == Some(first)),
+                "result-cache terminal must appear in resync: {retained_terminals:?}"
+            );
+        }
+        other => panic!("expected resync after control overflow, got {other:?}"),
+    }
+    assert!(matches!(app.command_result(first), CommandResult::Ready(_)));
 }

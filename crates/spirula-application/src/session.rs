@@ -1,14 +1,22 @@
 //! Unique application/session owner. One writer thread; bounded admission.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use spirula_core::{CancelReason, CancelToken, ContextKey, DomainError, ErrorCode};
 
-use crate::bound::{bound_error, check_log_message, check_progress, check_reason};
+use crate::bound::{
+    bound_command_payload, bound_error, bound_retained_label, check_label, check_log_message,
+    check_progress, check_reason,
+};
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
 use crate::command::{Command, CommandPayload, SubmitOutcome};
 use crate::event::{
     CommandResult, CursorError, DropCounters, Event, EventCursor, EventEnvelope, LogLevel,
@@ -71,8 +79,8 @@ struct State {
     shutdown_done: bool,
     ids: IdGen,
     latest_progress: Option<spirula_core::ProgressSnapshot>,
-    /// Save flag for in-flight stop applied to active probe.
-    active_stop_save: Option<bool>,
+    /// Live save-on-cancel flag shared with the running fake worker.
+    active_save_on_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl State {
@@ -129,7 +137,8 @@ pub struct ApplicationService {
 
 impl ApplicationService {
     pub fn start(limits: SessionLimits) -> Self {
-        let session_id = SessionId::new(1);
+        let limits = limits.normalized();
+        let session_id = SessionId::allocate();
         let notifier = Notifier::new(&limits);
         let behavior = Arc::new(Mutex::new(FakeWorkerBehavior::Succeed));
         let stall = StallGate::new();
@@ -161,7 +170,7 @@ impl ApplicationService {
             shutdown_done: false,
             ids: IdGen::new(1),
             latest_progress: None,
-            active_stop_save: None,
+            active_save_on_cancel: None,
         };
 
         let worker = WorkerHandle::spawn(
@@ -194,15 +203,15 @@ impl ApplicationService {
     }
 
     pub fn session_id(&self) -> SessionId {
-        self.shared.state.lock().expect("state").session_id
+        lock(&self.shared.state).session_id
     }
 
     pub fn limits(&self) -> SessionLimits {
-        self.shared.state.lock().expect("state").limits.clone()
+        lock(&self.shared.state).limits.clone()
     }
 
     pub fn set_worker_behavior(&self, behavior: FakeWorkerBehavior) {
-        *self.shared.behavior.lock().expect("behavior") = behavior;
+        *lock(&self.shared.behavior) = behavior;
     }
 
     pub fn stall_gate(&self) -> StallGate {
@@ -211,7 +220,7 @@ impl ApplicationService {
 
     /// Submit a command. Never blocks on work; may reject when queues are full.
     pub fn submit(&self, command: Command) -> SubmitOutcome {
-        let mut st = self.shared.state.lock().expect("state");
+        let mut st = lock(&self.shared.state);
         if st.shutdown_done || st.phase == SessionState::Closed {
             return SubmitOutcome::Rejected {
                 error: sess_error(
@@ -223,10 +232,12 @@ impl ApplicationService {
         }
         if let Err(error) = command.payload.validate(&st.limits) {
             let visible = error.without_source();
+            // Bound the retained reject payload (never keep a 1MB original label).
+            let bounded = bound_command_payload(command.payload, &st.limits);
             publish_rejected(
                 &mut st,
                 &self.shared.notifier,
-                command.payload,
+                bounded,
                 visible.without_source(),
             );
             return SubmitOutcome::Rejected { error: visible };
@@ -283,7 +294,7 @@ impl ApplicationService {
                     },
                 );
                 if st.phase == SessionState::Running {
-                    *st.pause.lock().expect("pause") = true;
+                    *lock(&st.pause) = true;
                     transition(
                         &mut st,
                         &self.shared.notifier,
@@ -311,7 +322,7 @@ impl ApplicationService {
                     },
                 );
                 if st.phase == SessionState::Paused {
-                    *st.pause.lock().expect("pause") = false;
+                    *lock(&st.pause) = false;
                     transition(
                         &mut st,
                         &self.shared.notifier,
@@ -350,31 +361,27 @@ impl ApplicationService {
             _ => {}
         }
 
-        // Reserve a queue slot before acceptance so a full queue rejects with
-        // SP-SESS-003 and never leaves a command without a terminal path.
-        // Owner publishes CommandAccepted when dequeuing (avoids accept/start race).
-        drop(st);
+        // Atomic admission: reserve identity under the same lock as try_send so
+        // the owner cannot finish (and clear active) before reservation, and a
+        // concurrent submit cannot observe a Ready gap.
         match self.work_tx.try_send(AdmittedWork::Payload {
             id,
             payload: payload.clone(),
         }) {
             Ok(()) => {
-                let mut st = self.shared.state.lock().expect("state");
-                // Reserve in-flight identity before the owner thread starts work so
-                // concurrent submits and waiters cannot observe a false Idle/Ready gap.
                 st.history.note_accepted(id);
                 st.active_command = Some(id);
                 st.active_payload = Some(payload);
                 SubmitOutcome::Accepted { id }
             }
             Err(TrySendError::Full(_)) => {
-                let mut st = self.shared.state.lock().expect("state");
                 let error =
                     sess_error(ErrorCode::CommandInFlight, "command queue is full", "queue");
+                let bounded = bound_command_payload(payload, &st.limits);
                 publish_rejected(
                     &mut st,
                     &self.shared.notifier,
-                    payload,
+                    bounded,
                     error.without_source(),
                 );
                 SubmitOutcome::Rejected { error }
@@ -386,13 +393,13 @@ impl ApplicationService {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        self.shared.state.lock().expect("state").snapshot()
+        lock(&self.shared.state).snapshot()
     }
 
     /// Subscribe and snapshot under one lock so the live stream boundary
     /// matches the returned snapshot seq.
     pub fn subscribe(&self) -> Result<(Subscription, Snapshot), SubscribeError> {
-        let mut st = self.shared.state.lock().expect("state");
+        let mut st = lock(&self.shared.state);
         match self.shared.notifier.subscribe() {
             Ok(sub) => {
                 let snap = st.snapshot();
@@ -415,7 +422,7 @@ impl ApplicationService {
     pub fn subscribe_and_replay(
         &self,
     ) -> Result<(Subscription, Snapshot, ReplayOutcome), SubscribeHandoffError> {
-        let mut st = self.shared.state.lock().expect("state");
+        let mut st = lock(&self.shared.state);
         let sub = match self.shared.notifier.subscribe() {
             Ok(sub) => sub,
             Err(SubscribeError::SubscriberLimit) => {
@@ -434,13 +441,13 @@ impl ApplicationService {
     }
 
     pub fn replay(&self, cursor: EventCursor) -> Result<ReplayOutcome, CursorError> {
-        let st = self.shared.state.lock().expect("state");
+        let st = lock(&self.shared.state);
         validate_cursor(&st, cursor)?;
         Ok(st.history.replay_control_after(cursor.seq, st.snapshot()))
     }
 
     pub fn command_result(&self, id: CommandId) -> CommandResult {
-        let st = self.shared.state.lock().expect("state");
+        let st = lock(&self.shared.state);
         if st.active_command == Some(id)
             || st.stop_owner == Some(id)
             || (st.shutdown_owner == Some(id) && !st.shutdown_done)
@@ -465,7 +472,7 @@ impl ApplicationService {
         match tx.try_send(event) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
-                let mut st = self.shared.state.lock().expect("state");
+                let mut st = lock(&self.shared.state);
                 st.drops.worker_mailbox = st.drops.worker_mailbox.saturating_add(1);
                 Err(sess_error(
                     ErrorCode::CommandInFlight,
@@ -513,8 +520,8 @@ impl Drop for ApplicationService {
         // Unstick paused/stalled workers, request shutdown cancel, then drain.
         self.shared.stall.set_stalled(false);
         {
-            let st = self.shared.state.lock().expect("state");
-            *st.pause.lock().expect("pause") = false;
+            let st = lock(&self.shared.state);
+            *lock(&st.pause) = false;
             let _ = st.cancel.request(CancelReason::Shutdown);
         }
         let _ = self.submit(Command::new(CommandPayload::Shutdown));
@@ -535,7 +542,7 @@ impl Drop for ApplicationService {
                 }
                 if start.elapsed() >= deadline {
                     // Force-fail any still-pending identities so nothing stays Pending.
-                    let mut st = self.shared.state.lock().expect("state");
+                    let mut st = lock(&self.shared.state);
                     force_teardown_terminals(&mut st, &self.shared.notifier);
                     // Detach: owner may still exit; avoid blocking Drop forever.
                     break;
@@ -543,7 +550,7 @@ impl Drop for ApplicationService {
                 thread::sleep(Duration::from_millis(2));
             }
         } else {
-            let mut st = self.shared.state.lock().expect("state");
+            let mut st = lock(&self.shared.state);
             force_teardown_terminals(&mut st, &self.shared.notifier);
         }
         // Drop the worker handle inside shared (joins worker thread).
@@ -650,7 +657,9 @@ fn admit_stop(st: &mut State, notifier: &Arc<Notifier>, payload: &CommandPayload
     );
     st.stop_owner = Some(id);
     st.pending_stop = Some(PendingStop { save });
-    st.active_stop_save = Some(save);
+    if let Some(flag) = &st.active_save_on_cancel {
+        flag.store(save, Ordering::Release);
+    }
     let _ = st.cancel.request(CancelReason::User);
     if st.phase == SessionState::Running || st.phase == SessionState::Paused {
         transition(st, notifier, SessionState::Stopping, "stop");
@@ -731,12 +740,12 @@ fn owner_loop(
     result_rx: Receiver<WorkerEvent>,
 ) {
     let poll = {
-        let st = shared.state.lock().expect("state");
+        let st = lock(&shared.state);
         st.limits.poll_interval()
     };
     loop {
         {
-            let mut st = shared.state.lock().expect("state");
+            let mut st = lock(&shared.state);
             if st.shutdown_done {
                 break;
             }
@@ -756,7 +765,7 @@ fn owner_loop(
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                let mut st = shared.state.lock().expect("state");
+                let mut st = lock(&shared.state);
                 if let Some(id) = st.active_command {
                     let err = DomainError::try_new(
                         ErrorCode::Internal,
@@ -795,7 +804,7 @@ fn owner_loop(
 }
 
 fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
-    let mut st = shared.state.lock().expect("state");
+    let mut st = lock(&shared.state);
     publish_control(
         &mut st,
         &shared.notifier,
@@ -819,25 +828,24 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
         );
         return;
     }
-    // Fresh cancel token per probe generation, inheriting any Stop/Shutdown
-    // that won while this command was only reserved on the work queue.
-    let prior = st.cancel.reason();
+    // Fresh cancel token: do **not** inherit a prior run's reason. Only apply
+    // cancel if Stop/Shutdown is still pending for this admission.
     st.cancel = CancelToken::new();
-    if let Some(reason) = prior {
-        let _ = st.cancel.request(reason);
-    }
     if st.pending_shutdown.is_some() {
         let _ = st.cancel.request(CancelReason::Shutdown);
     } else if st.pending_stop.is_some() {
         let _ = st.cancel.request(CancelReason::User);
     }
-    *st.pause.lock().expect("pause") = false;
+    *lock(&st.pause) = false;
     let run_id = RunId::new(st.ids.next());
     st.active_command = Some(id);
     st.active_run = Some(run_id);
     st.active_payload = Some(payload.clone());
     st.latest_progress = None;
-    st.active_stop_save = None;
+    let save_flag = Arc::new(AtomicBool::new(
+        st.pending_stop.as_ref().map(|p| p.save).unwrap_or(true),
+    ));
+    st.active_save_on_cancel = Some(Arc::clone(&save_flag));
 
     let cancel = st.cancel.clone();
     let pause = Arc::clone(&st.pause);
@@ -847,6 +855,22 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
 
     match payload {
         CommandPayload::ProbeLoad { label } => {
+            if check_label(&label, &st.limits).is_err() {
+                finish_active(
+                    &mut st,
+                    &shared.notifier,
+                    id,
+                    RunOutcome::Failed {
+                        error: sess_error(
+                            ErrorCode::ValueOutOfRange,
+                            "probe load label exceeds size limit",
+                            "label",
+                        ),
+                    },
+                    Some(run_id),
+                );
+                return;
+            }
             transition(
                 &mut st,
                 &shared.notifier,
@@ -854,16 +878,12 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 "probe_load",
             );
             drop(st);
-            shared
-                .worker
-                .lock()
-                .expect("worker")
-                .send(WorkerRequest::Load {
-                    run_id,
-                    command_id: id,
-                    label,
-                    cancel,
-                });
+            lock(&shared.worker).send(WorkerRequest::Load {
+                run_id,
+                command_id: id,
+                label,
+                cancel,
+            });
         }
         CommandPayload::ProbeRun { steps } => {
             transition(
@@ -885,21 +905,16 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 SessionState::Running,
                 "probe_prepared",
             );
-            let save_on_cancel = st.pending_stop.as_ref().map(|p| p.save).unwrap_or(true);
             drop(st);
-            shared
-                .worker
-                .lock()
-                .expect("worker")
-                .send(WorkerRequest::Run {
-                    run_id,
-                    command_id: id,
-                    steps,
-                    cancel,
-                    pause,
-                    stall,
-                    save_on_cancel,
-                });
+            lock(&shared.worker).send(WorkerRequest::Run {
+                run_id,
+                command_id: id,
+                steps,
+                cancel,
+                pause,
+                stall,
+                save_on_cancel: save_flag,
+            });
         }
         other => {
             finish_active(
@@ -920,7 +935,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
 }
 
 fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
-    let mut st = shared.state.lock().expect("state");
+    let mut st = lock(&shared.state);
     let (run_id, command_id) = match &event {
         WorkerEvent::Progress {
             run_id, command_id, ..
@@ -943,7 +958,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
 
     match event {
         WorkerEvent::Progress { snapshot, .. } => {
-            if check_progress(&snapshot, &st.limits).is_err() {
+            if snapshot.validate().is_err() || check_progress(&snapshot, &st.limits).is_err() {
                 st.drops.progress = st.drops.progress.saturating_add(1);
                 return;
             }
@@ -982,9 +997,12 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             );
         }
         WorkerEvent::LoadDone { label, .. } => {
-            if let Err(err) = check_reason("probe_loaded", &st.limits) {
-                let _ = err;
+            // LoadDone is only valid while Loading; reject against Running probes.
+            if st.phase != SessionState::Loading {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
             }
+            let label = bound_retained_label(label, &st.limits);
             st.loaded_label = Some(label.clone());
             publish_control(
                 &mut st,
@@ -1001,17 +1019,51 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 RunOutcome::Completed { step: 0 },
                 Some(run_id),
             );
+            complete_pending_stop(&mut st, &shared.notifier);
         }
         WorkerEvent::RunTerminal {
             outcome,
             checkpoint_label,
             save_failed,
+            final_progress,
             ..
         } => {
+            if let Err(_err) = validate_worker_terminal(&outcome) {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Canonical ordering: final progress before terminal (separate mailboxes).
+            if let Some(snapshot) = final_progress
+                && snapshot.validate().is_ok()
+                && check_progress(&snapshot, &st.limits).is_ok()
+            {
+                st.latest_progress = Some(snapshot.clone());
+                publish_replaceable(
+                    &mut st,
+                    &shared.notifier,
+                    Some(command_id),
+                    Some(run_id),
+                    Event::Progress(snapshot),
+                );
+            }
             let mut outcome = outcome_from_terminal(outcome);
             if let RunOutcome::Failed { error } = &outcome {
                 outcome = RunOutcome::Failed {
                     error: bound_error(error, &st.limits),
+                };
+            }
+            if let RunOutcome::Canceled {
+                step,
+                reason,
+                saved_checkpoint,
+            } = &outcome
+            {
+                outcome = RunOutcome::Canceled {
+                    step: *step,
+                    reason: *reason,
+                    saved_checkpoint: saved_checkpoint
+                        .clone()
+                        .map(|label| bound_retained_label(label, &st.limits)),
                 };
             }
             // §5 save-on-cancel failure: keep Canceled + Warning; do not take §4
@@ -1045,7 +1097,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                         ..
                     } => checkpoint_label
                         .or_else(|| saved_checkpoint.clone())
-                        .map(|label| (*step, label)),
+                        .map(|label| (*step, bound_retained_label(label, &st.limits))),
                     _ => None,
                 };
                 if let Some((step, label)) = checkpoint {
@@ -1070,20 +1122,49 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             };
             transition(&mut st, &shared.notifier, next, "run_terminal");
             finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
-            // Stop is a separate accepted command: exactly one terminal of its own.
-            // Must not overwrite `last_outcome` (run terminal above).
-            if let Some(stop_id) = st.stop_owner.take() {
-                complete_control(
-                    &mut st,
-                    &shared.notifier,
-                    stop_id,
-                    RunOutcome::Completed { step: 0 },
-                );
-            }
-            st.pending_stop = None;
-            st.active_stop_save = None;
+            complete_pending_stop(&mut st, &shared.notifier);
         }
     }
+}
+
+/// Mirror `spirula_core::progress::validate_outcome` (private there) so injected
+/// worker terminals cannot weaken Failed/Canceled contracts.
+fn validate_worker_terminal(outcome: &spirula_core::TerminalOutcome) -> Result<(), DomainError> {
+    use spirula_core::TerminalOutcome;
+    if let TerminalOutcome::Failed { error } = outcome
+        && error.code() == ErrorCode::Canceled
+    {
+        return Err(DomainError::try_new(
+            ErrorCode::InvalidArgument,
+            "cancellation is not a failed outcome",
+        )
+        .expect("message")
+        .with_context(ContextKey::Field, "outcome")
+        .expect("field"));
+    }
+    if let TerminalOutcome::Canceled {
+        saved_checkpoint: Some(path),
+        ..
+    } = outcome
+        && path.trim().is_empty()
+    {
+        return Err(DomainError::try_new(
+            ErrorCode::InvalidArgument,
+            "canceled outcome has an empty checkpoint path",
+        )
+        .expect("message")
+        .with_context(ContextKey::Field, "checkpoint")
+        .expect("field"));
+    }
+    Ok(())
+}
+
+fn complete_pending_stop(st: &mut State, notifier: &Arc<Notifier>) {
+    if let Some(stop_id) = st.stop_owner.take() {
+        complete_control(st, notifier, stop_id, RunOutcome::Completed { step: 0 });
+    }
+    st.pending_stop = None;
+    st.active_save_on_cancel = None;
 }
 
 fn finish_active(
@@ -1094,18 +1175,20 @@ fn finish_active(
     run_id: Option<RunId>,
 ) {
     st.last_outcome = Some(outcome.clone());
+    let rid = run_id.or(st.active_run.take());
     publish_control(
         st,
         notifier,
         Some(command_id),
-        run_id.or(st.active_run),
+        rid,
         Event::Completed { outcome },
     );
     st.active_command = None;
     st.active_run = None;
     st.active_payload = None;
     st.latest_progress = None;
-    *st.pause.lock().expect("pause") = false;
+    st.active_save_on_cancel = None;
+    *lock(&st.pause) = false;
 }
 
 /// Terminal for Pause/Resume/Stop/Shutdown no-ops. Does **not** update

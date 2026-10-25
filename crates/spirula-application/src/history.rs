@@ -1,6 +1,6 @@
 //! Bounded recoverable control-event history and command-result retention.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::event::{CommandResult, DropCounters, EventEnvelope, ReplayOutcome, Snapshot};
 use crate::ids::CommandId;
@@ -12,15 +12,15 @@ pub(crate) struct ControlHistory {
     max_bytes: usize,
     entries: VecDeque<EventEnvelope>,
     bytes: usize,
-    /// Lowest control seq still retained.
-    oldest_seq: Option<u64>,
+    /// Max seq of any control event dropped from retention. Resync when
+    /// `cursor.seq < max_dropped_control_seq` is false and
+    /// `cursor.seq < max_dropped` — i.e. a dropped control lies after the cursor.
+    max_dropped_control_seq: u64,
     result_retention: usize,
     results: HashMap<CommandId, EventEnvelope>,
     result_order: VecDeque<CommandId>,
-    /// Command ids that were accepted; used to distinguish Expired vs Unknown.
-    seen_commands: HashMap<CommandId, bool>,
-    seen_order: VecDeque<CommandId>,
-    seen_capacity: usize,
+    /// Accepted command ids. Never forgotten so Expired cannot become Unknown.
+    seen_commands: HashSet<CommandId>,
 }
 
 impl ControlHistory {
@@ -31,31 +31,23 @@ impl ControlHistory {
             max_bytes: limits.control_history_max_bytes.max(1),
             entries: VecDeque::new(),
             bytes: 0,
-            oldest_seq: None,
+            max_dropped_control_seq: 0,
             result_retention,
             results: HashMap::new(),
             result_order: VecDeque::new(),
-            seen_commands: HashMap::new(),
-            seen_order: VecDeque::new(),
-            // Bound seen-set similarly; expired results still need "seen".
-            seen_capacity: result_retention.saturating_mul(4).max(16),
+            seen_commands: HashSet::new(),
         }
     }
 
     pub(crate) fn note_accepted(&mut self, id: CommandId) {
-        if self.seen_commands.insert(id, true).is_none() {
-            self.seen_order.push_back(id);
-        }
-        while self.seen_order.len() > self.seen_capacity {
-            if let Some(evict) = self.seen_order.pop_front() {
-                // Keep if still in results.
-                if !self.results.contains_key(&evict) {
-                    self.seen_commands.remove(&evict);
-                } else {
-                    self.seen_order.push_back(evict);
-                    break;
-                }
-            }
+        self.seen_commands.insert(id);
+    }
+
+    fn drop_front(&mut self, drops: &mut DropCounters) {
+        if let Some(old) = self.entries.pop_front() {
+            self.bytes = self.bytes.saturating_sub(old.event.approx_bytes() + 48);
+            drops.control_history = drops.control_history.saturating_add(1);
+            self.max_dropped_control_seq = self.max_dropped_control_seq.max(old.seq);
         }
     }
 
@@ -65,24 +57,15 @@ impl ControlHistory {
         while self.entries.len() >= self.capacity
             || (self.bytes + size > self.max_bytes && !self.entries.is_empty())
         {
-            if let Some(old) = self.entries.pop_front() {
-                self.bytes = self.bytes.saturating_sub(old.event.approx_bytes() + 48);
-                drops.control_history = drops.control_history.saturating_add(1);
-                self.oldest_seq = self.entries.front().map(|e| e.seq);
-            } else {
+            if self.entries.is_empty() {
                 break;
             }
+            self.drop_front(drops);
         }
-        // Single entry larger than max_bytes: still admit one, dropping others.
         if size > self.max_bytes && !self.entries.is_empty() {
-            while let Some(old) = self.entries.pop_front() {
-                self.bytes = self.bytes.saturating_sub(old.event.approx_bytes() + 48);
-                drops.control_history = drops.control_history.saturating_add(1);
+            while !self.entries.is_empty() {
+                self.drop_front(drops);
             }
-            self.oldest_seq = None;
-        }
-        if self.oldest_seq.is_none() {
-            self.oldest_seq = Some(envelope.seq);
         }
         self.bytes = self
             .bytes
@@ -102,39 +85,25 @@ impl ControlHistory {
         while self.result_order.len() > self.result_retention {
             if let Some(evict) = self.result_order.pop_front() {
                 self.results.remove(&evict);
+                // `seen_commands` keeps the id so command_result stays Expired.
             }
         }
     }
 
-    /// Replay control events after `cursor_seq`. Caller already validated
-    /// session identity and rejected future cursors.
+    /// Replay control events after `cursor_seq`.
     ///
-    /// Replaceable progress/log also advance the global `seq` but are not
-    /// retained here. A cursor that only "misses" those must receive
-    /// `ControlEvents` (possibly empty), never `ResyncRequired`. Resync is
-    /// only for a cursor older than the oldest retained **control** seq.
+    /// Resync only when a **dropped control** seq is strictly after the cursor
+    /// (`max_dropped_control_seq > cursor_seq`). Progress-only seq gaps do not
+    /// bump that watermark and must not force resync.
     pub(crate) fn replay_control_after(
         &self,
         cursor_seq: u64,
         snapshot: Snapshot,
     ) -> ReplayOutcome {
-        if let Some(oldest) = self.oldest_seq
-            && cursor_seq.saturating_add(1) < oldest
-        {
+        if self.max_dropped_control_seq > cursor_seq {
             return ReplayOutcome::ResyncRequired {
                 snapshot: Box::new(snapshot),
                 retained_terminals: self.retained_terminals(),
-            };
-        }
-        // All control entries expired. Distinguish from "only progress ran".
-        if self.entries.is_empty()
-            && self.oldest_seq.is_none()
-            && snapshot.drops.control_history > 0
-            && cursor_seq < snapshot.seq
-        {
-            return ReplayOutcome::ResyncRequired {
-                snapshot: Box::new(snapshot),
-                retained_terminals: Vec::new(),
             };
         }
         let events: Vec<_> = self
@@ -153,18 +122,32 @@ impl ControlHistory {
         if active == Some(id) {
             return CommandResult::Pending;
         }
-        if self.seen_commands.contains_key(&id) {
+        if self.seen_commands.contains(&id) {
             CommandResult::Expired
         } else {
             CommandResult::Unknown
         }
     }
 
+    /// Terminals still available for resync: result-cache first (survives
+    /// control-ring overflow), then any control-ring terminals not already
+    /// listed. Callers must not invent gap-fill events.
     pub(crate) fn retained_terminals(&self) -> Vec<EventEnvelope> {
-        self.entries
+        let mut out: Vec<EventEnvelope> = self
+            .result_order
+            .iter()
+            .filter_map(|id| self.results.get(id).cloned())
+            .collect();
+        let seen: HashSet<CommandId> = out.iter().filter_map(|e| e.command_id).collect();
+        for env in self
+            .entries
             .iter()
             .filter(|e| e.event.is_terminal_for_command())
-            .cloned()
-            .collect()
+        {
+            if env.command_id.map(|id| !seen.contains(&id)).unwrap_or(true) {
+                out.push(env.clone());
+            }
+        }
+        out
     }
 }

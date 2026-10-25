@@ -3,10 +3,15 @@
 //! Step delays are sliced by `cancel_poll_interval` so a stalled/paused step
 //! still publishes heartbeats and observes cancel within documented deadlines.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 use spirula_core::{CancelReason, CancelToken, ProgressSnapshot, TerminalOutcome};
 
@@ -37,11 +42,11 @@ impl StallGate {
     }
 
     pub fn set_stalled(&self, stalled: bool) {
-        *self.inner.lock().expect("stall") = stalled;
+        *lock(&self.inner) = stalled;
     }
 
     pub fn is_stalled(&self) -> bool {
-        *self.inner.lock().expect("stall")
+        *lock(&self.inner)
     }
 
     pub(crate) fn clone_arc(&self) -> Arc<Mutex<bool>> {
@@ -72,7 +77,8 @@ pub(crate) enum WorkerRequest {
         cancel: CancelToken,
         pause: Arc<Mutex<bool>>,
         stall: Arc<Mutex<bool>>,
-        save_on_cancel: bool,
+        /// Live flag so Stop{save} can update a running worker.
+        save_on_cancel: Arc<AtomicBool>,
     },
     Shutdown,
 }
@@ -102,6 +108,8 @@ pub enum WorkerEvent {
         checkpoint_label: Option<String>,
         /// Save-on-cancel attempted and failed. Owner keeps `Canceled` + Warning.
         save_failed: bool,
+        /// Canonical final progress; owner publishes this before the terminal.
+        final_progress: Option<ProgressSnapshot>,
     },
 }
 
@@ -190,10 +198,12 @@ fn worker_loop(
                     )
                     .is_err()
                     {
-                        finish_canceled(&result_tx, run_id, command_id, 0, &cancel, None, false);
+                        finish_canceled(
+                            &result_tx, run_id, command_id, 0, &cancel, None, false, None,
+                        );
                         return;
                     }
-                    match *behavior.lock().expect("behavior") {
+                    match *lock(&behavior) {
                         FakeWorkerBehavior::Panic => {
                             panic!("injected fake worker panic on load")
                         }
@@ -211,6 +221,7 @@ fn worker_loop(
                                     outcome: TerminalOutcome::Failed { error: err },
                                     checkpoint_label: None,
                                     save_failed: false,
+                                    final_progress: None,
                                 },
                             );
                         }
@@ -220,7 +231,7 @@ fn worker_loop(
                                 WorkerEvent::LoadDone {
                                     run_id,
                                     command_id,
-                                    label,
+                                    label: bound_worker_label(label, &limits),
                                 },
                             );
                         }
@@ -240,6 +251,7 @@ fn worker_loop(
                             outcome: TerminalOutcome::Failed { error: err },
                             checkpoint_label: None,
                             save_failed: false,
+                            final_progress: None,
                         },
                     );
                 }
@@ -282,6 +294,7 @@ fn worker_loop(
                             outcome: TerminalOutcome::Failed { error: err },
                             checkpoint_label: None,
                             save_failed: false,
+                            final_progress: None,
                         },
                     );
                 }
@@ -289,6 +302,18 @@ fn worker_loop(
             Err(_) => break,
         }
     }
+}
+
+fn make_progress(step: u64, steps: u64, elapsed: Duration) -> ProgressSnapshot {
+    ProgressSnapshot::try_new(
+        step,
+        Some(steps.max(step)),
+        0,
+        elapsed.as_millis() as u64,
+        None,
+        Vec::new(),
+    )
+    .expect("valid progress")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -303,21 +328,24 @@ fn run_probe(
     cancel: CancelToken,
     pause: Arc<Mutex<bool>>,
     stall: Arc<Mutex<bool>>,
-    save_on_cancel: bool,
+    save_on_cancel: Arc<AtomicBool>,
 ) {
     let started = Instant::now();
     let mut last_heartbeat = Instant::now()
         .checked_sub(limits.heartbeat_interval)
         .unwrap_or_else(Instant::now);
     let mut step = 0u64;
-    let _ = try_progress(
-        progress_tx,
-        WorkerEvent::Log {
-            run_id,
-            command_id,
-            message: format!("probe run start steps={steps}"),
-        },
-    );
+    let log_msg = format!("probe run start steps={steps}");
+    if log_msg.len() <= limits.log_message_max_bytes {
+        let _ = try_progress(
+            progress_tx,
+            WorkerEvent::Log {
+                run_id,
+                command_id,
+                message: log_msg,
+            },
+        );
+    }
 
     while step < steps {
         if wait_sliced(
@@ -335,12 +363,12 @@ fn run_probe(
         )
         .is_err()
         {
-            let save_failed = save_on_cancel
-                && matches!(
-                    *behavior.lock().expect("behavior"),
-                    FakeWorkerBehavior::CancelSaveFail
-                );
-            let label = (save_on_cancel && !save_failed).then(|| format!("probe-stop-{step}"));
+            let want_save = save_on_cancel.load(Ordering::Acquire);
+            let save_failed =
+                want_save && matches!(*lock(behavior), FakeWorkerBehavior::CancelSaveFail);
+            let label = (want_save && !save_failed)
+                .then(|| bound_worker_label(format!("probe-stop-{step}"), limits));
+            let final_progress = Some(make_progress(step, steps, started.elapsed()));
             finish_canceled(
                 result_tx,
                 run_id,
@@ -349,6 +377,7 @@ fn run_probe(
                 &cancel,
                 label,
                 save_failed,
+                final_progress,
             );
             return;
         }
@@ -365,16 +394,18 @@ fn run_probe(
         last_heartbeat = Instant::now();
     }
 
-    publish_progress(
+    let final_progress = make_progress(step, steps, started.elapsed());
+    // Also try progress mailbox; canonical copy rides with the terminal.
+    let _ = try_progress(
         progress_tx,
-        run_id,
-        command_id,
-        step,
-        steps,
-        started.elapsed(),
+        WorkerEvent::Progress {
+            run_id,
+            command_id,
+            snapshot: final_progress.clone(),
+        },
     );
 
-    match *behavior.lock().expect("behavior") {
+    match *lock(behavior) {
         FakeWorkerBehavior::Panic => panic!("injected fake worker panic on run"),
         FakeWorkerBehavior::Fail => {
             let err = spirula_core::DomainError::try_new(
@@ -390,6 +421,7 @@ fn run_probe(
                     outcome: TerminalOutcome::Failed { error: err },
                     checkpoint_label: None,
                     save_failed: false,
+                    final_progress: Some(final_progress),
                 },
             );
         }
@@ -402,6 +434,7 @@ fn run_probe(
                     outcome: TerminalOutcome::Completed { step },
                     checkpoint_label: None,
                     save_failed: false,
+                    final_progress: Some(final_progress),
                 },
             );
         }
@@ -430,8 +463,8 @@ fn wait_sliced(
         if cancel.is_cancelled() {
             return Err(());
         }
-        let paused = pause.is_some_and(|p| *p.lock().expect("pause"));
-        let stalled = stall.is_some_and(|s| *s.lock().expect("stall"));
+        let paused = pause.is_some_and(|p| *lock(p));
+        let stalled = stall.is_some_and(|s| *lock(s));
         if last_heartbeat.elapsed() >= limits.heartbeat_interval {
             publish_progress(
                 progress_tx,
@@ -458,6 +491,7 @@ fn wait_sliced(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_canceled(
     result_tx: &SyncSender<WorkerEvent>,
     run_id: RunId,
@@ -466,6 +500,7 @@ fn finish_canceled(
     cancel: &CancelToken,
     checkpoint_label: Option<String>,
     save_failed: bool,
+    final_progress: Option<ProgressSnapshot>,
 ) {
     let reason = cancel.reason().unwrap_or(CancelReason::User);
     let saved = if save_failed {
@@ -485,8 +520,18 @@ fn finish_canceled(
             },
             checkpoint_label: if save_failed { None } else { checkpoint_label },
             save_failed,
+            final_progress,
         },
     );
+}
+
+/// Cap labels at the worker→owner enqueue boundary before retention.
+fn bound_worker_label(label: String, limits: &SessionLimits) -> String {
+    if label.len() > limits.label_max_bytes {
+        format!("[omitted {} bytes]", label.len())
+    } else {
+        label
+    }
 }
 
 fn publish_progress(

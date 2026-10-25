@@ -22,6 +22,7 @@ These fill the frozen sketches. They do not add error codes.
 
 - One `ApplicationService` per process role under test. It is the only writer
   of `SessionState`, `seq`, active `CommandId`/`RunId`, and drop counters.
+  Each instance allocates a unique `SessionId` (process-wide counter).
 - Public crate deps: `spirula-core` only. Allowed future edges to
   `spirula-io`/`spirula-train` stay unused here.
 - Exactly one owner thread serializes admission, worker-event apply, history,
@@ -79,8 +80,15 @@ tests do not imply a real trainer. Display maps it as `training`.
 
 Every admitted or retained variable payload has an explicit cap. Oversized
 admitted strings are rejected with `SP-INP-003` (or `SP-INP-001` when empty).
-Retention accounting uses the same caps so history/result/snapshot memory
-cannot grow with uncapped labels, reasons, logs, or error text.
+Rejected command payloads are **shrunk before retention** (a 1 MiB reject
+label is never stored verbatim). Worker→owner enqueue and owner retention
+apply the same caps to load labels, checkpoint labels, error/context text,
+and progress. Stable `ErrorCode` values survive oversized-view substitution.
+
+`ApplicationService::start` applies `SessionLimits::normalized()` so zero
+capacities, tiny byte floors, and `cancel_poll_interval > min(heartbeat,
+250ms)` cannot silently violate policy; `limits()` returns the effective
+values.
 
 | Cap | Default | Applies to |
 |---|---|---|
@@ -128,13 +136,16 @@ unbounded control deque.
   history. Delivered streams may omit them (intentional gaps). That is **not**
   expired history and does **not** alone trigger resync.
 - **Control** events enter bounded control history before notify. Overflow
-  drops oldest control entries and increments `drops.control_history`.
+  drops oldest control entries, records `max_dropped_control_seq`, and
+  increments `drops.control_history`.
 - Cursor type: `EventCursor { session_id, seq }`.
   - Foreign `session_id` → `CursorError::ForeignSession` (`SP-SESS-001`).
   - `seq > snapshot.seq` → `CursorError::Future` (`SP-INP-003`).
-  - `seq` behind the oldest retained **control** seq →
-    `ReplayOutcome::ResyncRequired` with latest snapshot + retained
-    terminals (never a fabricated gap fill).
+  - Resync when `max_dropped_control_seq > cursor.seq` (a dropped **control**
+    lies after the cursor). Progress-only seq gaps do **not** bump that
+    watermark and must not force resync. `ResyncRequired` carries the latest
+    snapshot plus retained terminals from the **result cache** (and any
+    surviving control-ring terminals), never a fabricated gap fill.
   - Otherwise replay returns retained control events with `seq > cursor.seq`
     (progress/log absences are intentional).
 - `subscribe()` / `subscribe_and_replay()` register the subscriber and take
@@ -145,12 +156,19 @@ unbounded control deque.
   than retained history still yields `ResyncRequired` (not progress gaps).
 - New subscribers beyond `max_subscribers` are rejected
   (`SubscribeError::SubscriberLimit`); count is global, not only per-queue.
+  Dropping a `Subscription` releases its slot immediately (idle cleanup, not
+  only on publish disconnect).
 - `command_result(id)` → `Pending` | `Ready` | `Expired` | `Unknown`. Pending
   covers the active probe **and** outstanding `stop_owner` /
-  `shutdown_owner` identities.
+  `shutdown_owner` identities. Accepted ids are remembered permanently so an
+  evicted result stays `Expired`, never `Unknown`.
 - Every accepted command produces exactly one canonical terminal for its
   `command_id`: `Completed { outcome }` or `ShutdownComplete` (shutdown owner
   only). `Failed` is only a `RunOutcome` / `TerminalOutcome` payload.
+  Injected worker terminals that violate core outcome rules
+  (`Failed` with `SP-CAN-001`, blank `saved_checkpoint`) or wrong-kind
+  `LoadDone` while `Running` are rejected without closing the active run.
+  Malformed progress is dropped and never canonicalized.
 
 ### Save-failure vs cancel (§4 vs §5)
 
@@ -169,7 +187,12 @@ entering `Saving`, not for cancel save-on-stop. Tests cover the cancel path.
   paused step. Cancel is observed at least every `cancel_poll_interval`
   (default 50ms, and always ≤ heartbeat). A long `worker_step_delay` is
   sliced into poll intervals so a stalled step still meets both deadlines.
-  Final progress is published before the terminal.
+  Final progress rides with the result mailbox and is published on the live
+  stream **before** the terminal (separate mailboxes; owner drains results
+  first). Fresh runs allocate a new `CancelToken` and do not inherit a prior
+  cancel reason unless Stop/Shutdown is still pending for that admission.
+  `Stop { save }` updates a live `AtomicBool` on the running worker so
+  `save=false` suppresses checkpoints immediately.
 - Notification fanout: bounded **subscriber count** (`max_subscribers`) and
   bounded per-subscriber queues; `try_send` only; full queues drop and count.
   Workers never wait on them.

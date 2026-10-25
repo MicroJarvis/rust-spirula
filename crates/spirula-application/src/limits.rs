@@ -85,6 +85,50 @@ impl SessionLimits {
             teardown_deadline: Duration::from_millis(500),
             ..Self::default()
         }
+        .normalized()
+    }
+
+    /// Clamp zero/tiny capacities and timing so the returned policy matches
+    /// what the owner actually enforces (queues ≥ 1, cancel poll ≤ heartbeat
+    /// and ≤ 250ms, byte floors large enough for overflow substitute text).
+    pub fn normalized(mut self) -> Self {
+        self.command_queue_capacity = self.command_queue_capacity.max(1);
+        self.worker_progress_queue_capacity = self.worker_progress_queue_capacity.max(1);
+        self.worker_result_queue_capacity = self.worker_result_queue_capacity.max(1);
+        self.control_history_capacity = self.control_history_capacity.max(1);
+        self.control_history_max_bytes = self.control_history_max_bytes.max(64);
+        self.notification_queue_capacity = self.notification_queue_capacity.max(1);
+        self.max_subscribers = self.max_subscribers.max(1);
+        self.log_tail_capacity = self.log_tail_capacity.max(1);
+        self.result_retention = self.result_retention.max(1);
+        // Floors must fit `[omitted N bytes]` / overflow substitute payloads.
+        self.label_max_bytes = self.label_max_bytes.max(32);
+        self.reason_max_bytes = self.reason_max_bytes.max(32);
+        self.log_message_max_bytes = self.log_message_max_bytes.max(32);
+        self.progress_max_bytes = self.progress_max_bytes.max(64);
+        self.error_message_max_bytes = self.error_message_max_bytes.max(64);
+        self.context_value_max_bytes = self.context_value_max_bytes.max(32);
+        self.error_event_max_bytes = self
+            .error_event_max_bytes
+            .max(self.error_message_max_bytes.saturating_add(64));
+
+        if self.heartbeat_interval.is_zero() {
+            self.heartbeat_interval = Duration::from_millis(1);
+        }
+        if self.worker_step_delay.is_zero() {
+            self.worker_step_delay = Duration::from_millis(1);
+        }
+        if self.teardown_deadline.is_zero() {
+            self.teardown_deadline = Duration::from_millis(1);
+        }
+        if self.cancel_poll_interval.is_zero() {
+            self.cancel_poll_interval = Duration::from_millis(1);
+        }
+        let max_poll = Duration::from_millis(250).min(self.heartbeat_interval);
+        if self.cancel_poll_interval > max_poll {
+            self.cancel_poll_interval = max_poll;
+        }
+        self
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

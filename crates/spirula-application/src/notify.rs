@@ -1,9 +1,11 @@
 //! Bounded notification fanout. Never blocks publishers.
 //!
 //! Both per-subscriber queue depth and global subscriber count are capped.
+//! Dropping a [`Subscription`] releases its slot immediately.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crate::event::{DropCounters, EventEnvelope};
@@ -11,6 +13,7 @@ use crate::limits::SessionLimits;
 
 #[derive(Debug)]
 struct Subscriber {
+    id: u64,
     tx: SyncSender<EventEnvelope>,
 }
 
@@ -18,6 +21,8 @@ struct Subscriber {
 #[derive(Debug)]
 pub struct Subscription {
     rx: Receiver<EventEnvelope>,
+    id: u64,
+    notifier: Weak<Notifier>,
 }
 
 impl Subscription {
@@ -34,6 +39,14 @@ impl Subscription {
     }
 }
 
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(n) = self.notifier.upgrade() {
+            n.unsubscribe(self.id);
+        }
+    }
+}
+
 /// Why `subscribe` refused a new live consumer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubscribeError {
@@ -45,6 +58,7 @@ pub enum SubscribeError {
 pub(crate) struct Notifier {
     capacity: usize,
     max_subscribers: usize,
+    next_id: AtomicU64,
     subscribers: Mutex<Vec<Subscriber>>,
     closed: Mutex<bool>,
 }
@@ -54,6 +68,7 @@ impl Notifier {
         Arc::new(Self {
             capacity: limits.notification_queue_capacity.max(1),
             max_subscribers: limits.max_subscribers.max(1),
+            next_id: AtomicU64::new(1),
             subscribers: Mutex::new(Vec::new()),
             closed: Mutex::new(false),
         })
@@ -64,14 +79,22 @@ impl Notifier {
             return Err(SubscribeError::Closed);
         }
         let mut subs = self.subscribers.lock().expect("subscribers");
-        // Dead subscribers are pruned on publish (`Disconnected`). Count cap is
-        // on currently registered handles, including stalled ones.
         if subs.len() >= self.max_subscribers {
             return Err(SubscribeError::SubscriberLimit);
         }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(self.capacity);
-        subs.push(Subscriber { tx });
-        Ok(Subscription { rx })
+        subs.push(Subscriber { id, tx });
+        Ok(Subscription {
+            rx,
+            id,
+            notifier: Arc::downgrade(self),
+        })
+    }
+
+    fn unsubscribe(&self, id: u64) {
+        let mut subs = self.subscribers.lock().expect("subscribers");
+        subs.retain(|s| s.id != id);
     }
 
     pub(crate) fn publish(&self, envelope: &EventEnvelope, drops: &mut DropCounters) {
