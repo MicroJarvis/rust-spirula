@@ -4,8 +4,8 @@
 //! and application process state. P1-F01 owns the error catalog. P1-F02 owns
 //! the training-config table and document API described in
 //! `docs/phase-1/config.md`. Writers call [`TrainConfig::validate`] and
-//! return [`DomainError`] instead of emitting a closed choice the reader
-//! rejects.
+//! return [`DomainError`] instead of emitting a nonempty closed choice the
+//! reader rejects. Empty strings are the `null` encoding and stay writable.
 
 mod config;
 mod config_bind;

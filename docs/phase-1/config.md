@@ -45,7 +45,7 @@ These differences are intentional. They do not add flags or renumber errors.
 |---|---|---|
 | malformed JSON, wrong shape, non-integral int, duplicate root key, null or non-integer `schema_version`, unescaped U+0000..U+001F in a string | `SP-FMT-002` | coerce, or throw an untyped `runtime_error` for arrays |
 | integer outside `i32` | `SP-INP-003` | cast through `double` |
-| closed choice not in its set, including a value assigned in memory and then written | `SP-FMT-003` | accept any string |
+| nonempty closed choice not in its set, including a value assigned in memory and then written | `SP-FMT-003` | accept any string |
 | `schema_version` other than the exact integer 1 | `SP-FMT-003` | field does not exist |
 
 - Missing `schema_version` is legacy and stays accepted. There is no
@@ -61,14 +61,15 @@ These differences are intentional. They do not add flags or renumber errors.
   `SP-FMT-003`.
 - JSON strings reject raw U+0000 through U+001F. The escapes `\b`, `\f`, `\n`,
   `\r`, `\t`, and `\u00XX` stay valid and decode to those characters.
-- An empty string is a valid closed choice only when the reference default is
-  empty (`FieldSpec::empty_is_unset`). `data_format: ""` stays valid;
-  `scene_center: ""` does not.
-- `TrainConfig::validate` checks every closed choice on the typed value.
-  `to_current_json` and `to_preserved_json` return `Result` and call it, so a
-  public field assignment cannot persist a document the reader rejects.
-  Free, free-form, and path strings, including empty, stay writable. `None`
-  optionals stay writable and are still emitted as `null`.
+- An empty JSON string is a valid closed choice only when the reference
+  default is empty (`FieldSpec::empty_is_unset`). `data_format: ""` stays
+  valid; `scene_center: ""` does not. `null` on every string field stores an
+  empty string and stays valid, including `scene_center: null`.
+- Writers encode every empty string as `null`. `TrainConfig::validate`,
+  `to_current_json`, and `to_preserved_json` accept that encoding, so a
+  document loaded from `null` can be saved. A nonempty closed choice outside
+  its set is still rejected on write. Free, free-form, and path strings stay
+  writable. `None` optionals stay writable and are still emitted as `null`.
 - Free, free-form and path strings are not enum-checked.
 - No extra numeric domain ranges. The reference table does not define them.
 - Float fields accept finite numbers and the three non-finite tokens. They

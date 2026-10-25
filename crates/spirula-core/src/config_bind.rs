@@ -1,7 +1,7 @@
 //! Assign and emit the 251 reference fields by name.
 
 use crate::DomainError;
-use crate::config::{TrainConfig, field_spec};
+use crate::config::{FieldSpec, TrainConfig, field_spec};
 use crate::config_value::{
     Take, canonical_bool, canonical_f32, canonical_i32, canonical_opt_bool, canonical_opt_f32,
     canonical_opt_i32, canonical_string, canonical_vec3_f, canonical_vec3_i, check_choice,
@@ -1681,201 +1681,208 @@ pub(crate) fn canonical_field(config: &TrainConfig, name: &str) -> Option<String
     }
 }
 
+fn check_writable_string(spec: &FieldSpec, value: &str) -> Result<(), DomainError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    check_choice(spec, value)
+}
+
 pub(crate) fn validate_fields(config: &TrainConfig) -> Result<(), DomainError> {
-    check_choice(field_spec("data").expect("data"), &config.data)?;
-    check_choice(field_spec("resume").expect("resume"), &config.resume)?;
-    check_choice(
+    check_writable_string(field_spec("data").expect("data"), &config.data)?;
+    check_writable_string(field_spec("resume").expect("resume"), &config.resume)?;
+    check_writable_string(
         field_spec("output_dir_prefix").expect("output_dir_prefix"),
         &config.output_dir_prefix,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("output_dir_name").expect("output_dir_name"),
         &config.output_dir_name,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("lpips_checkpoints").expect("lpips_checkpoints"),
         &config.lpips_checkpoints,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("data_format").expect("data_format"),
         &config.data_format,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("image_dir").expect("image_dir"),
         &config.image_dir,
     )?;
-    check_choice(field_spec("mask_dir").expect("mask_dir"), &config.mask_dir)?;
-    check_choice(
+    check_writable_string(field_spec("mask_dir").expect("mask_dir"), &config.mask_dir)?;
+    check_writable_string(
         field_spec("depth_dir").expect("depth_dir"),
         &config.depth_dir,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("normal_dir").expect("normal_dir"),
         &config.normal_dir,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("colmap_recon_dir").expect("colmap_recon_dir"),
         &config.colmap_recon_dir,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("metashape_xml").expect("metashape_xml"),
         &config.metashape_xml,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("metashape_ply").expect("metashape_ply"),
         &config.metashape_ply,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("metashape_psx").expect("metashape_psx"),
         &config.metashape_psx,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("seed_pointcloud").expect("seed_pointcloud"),
         &config.seed_pointcloud,
     )?;
-    check_choice(field_spec("init_ply").expect("init_ply"), &config.init_ply)?;
-    check_choice(
+    check_writable_string(field_spec("init_ply").expect("init_ply"), &config.init_ply)?;
+    check_writable_string(
         field_spec("partition").expect("partition"),
         &config.partition,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("roi_region").expect("roi_region"),
         &config.roi_region,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("downscale_rounding_mode").expect("downscale_rounding_mode"),
         &config.downscale_rounding_mode,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("progressive_resolution_schedule").expect("progressive_resolution_schedule"),
         &config.progressive_resolution_schedule,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("progressive_splat_budget_schedule").expect("progressive_splat_budget_schedule"),
         &config.progressive_splat_budget_schedule,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("eval_mode").expect("eval_mode"),
         &config.eval_mode,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("warp_face_fit").expect("warp_face_fit"),
         &config.warp_face_fit,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("exif_orientation").expect("exif_orientation"),
         &config.exif_orientation,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("orientation_method").expect("orientation_method"),
         &config.orientation_method,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("center_method").expect("center_method"),
         &config.center_method,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("scene_center").expect("scene_center"),
         &config.scene_center,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("train_frame").expect("train_frame"),
         &config.train_frame,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("primitive").expect("primitive"),
         &config.primitive,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("background_mode").expect("background_mode"),
         &config.background_mode,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("random_init").expect("random_init"),
         &config.random_init,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("random_init_distribution").expect("random_init_distribution"),
         &config.random_init_distribution,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("random_init_center").expect("random_init_center"),
         &config.random_init_center,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("random_init_spread").expect("random_init_spread"),
         &config.random_init_spread,
     )?;
-    check_choice(field_spec("quality").expect("quality"), &config.quality)?;
-    check_choice(
+    check_writable_string(field_spec("quality").expect("quality"), &config.quality)?;
+    check_writable_string(
         field_spec("distraction_robustness").expect("distraction_robustness"),
         &config.distraction_robustness,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("dead_criterion").expect("dead_criterion"),
         &config.dead_criterion,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("densify_score_mode").expect("densify_score_mode"),
         &config.densify_score_mode,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("densify_loss_map_mode").expect("densify_loss_map_mode"),
         &config.densify_loss_map_mode,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("densify_accum_mode").expect("densify_accum_mode"),
         &config.densify_accum_mode,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("perceptual_loss").expect("perceptual_loss"),
         &config.perceptual_loss,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("view_sampling").expect("view_sampling"),
         &config.view_sampling,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("floater_suppression").expect("floater_suppression"),
         &config.floater_suppression,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("bilagrid_type").expect("bilagrid_type"),
         &config.bilagrid_type,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("ppisp_param_type").expect("ppisp_param_type"),
         &config.ppisp_param_type,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("image_color_transfer").expect("image_color_transfer"),
         &config.image_color_transfer,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("image_color_gamut").expect("image_color_gamut"),
         &config.image_color_gamut,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("splat_color_transfer").expect("splat_color_transfer"),
         &config.splat_color_transfer,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("splat_color_gamut").expect("splat_color_gamut"),
         &config.splat_color_gamut,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("point_color_transfer").expect("point_color_transfer"),
         &config.point_color_transfer,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("point_color_gamut").expect("point_color_gamut"),
         &config.point_color_gamut,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("cache_images").expect("cache_images"),
         &config.cache_images,
     )?;
-    check_choice(
+    check_writable_string(
         field_spec("optimizer_offload").expect("optimizer_offload"),
         &config.optimizer_offload,
     )?;

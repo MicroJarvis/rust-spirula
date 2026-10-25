@@ -417,10 +417,40 @@ fn writers_reject_invalid_closed_choices_and_keep_empty_compatibility() {
     assert_eq!(loaded.config.apply_loss_for_mask, None);
 
     config.scene_center.clear();
-    let error = config.validate().unwrap_err();
-    assert_eq!(error.code(), ErrorCode::UnsupportedVersion);
-    assert_eq!(error.context_value(ContextKey::Field), Some("scene_center"));
-    assert!(config.to_current_json().is_err());
+    config.validate().unwrap();
+    let text = config.to_current_json().unwrap();
+    assert!(text.contains("\"scene_center\":null"));
+    assert!(LoadedTrainConfig::parse(r#"{"scene_center":""}"#).is_err());
+    assert!(LoadedTrainConfig::parse(r#"{"scene_center":null}"#).is_ok());
+}
+
+#[test]
+fn null_on_every_string_field_survives_checked_writes() {
+    let names: Vec<_> = TRAIN_CONFIG_FIELDS
+        .iter()
+        .filter(|spec| spec.value_type == FieldType::String)
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(names.len(), 53);
+    for name in names {
+        let original = format!("{{\"{name}\":null}}\n");
+        let loaded = LoadedTrainConfig::parse(&original).unwrap();
+        assert_eq!(loaded.to_preserved_json().unwrap(), original, "{name}");
+
+        let mut edited = loaded.clone();
+        edited.config.num_iterations += 1;
+        let saved = edited.to_preserved_json().unwrap();
+        assert!(saved.contains(&format!("\"{name}\":null")), "{name}");
+        let again = LoadedTrainConfig::parse(&saved).unwrap();
+        assert!(again.config.same_values(&edited.config), "{name}");
+
+        let migrated = loaded.to_current_json().unwrap();
+        assert!(migrated.contains(&format!("\"{name}\":null")), "{name}");
+        let current = LoadedTrainConfig::parse(&migrated).unwrap();
+        assert_eq!(current.schema_version(), Some(1), "{name}");
+        assert!(current.config.same_values(&loaded.config), "{name}");
+        assert_eq!(current.to_current_json().unwrap(), migrated, "{name}");
+    }
 }
 
 #[test]

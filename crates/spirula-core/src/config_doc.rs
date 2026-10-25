@@ -42,10 +42,12 @@ pub struct UnknownField {
 }
 
 impl TrainConfig {
-    /// Reject closed choices the reader would reject.
+    /// Reject nonempty closed choices the reader would reject.
     ///
-    /// Empty strings stay valid for free, free-form, and path fields, and for
-    /// closed sets whose reference default is empty. `None` optionals stay valid.
+    /// An empty string is the canonical JSON `null` encoding and is writable
+    /// for every string field. An explicit empty JSON string is still a read
+    /// error unless the field's reference default is empty. `None` optionals
+    /// stay valid.
     pub fn validate(&self) -> Result<(), DomainError> {
         crate::config_bind::validate_fields(self)
     }
