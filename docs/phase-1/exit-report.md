@@ -147,7 +147,7 @@ is P1-F09. Branch remains unmerged until explicitly approved.
 | Sample binary | `cargo run -p spirula-io --bin spirula-perf-sample -- <path>` |
 | Contract tests | `cargo test -p spirula-core perf -- --test-threads=1` |
 | IO tests | `cargo test -p spirula-io perf -- --test-threads=1` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `5960e89`) |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `3ad635a`) |
 
 ## Non-claims
 
