@@ -189,6 +189,73 @@ fn synthetic_cross_context_and_reopen_reject() {
 }
 
 #[test]
+fn synthetic_wait_timeout_retains_budget_then_retry_completes() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:timeout").unwrap(),
+            size: 16,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[1u8; 16]).unwrap();
+    let sub = ctx.submit().unwrap();
+    let before = ctx.resource_accounting().current_bytes;
+    assert!(
+        before > 0,
+        "staging+buffer should be accounted after submit"
+    );
+
+    ctx.inject_next_wait_timeout();
+    let err = ctx.wait(sub, Some(Duration::from_millis(1))).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::SubmitFailed);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        before,
+        "timeout must not free in-flight staging/resources"
+    );
+
+    // Later wait completes and upload staging is reclaimed.
+    ctx.wait(sub, None).unwrap();
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_map_deadline_retains_staging_for_retry() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:map-deadline").unwrap(),
+            size: 8,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[2u8; 8]).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, None).unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 8).unwrap();
+    let s2 = ctx.submit().unwrap();
+    ctx.wait(s2, None).unwrap();
+    let before = ctx.resource_accounting().current_bytes;
+
+    ctx.inject_next_map_deadline();
+    let err = ctx.map_readback(ticket.clone()).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::SubmitFailed);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        before,
+        "map deadline must not free staging after GPU-ready"
+    );
+
+    // Same ticket retries after deadline; GPU work was already confirmed complete.
+    let out = ctx.map_readback(ticket).unwrap();
+    assert_eq!(out, vec![2u8; 8]);
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
 fn synthetic_repeat_cycles_no_budget_leak() {
     let mut ctx = open_ctx();
     ctx.set_resource_budget(Some(1024));

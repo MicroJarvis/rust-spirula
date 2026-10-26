@@ -233,7 +233,8 @@ impl SubmissionHandle {
 }
 
 /// Ticket for mapping a completed readback staging buffer.
-#[derive(Debug)]
+/// `Clone` allows retry after a map deadline without losing the staging id.
+#[derive(Debug, Clone)]
 pub struct ReadbackTicket {
     context_id: ContextId,
     generation: ContextGeneration,
@@ -390,6 +391,10 @@ pub(crate) struct ResourceLedger {
     pending_staging: Vec<u64>,
     pending_buffers: Vec<u64>,
     pending_textures: Vec<u64>,
+    /// Test hook: next [`GpuContext::wait`] returns timeout without completing.
+    inject_wait_timeout: bool,
+    /// Test hook: next [`GpuContext::map_readback`] returns deadline without freeing.
+    inject_map_deadline: bool,
 }
 
 impl ResourceLedger {
@@ -408,6 +413,8 @@ impl ResourceLedger {
             pending_staging: Vec::new(),
             pending_buffers: Vec::new(),
             pending_textures: Vec::new(),
+            inject_wait_timeout: false,
+            inject_map_deadline: false,
         }
     }
 
@@ -536,6 +543,20 @@ impl GpuContext {
     pub fn set_resource_budget(&mut self, limit_bytes: Option<u64>) {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.set_budget_limit(limit_bytes);
+        }
+    }
+
+    /// Test/diagnose hook: next `wait` returns timeout without completing or freeing.
+    pub fn inject_next_wait_timeout(&mut self) {
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.inject_wait_timeout = true;
+        }
+    }
+
+    /// Test hook: next `map_readback` hits a deadline after GPU-ready, keeps staging.
+    pub fn inject_next_map_deadline(&mut self) {
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.inject_map_deadline = true;
         }
     }
 
@@ -1176,6 +1197,10 @@ impl GpuContext {
     }
 
     /// Wait for a submission. `timeout` `None` waits indefinitely (host).
+    ///
+    /// On timeout the submission stays incomplete: staging/resources and their
+    /// accounted bytes are retained so a later `wait` (or context teardown)
+    /// can finish safely. Timeout is not a free/reclaim signal.
     pub fn wait(
         &mut self,
         submission: SubmissionHandle,
@@ -1184,6 +1209,12 @@ impl GpuContext {
         self.poll_host_lost();
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(submission.context_id, submission.generation)?;
+        if led.inject_wait_timeout {
+            led.inject_wait_timeout = false;
+            return Err(submit_err(
+                "submission wait timed out (caller deadline; in-flight staging retained)",
+            ));
+        }
         let entry = led
             .submissions
             .get_mut(&submission.id)
@@ -1197,27 +1228,61 @@ impl GpuContext {
                 Some((d, _)) => d,
                 None => return Err(gpu_lost("device missing during wait")),
             };
+            // Drop ledger lock across poll so other observers can read accounting.
+            let staging_snapshot_current = led.tracker.current_bytes();
+            drop(led);
             let poll = device.poll(wgpu::PollType::Wait {
                 submission_index: Some(index),
                 timeout,
             });
+            let mut led = self.resource_ledger.lock().expect("ledger");
             match poll {
                 Ok(_) => {}
                 Err(wgpu::PollError::Timeout) => {
-                    return Err(submit_err("submission wait timed out"));
+                    debug_assert_eq!(
+                        led.tracker.current_bytes(),
+                        staging_snapshot_current,
+                        "wait timeout must not change accounted bytes"
+                    );
+                    return Err(submit_err(
+                        "submission wait timed out (caller deadline; in-flight staging retained)",
+                    ));
                 }
                 Err(other) => {
                     return Err(submit_err(format!("submission wait failed: {other}")));
                 }
             }
+            let entry = led
+                .submissions
+                .get_mut(&submission.id)
+                .ok_or_else(|| inp("unknown submission handle", "submission"))?;
+            if entry.completed {
+                return Ok(());
+            }
+
+            // Mark readback stagings ready; free upload stagings only after GPU done.
+            let staging_ids = entry.staging_ids.clone();
+            let buffer_ids = entry.buffer_ids.clone();
+            let texture_ids = entry.texture_ids.clone();
+            entry.completed = true;
+            return self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids);
         }
 
-        // Mark readback stagings ready; free upload stagings.
+        // Synthetic / no wgpu index: complete immediately.
         let staging_ids = entry.staging_ids.clone();
         let buffer_ids = entry.buffer_ids.clone();
         let texture_ids = entry.texture_ids.clone();
         entry.completed = true;
+        self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids)
+    }
 
+    fn finish_wait_locked(
+        &self,
+        led: &mut ResourceLedger,
+        staging_ids: Vec<u64>,
+        buffer_ids: Vec<u64>,
+        texture_ids: Vec<u64>,
+    ) -> Result<(), DomainError> {
         for sid in staging_ids {
             if let Some(st) = led.stagings.get_mut(&sid) {
                 match st.kind {
@@ -1270,21 +1335,38 @@ impl GpuContext {
     }
 
     /// Map a completed readback ticket into tightly packed host bytes.
+    ///
+    /// Requires a prior successful `wait` (`mapped_ready`). A map **deadline**
+    /// keeps the ticket and accounted staging for retry. Staging is freed only
+    /// after a successful map, definitive post-GPU map failure that retires the
+    /// staging, or context teardown.
     pub fn map_readback(&mut self, ticket: ReadbackTicket) -> Result<Vec<u8>, DomainError> {
         self.require_live()?;
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(ticket.context_id, ticket.generation)?;
+        let ready = led
+            .stagings
+            .get(&ticket.staging_id)
+            .map(|s| s.mapped_ready)
+            .ok_or_else(|| inp("unknown readback ticket", "readback"))?;
+        if !ready {
+            return Err(inp(
+                "readback staging not ready; wait for submission first (GPU work not confirmed complete)",
+                "readback",
+            ));
+        }
+        if led.inject_map_deadline {
+            led.inject_map_deadline = false;
+            // GPU copy already finished (`mapped_ready`); deadline is caller-side only.
+            return Err(submit_err(
+                "map_readback deadline (staging retained for retry)",
+            ));
+        }
+
         let st = led
             .stagings
             .get_mut(&ticket.staging_id)
             .ok_or_else(|| inp("unknown readback ticket", "readback"))?;
-        if !st.mapped_ready {
-            return Err(inp(
-                "readback staging not ready; wait for submission first",
-                "readback",
-            ));
-        }
-
         let padded = match st.gpu.take() {
             Some(GpuBuffer::Wgpu(buf)) => {
                 let slice = buf.slice(..);
@@ -1293,53 +1375,68 @@ impl GpuContext {
                     let _ = tx.send(r);
                 });
                 drop(led);
-                // Poll until mapped.
                 let device = self
                     .backend_device_queue()
                     .ok_or_else(|| gpu_lost("device missing during map"))?
                     .0;
                 let start = Instant::now();
-                loop {
+                let map_result = loop {
                     let _ = device.poll(wgpu::PollType::Poll);
                     match rx.try_recv() {
-                        Ok(Ok(())) => break,
-                        Ok(Err(e)) => {
-                            // re-lock to free staging account
-                            let mut led = self.resource_ledger.lock().expect("ledger");
-                            if let Some(st) = led.stagings.remove(&ticket.staging_id) {
-                                let _ = led.tracker.free(st.accounted);
-                            }
-                            return Err(submit_err(format!("map_async failed: {e}")));
-                        }
+                        Ok(Ok(())) => break Ok(()),
+                        Ok(Err(e)) => break Err(format!("map_async failed: {e}")),
                         Err(std::sync::mpsc::TryRecvError::Empty) => {
                             if start.elapsed() > Duration::from_secs(30) {
-                                let mut led = self.resource_ledger.lock().expect("ledger");
-                                if let Some(st) = led.stagings.remove(&ticket.staging_id) {
-                                    let _ = led.tracker.free(st.accounted);
-                                }
-                                return Err(submit_err("map_async timed out"));
+                                break Err("map_async timed out".into());
                             }
                             std::thread::yield_now();
                         }
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            let mut led = self.resource_ledger.lock().expect("ledger");
-                            if let Some(st) = led.stagings.remove(&ticket.staging_id) {
-                                let _ = led.tracker.free(st.accounted);
-                            }
-                            return Err(submit_err("map_async channel disconnected"));
+                            break Err("map_async channel disconnected".into());
                         }
                     }
+                };
+                match map_result {
+                    Ok(()) => {
+                        let data = match slice.get_mapped_range() {
+                            Ok(view) => view.to_vec(),
+                            Err(e) => {
+                                // Mapping callback succeeded but range failed: restore buffer.
+                                let mut led = self.resource_ledger.lock().expect("ledger");
+                                if let Some(st) = led.stagings.get_mut(&ticket.staging_id) {
+                                    st.gpu = Some(GpuBuffer::Wgpu(buf));
+                                }
+                                return Err(submit_err(format!("get_mapped_range failed: {e}")));
+                            }
+                        };
+                        buf.unmap();
+                        let mut led = self.resource_ledger.lock().expect("ledger");
+                        if let Some(st) = led.stagings.remove(&ticket.staging_id) {
+                            let _ = led.tracker.free(st.accounted);
+                        }
+                        data
+                    }
+                    Err(msg) if msg.contains("timed out") || msg.contains("disconnected") => {
+                        // Deadline / transient: restore ownership, do not free.
+                        let mut led = self.resource_ledger.lock().expect("ledger");
+                        if let Some(st) = led.stagings.get_mut(&ticket.staging_id) {
+                            st.gpu = Some(GpuBuffer::Wgpu(buf));
+                        }
+                        Err(submit_err(format!(
+                            "{msg} (staging retained; GPU copy already complete)"
+                        )))?
+                    }
+                    Err(msg) => {
+                        // Definitive map failure after GPU copy complete: retire staging.
+                        let mut led = self.resource_ledger.lock().expect("ledger");
+                        if let Some(st) = led.stagings.remove(&ticket.staging_id) {
+                            let _ = led.tracker.free(st.accounted);
+                        }
+                        // buf drops without unmap if never mapped — ok for failed map_async
+                        drop(buf);
+                        return Err(submit_err(msg));
+                    }
                 }
-                let data = slice
-                    .get_mapped_range()
-                    .map_err(|e| submit_err(format!("get_mapped_range failed: {e}")))?
-                    .to_vec();
-                buf.unmap();
-                let mut led = self.resource_ledger.lock().expect("ledger");
-                if let Some(st) = led.stagings.remove(&ticket.staging_id) {
-                    let _ = led.tracker.free(st.accounted);
-                }
-                data
             }
             Some(GpuBuffer::Synthetic(data)) => {
                 let accounted = st.accounted;

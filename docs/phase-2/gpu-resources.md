@@ -50,18 +50,27 @@ alignment happens in Rust **before** wgpu calls — bad params → typed
 - Scoped resident tracker (reuse `AccountedBytesTracker` idea): device buffer/
   texture bytes + staging + in-flight staging. Source string:
   `accounted_scoped:gpu_context_resources` — **not** device-wide VRAM / OS peak.
-- **Preflight** before allocate; on create/map/wait/submit failure or cancel,
-  reserved bytes roll back. Clone does not `allocate` again. Destroy of a
-  resource with in-flight work does not free accounting until wait completes.
+- **Preflight** before allocate. **Unsubmitted** failure (create/encode before
+  `submit`, or abandoning pending work on context teardown) may roll back the
+  reserve. Clone does not `allocate` again.
+- **After `submit`**, staging and resource bytes stay accounted while GPU may
+  still reference them. A `wait` **timeout** is only the caller’s deadline: it
+  must **not** free staging, drop tickets, or decrement budget. Ownership and
+  accounting remain until a later successful wait/reap, or until safe device
+  teardown (`close` / lost / reopen invalidate). Destroy of a resource with
+  in-flight work likewise waits for completion (or teardown) before free.
 
 ### Submit / wait / map
 
 - Ops that encode GPU work leave commands pending; `submit` returns
   `SubmissionHandle` and does **not** imply a device-wide wait.
-- `wait(handle, timeout)` fails with typed error on timeout / lost / wrong
-  generation (`SP-GPU-002` / `SP-GPU-003` as appropriate).
-- Readback: after wait, `map` staging (or finish ticket) returns host bytes;
-  map/wait failure rolls back staging reserve.
+- `wait(handle, timeout)` on timeout returns typed `SP-GPU-003` **without**
+  releasing in-flight staging/resources; the same handle may be waited again.
+  Lost / wrong generation → `SP-GPU-002` as appropriate.
+- Readback: `map` only after wait has marked staging ready (GPU copy finished).
+  Map **deadline/transient** failure keeps the ticket and accounted staging for
+  retry; only a completed map (or teardown / definitive post-GPU map failure
+  that retires the staging) frees the reserve.
 - Minimal error-scope around submit/map only to avoid panic; event fan-out is
   P2-F05.
 
@@ -89,7 +98,10 @@ accounting reaches zero after completion.
 3. Cross-context / close / reopen reject old handles and submissions.
 4. Submit then drop resource; wait still succeeds; accounted current → 0;
    repeated cycles do not leak budget; peak source recorded.
-5. Diagnose prints device/backend, accounted current/peak/budget, phase
+5. Post-submit wait timeout preserves accounted current and allows a later
+   wait to complete; map deadline failure does not free staging while the
+   ticket remains usable after GPU work is known complete.
+6. Diagnose prints device/backend, accounted current/peak/budget, phase
    timings for upload/wait/readback; unavailable device → precise reason.
 
 ## Non-claims
