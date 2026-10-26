@@ -334,6 +334,146 @@ fn probe_run_failure_exit_1_one_stderr_error() {
 }
 
 #[test]
+fn sigint_at_load_run_gap_skips_probe_run_exit_130() {
+    // Hold after load Ready so SIGINT lands in the Ready gap where Stop is
+    // invalid; intent must still abort before ProbeRun.
+    let mut session = ChildSession::spawn(
+        &[
+            "probe",
+            "--label",
+            "ds",
+            "--steps",
+            "100000",
+            "--step-delay-ms",
+            "20",
+        ],
+        &[("SPIRULA_TEST_GAP_AFTER_LOAD_MS", "800")],
+    );
+    session
+        .wait_stdout_contains("spirula:ready ready", Duration::from_secs(10))
+        .expect("load ready");
+    #[cfg(unix)]
+    {
+        let pid = session.child.id() as i32;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    }
+    let status = session.wait_exit(Duration::from_secs(10));
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "status={status:?} out={}",
+        session.collected
+    );
+    assert!(
+        !session.collected.contains("probe-started"),
+        "must not start ProbeRun after cancel intent: {}",
+        session.collected
+    );
+}
+
+#[test]
+fn sigint_while_stdout_blocked_still_cancels_before_long_run() {
+    // Hold the stdout consumer so the pipe backs up. A blocking writeln would
+    // stall the wait loop; OutputSink must still observe SIGINT and abort
+    // before ProbeRun. Ready is observed via application disk log, not stdout.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let log_dir =
+        std::env::temp_dir().join(format!("spirula-cli-blocked-stdout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&log_dir);
+    std::fs::create_dir_all(&log_dir).expect("log dir");
+
+    let release = Arc::new(AtomicBool::new(false));
+    let release_reader = Arc::clone(&release);
+    let mut child = Command::new(spirula_bin())
+        .args([
+            "probe",
+            "--label",
+            "ds",
+            "--steps",
+            "100000",
+            "--step-delay-ms",
+            "20",
+            "--log-dir",
+            log_dir.to_str().expect("utf8 path"),
+        ])
+        .env("SPIRULA_TEST_GAP_AFTER_LOAD_MS", "800")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let mut stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        while !release_reader.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let mut buf = [0u8; 4096];
+        let mut all = Vec::new();
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(all);
+    });
+
+    let ready_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let disk = std::fs::read_dir(&log_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect::<String>();
+        if disk.to_ascii_lowercase().contains("ready") {
+            break;
+        }
+        if Instant::now() >= ready_deadline {
+            release.store(true, Ordering::SeqCst);
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&log_dir);
+            panic!("disk log never reached ready; got:\n{disk}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let pid = child.id() as i32;
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    // Keep stdout blocked briefly so cancel must not depend on draining.
+    thread::sleep(Duration::from_millis(200));
+    release.store(true, Ordering::SeqCst);
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                break child.wait().expect("reap");
+            }
+        }
+    };
+    let collected = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let text = String::from_utf8_lossy(&collected);
+    let _ = std::fs::remove_dir_all(&log_dir);
+    assert_eq!(status.code(), Some(130), "status={status:?} text={text}");
+    assert!(
+        !text.contains("probe-started steps=100000"),
+        "must not run after cancel: {text}"
+    );
+    assert!(
+        !text.contains("accepted ProbeRun"),
+        "must not accept ProbeRun after cancel: {text}"
+    );
+}
+
+#[test]
 fn probe_run_sigint_exits_130() {
     let mut session = ChildSession::spawn(
         &[

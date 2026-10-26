@@ -10,7 +10,7 @@ mod run;
 mod signals;
 
 pub use args::{CliAction, ParseError, parse_args};
-pub use present::{capabilities_text, help_text, show_error_codes};
+pub use present::{OutputSink, capabilities_text, help_text, show_error_codes};
 pub use run::{CliExit, run_action};
 
 use spirula_core::{

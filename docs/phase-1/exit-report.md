@@ -169,11 +169,15 @@ parent tip `26da464` (P1-F08 on main).
 P1-F09 is complete after HOLD-MERGE review fixes: `spirula-cli` is a
 core+application adapter with help, capabilities, explicit fake
 `probe-load` / `probe-run` / `probe` entry, unavailable `train`/`preview`
-(exit 2), stable exits 0/1/2/130, SIGINT → `Stop{save:true}` then exit 130,
-second SIGINT → `SIG_DFL` + `raise` (exactly two signals terminate with
-SIGINT). Terminal recovery via `command_result` every loop; exactly one
-stderr `error:` line with stable codes. Application owns optional rotated
-disk diagnostics (basename-validated stem; bounded line/queue/tail/rotation/
+(exit 2), stable exits 0/1/2/130, sticky cancel intent across phase
+boundaries (SIGINT → admit `Stop{save:true}` when valid; Rejected Stop at
+Ready load→run gap keeps intent, skips the next stage, retries Stop once
+active), second SIGINT → `SIG_DFL` + `raise` (exactly two signals terminate
+with SIGINT). Bounded async stdout sink so a full pipe cannot block
+control/SIGINT admission (overflow drops + counter; deadline flush/join).
+Terminal recovery via `command_result` every loop; exactly one stderr
+`error:` line with stable codes. Application owns optional rotated disk
+diagnostics (basename-validated stem; bounded line/queue/tail/rotation/
 files/global budget including newline; out-of-band shutdown; absolute join
 deadline that keeps ownership on timeout; disk inventory rebuild; failed
 delete accounting; once-per-lifetime failure warning). Real train/preview
@@ -188,12 +192,14 @@ approved.
 | Binding decisions | [cli.md](cli.md), [application.md](application.md) diagnostics |
 | CLI crate | `crates/spirula-cli` (deps: `spirula-core`, `spirula-application`) |
 | Disk sink | `crates/spirula-application/src/disk_log.rs` |
-| Subprocess / SIGINT | `crates/spirula-cli/tests/cli_subprocess.rs` |
+| Subprocess / SIGINT / cancel-gap | `crates/spirula-cli/tests/cli_subprocess.rs` (`sigint_at_load_run_gap_*`, `sigint_while_stdout_blocked_*`) |
 | Session disk | `crates/spirula-application/tests/disk_diagnostics.rs` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `83a4305`) |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded in commit) |
 
 ## Non-claims
 
 - No real dataset load, training, preview, GPU, or Slint.
 - No full C++ CLI flag/preset parity (P6-F02).
 - Disk diagnostics are best-effort bounded logs, not a crash reporter.
+- Full presentation queues may drop lines under backpressure; that is the
+  explicit policy so control never stalls.

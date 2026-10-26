@@ -62,12 +62,19 @@ appends `(code: SP-…)`.
 
 ### SIGINT
 
-1. First SIGINT → submit `Stop { save: true }` (or `--no-save` when requested),
-   wait for the command terminal (live subscribe **or** `command_result` /
-   replay if the subscriber drops), exit 130.
+1. First SIGINT sets sticky cancel **intent**. The CLI admits `Stop { save:
+   true }` when valid; a Rejected Stop (e.g. Ready between load and run) does
+   **not** clear intent, suppresses further Stop attempts until a probe is
+   active, and does **not** start the next stage — Shutdown runs and the
+   process exits 130. Once a probe is active, Stop is armed and retried once.
+   Live subscribe **or** `command_result` recovers terminals.
 2. Second SIGINT → restore `SIG_DFL` and `raise(SIGINT)` so **this** delivery
    terminates under the default disposition (C++ `main.cpp` 63–64). Exactly
    two signals; tests require `WTERMSIG == SIGINT`, not exit 130.
+
+Stdout presentation is a bounded async sink (`OUTPUT_QUEUE_CAPACITY`); the
+control loop never blocks on a full pipe. Overflow drops lines and increments
+an observable drop counter. Sink flush/join use deadlines on session end.
 
 ### Disk diagnostics (application-owned)
 
@@ -115,6 +122,7 @@ invalid disk config). Live and recovered failure paths return
 |---|---|
 | `SPIRULA_TEST_WORKER_BEHAVIOR=fail\|panic\|cancel_save_fail` | Inject fake worker outcome |
 | `SPIRULA_TEST_DISK_LIMITS=1` | Use `DiskLogLimits::for_test` |
+| `SPIRULA_TEST_GAP_AFTER_LOAD_MS=<n>` | Hold at the load→run phase boundary while still polling cancel/SIGINT (reproduces Ready-gap Stop reject) |
 
 These are test-only; they are not advertised as product capabilities.
 
