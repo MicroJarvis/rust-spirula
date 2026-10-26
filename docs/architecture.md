@@ -100,11 +100,12 @@ The portability baseline is `wgpu` with WGSL shaders. P2-F01 pins `wgpu`
 30.0.1 in `spirula-gpu`, enumerates adapters, and negotiates required/optional
 features and limits (`ResolvedLimits` keeps required floors). P2-F02 adds a
 session-owned `GpuContext` (instance/adapter/device/queue, `DeviceHandle` with
-context id/generation, explicit close/`reopen`, typed lost notices; no global
-singleton, no auto-rebuild). Bindings:
+context id/generation, explicit close/`reopen`, lost latch + owner poll; no
+global singleton, no auto-rebuild). Application does not yet own the context;
+device open does not imply compute/train/UI readiness. Bindings:
 [phase-2/gpu-adapter.md](phase-2/gpu-adapter.md),
-[phase-2/device-context.md](phase-2/device-context.md). Buffer/texture
-(P2-F03), pipelines (P2-F04), and smoke (P2-F06) remain later. Each GPU feature
+[phase-2/device-context.md](phase-2/device-context.md). Next is buffer/texture
+(P2-F03); pipelines (P2-F04) and smoke (P2-F06) remain later. Each GPU feature
 has a CPU reference or deterministic fixture where practical, followed by a GPU
 tolerance test.
 

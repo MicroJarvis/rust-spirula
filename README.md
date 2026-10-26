@@ -20,16 +20,19 @@ pinned commit, toolchain and build/test entry points are recorded in
 [docs/phase-0/reference-baseline.md](docs/phase-0/reference-baseline.md); set
 `SPIRULA_REFERENCE_REPO` to locate the checkout (default `../spirula-studio`).
 
-Phase 0 and Phase 1 are complete. P2-F01 (adapter negotiate) is complete; the
-next feature is P2-F02 (device/queue). Phase 2 exit is not closed. Phase 0
-evidence is in [docs/phase-0/exit-report.md](docs/phase-0/exit-report.md).
+Phase 0 and Phase 1 are complete. P2-F01 (adapter negotiate) and P2-F02
+(device/queue/context) are complete; the next feature is P2-F03
+(buffer/texture/readback). Phase 2 exit is not closed. Phase 0 evidence is in
+[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md).
 Phase 1 records are in
 [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
 P1-F07 bindings are [docs/phase-1/application.md](docs/phase-1/application.md);
 P1-F08 bindings are
 [docs/phase-1/performance.md](docs/phase-1/performance.md);
 P1-F09 bindings are [docs/phase-1/cli.md](docs/phase-1/cli.md);
-P2-F01 bindings are [docs/phase-2/gpu-adapter.md](docs/phase-2/gpu-adapter.md).
+P2-F01 bindings are [docs/phase-2/gpu-adapter.md](docs/phase-2/gpu-adapter.md);
+P2-F02 bindings are
+[docs/phase-2/device-context.md](docs/phase-2/device-context.md).
 The single local verification entry is:
 
 ```bash
@@ -51,9 +54,10 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Phase 2 current work is P2-F02 in
-[docs/project-plan.md](docs/project-plan.md). Adapter negotiate evidence:
-`cargo run -p spirula-gpu --bin spirula-gpu-diagnose`.
+real train/preview stay later features. Phase 2 current work is P2-F03 in
+[docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate or
+`--device`; not compute/train/UI readiness):
+`cargo run -p spirula-gpu --bin spirula-gpu-diagnose -- --device`.
 
 The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
 planned early session/CLI delivery, differentiable rendering, resource budgets,

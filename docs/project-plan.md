@@ -95,8 +95,8 @@ Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
 | P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter/backend；区分 required/optional feature/limit；声明 subgroup、f16、timestamp 与梯度累加能力和回退 | 记录真实设备/driver/limits；缺少必需能力有稳定错误；可选能力回退有测试 | 已完成 |
-| P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01, P1-F07 | 创建 instance/adapter/device/queue；资源所有权、context identity/generation；由应用 owner 决定 device lost 后重建 | 创建/关闭/失败可观察；旧 generation handle 拒绝复用；应用状态只由同一 owner 更新 | 当前 |
-| P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 未开始 |
+| P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01, P1-F07 | 创建 instance/adapter/device/queue；资源所有权、context identity/generation；由应用 owner 决定 device lost 后重建 | 创建/关闭/失败可观察；旧 generation handle 拒绝复用；应用状态只由同一 owner 更新 | 已完成 |
+| P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 当前 |
 | P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F03 | WGSL 版本和 bind/uniform layout；pipeline key/错误；以真实 compute 验证窄资源封装与 shader 接口 | layout/对齐及缓存失效可测；编译失败带位置；与 P2-F03 共同证明 GPU 边界可执行 | 未开始 |
 | P2-F05 | GPU 错误与诊断事件 | `spirula-gpu` | P2-F02–P2-F04 | 包裹 error scope 和提交错误；把 device lost 转成 typed error；发布带资源标签的诊断事件 | error scope、设备丢失和提交失败转为 typed error/event | 未开始 |
 | P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；编写最小 surface smoke test；记录设备、backend 和跳过原因 | 无窗口 compute 测试和最小 surface 测试在支持设备上可复现 | 未开始 |
@@ -218,13 +218,13 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 
 ## 4. 首批功能顺序
 
-已完成 P0-F01–P0-F06、P1-F01–P1-F09 和 P2-F01；Phase 1 退出条件已满足，
-Phase 2 退出条件尚未满足。P2-F02 为当前功能。后续按依赖推进，每个编号独立
+已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01 和 P2-F02；Phase 1 退出条件已满足，
+Phase 2 退出条件尚未满足。P2-F03 为当前功能。后续按依赖推进，每个编号独立
 worktree、实现和验收；下列分组只是执行顺序，不会把组内多个编号合并成一个
 已完成功能：
 
 1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
-2. P2-F01（已完成）与 P2-F02（当前）–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
+2. P2-F01–P2-F02（已完成）与 P2-F03（当前）–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
@@ -303,12 +303,16 @@ probe、SIGINT 0/1/2/130、rotated disk sink；真实 train/preview 仍不可用
 `spirula-xtask verify` 8/8。P2-F01（adapter 选择与能力协商）已在
 `spirula-gpu` 落地，契约见 `docs/phase-2/gpu-adapter.md`（wgpu 30.0.1、
 required/optional feature 与 limit、`ResolvedLimits` 保留 required floor、
-`spirula-gpu-diagnose`）。P2-F02（device/queue/context 生命周期）为**当前 /
-待审**：session-owned `GpuContext`、协商结果写入 `DeviceDescriptor`、
-`DeviceHandle` identity/generation、显式 close/`reopen`、typed lost notice
-（不写 SessionState、无隐式重建）；契约见
-`docs/phase-2/device-context.md`；窄入口 `spirula-gpu-diagnose --device`。
-未接 application/CLI/UI；无 buffer/pipeline/compute；完整诊断事件仍 P2-F05。
-Phase 2 退出条件仍未满足。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能
-与依赖调整，见 [审查记录](research/ooosplat-brush-review.md)。训练与 UI
-实现状态没有因本次规划调整而提前完成。
+`spirula-gpu-diagnose`）。P2-F02（device/queue/context 生命周期）已在
+`spirula-gpu` 落地并独立批准，契约见 `docs/phase-2/device-context.md`
+（session-owned `GpuContext`、同 snapshot index 配对、协商写入
+`DeviceDescriptor`、`DeviceHandle` identity/generation、显式 close/`reopen`、
+lost latch→owner poll、不写 SessionState、无隐式重建；窄入口
+`spirula-gpu-diagnose --device`）。代码 tip
+`75d1bd48efcc8ba6451af368ce60387e6cead6b9`；独立 full gate 8/8 与 host
+owner/callback 证据见该契约。**诚实边界**：API owner 尚未接入
+`spirula-application`；无 compute/readback/training/UI 就绪声称。下一步为
+P2-F03（buffer/texture/readback）。Phase 2 退出条件仍未满足。2026-10-25 的
+OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+[审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
+规划调整而提前完成。

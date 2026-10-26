@@ -1,9 +1,10 @@
 # P2-F02: device, queue, and context lifecycle
 
-Status: **当前 / 待审**. Owner: `spirula-gpu`. Builds on
-[gpu-adapter.md](gpu-adapter.md) (P2-F01). Buffer/texture/readback stay
-P2-F03; shaders/pipelines/compute stay P2-F04; full error scopes / diagnostic
-event fan-out stay P2-F05. Phase 2 exit remains open.
+Status: **已完成** (code tip `75d1bd48efcc8ba6451af368ce60387e6cead6b9`).
+Owner: `spirula-gpu`. Builds on [gpu-adapter.md](gpu-adapter.md) (P2-F01).
+Buffer/texture/readback stay P2-F03; shaders/pipelines/compute stay P2-F04;
+full error scopes / diagnostic event fan-out stay P2-F05. Phase 2 exit
+remains open.
 
 ## Reference behavior
 
@@ -25,14 +26,16 @@ event fan-out stay P2-F05. Phase 2 exit remains open.
 `enumerate_on_instance` once, and keeps **paired** report + live adapter
 vectors from that snapshot. P2-F01 `select_auto` runs on the reports; the
 chosen adapter is retrieved by the **snapshot-local index** into the paired
-live vector (validated against the report at that slot, including
-features/limits).
+live vector (crate-internal helpers validate the report at that slot,
+including features/limits).
 
 - Same instance + same enumerate call: index is the pairing key.
 - Name/backend/vendor/device alone are **not** unique (two identical cards can
   collide); never re-resolve by scanning those fields for “first match”.
 - Indices from a previous instance, a previous enumerate, or any external
-  caller are rejected — no global UUID registry.
+  caller are out of contract for these helpers — no global UUID registry.
+- Slot validation rejects many mismatched selections; it does **not** claim to
+  detect every forged payload that is value-identical to some other snapshot.
 
 ### Negotiation applied to `DeviceDescriptor`
 
@@ -58,10 +61,7 @@ on the context for diagnose/tests.
 | `GpuContext` | Owns instance/device/queue while open |
 | `open` / `close` / `Drop` | Create and explicit teardown |
 | `reset_scene` | Scene-resource clear; keep device (no-op body until P2-F03) |
-| `reopen` | **Owner-initiated** recreate; same `ContextId`, new generation.
-  Any failure path (`Select` / `DeviceCreate` / host) sets
-  `CreateFailed`, keeps the prior report, sets `report.status` to match,
-  and forces `queue_present=false`. Old handles stay rejected. |
+| `reopen` | Owner-initiated recreate; same `ContextId`, new generation; any failure sets `CreateFailed`, keeps prior report, matches `report.status`, `queue_present=false`; old handles rejected |
 | `device_handle` / `validate_handle` | Issue / check handles |
 | `status` / `take_lost_notices` | Observable open/closed/lost; lost notice for owner |
 | `inject_lost` | Synthetic lost only (`LostSource::SyntheticInject`) |
@@ -77,15 +77,19 @@ Device **create** failure → `SP-GPU-004` (`AllocationFailed`) at stage
 
 ### Lost callback vs application owner
 
-wgpu `set_device_lost_callback` marks the context `Lost`, drops device/queue
-handles inside `spirula-gpu`, and records a `LostNotice` with
-`LostSource::HostCallback`. The lost latch stores reason in a single mutex
-(`Option<String>`) so take cannot observe “triggered” with an empty/missing
-reason; each notice is consumed once. A successful `reopen` installs a fresh
-latch — prior-generation callbacks do not affect the new generation. It
-**must not** mutate `spirula-application` `SessionState`. Automatic device
-recreation is **forbidden** inside GPU. The future session worker (not wired
-in this slice) must call `reopen` explicitly after observing lost/closed.
+wgpu `set_device_lost_callback` **publishes** a reason into a single-mutex
+latch (`Option<String>` — trigger and payload together). The owner (or test)
+must **poll** (`poll_host_lost` / `status` / handle APIs) to move the context
+to `Lost`, drop device/queue, and record a `LostNotice` with
+`LostSource::HostCallback`. The callback does not mutate
+`spirula-application` `SessionState`. Automatic device recreation is
+**forbidden** inside GPU.
+
+wgpu may deliver an **empty** reason string; Spirula preserves it as-is and
+consumes it once. This does **not** promise a non-empty reason. A successful
+`reopen` installs a fresh latch — prior-generation callbacks do not affect the
+new generation. The future session worker (not wired in this slice) must call
+`reopen` explicitly after observing lost/closed.
 
 ### Owner call boundary (this slice)
 
@@ -93,7 +97,11 @@ in this slice) must call `reopen` explicitly after observing lost/closed.
 |---|---|
 | `spirula-gpu` library API + `spirula-gpu-diagnose --device` | `spirula-application` session ownership |
 | Synthetic test doubles for fault injection | CLI/UI GPU commands |
-| Host headless open → observe → close | Error scopes / submit diagnostics (P2-F05) |
+| Host headless open → observe → close / owner reopen | Error scopes / submit diagnostics (P2-F05) |
+
+Honest scope: the library API is the owner boundary for this feature.
+Application does **not** yet own or reopen the GPU context. No compute,
+readback, training, or UI path is claimed ready because a device opened.
 
 ### Dependencies
 
@@ -102,19 +110,41 @@ wgpu edges. No new workspace path edges.
 
 ## Tests and host evidence
 
+- **Unit** (adapter + enumerate pairing + LostWatch latch): including twin-name
+  snapshot index pairing and empty-reason-preserving latch consumption.
 - **Synthetic** (`tests/context_lifecycle_synthetic.rs`): create failure,
-  inject lost, close idempotence, cross-context and stale-generation rejection,
-  owner `reopen_synthetic` bumps generation and old handles stay dead.
-- **Snapshot pairing** (`enumerate` unit tests): two adapters with identical
-  name/backend/vendor/device but different required features — `select_auto`
-  picks the second; resolve returns snapshot index 1 (not first name match).
-  External/stale indices rejected.
-- **Host** (`tests/host_device_context.rs`): always run open→status/features/
-  limits→close (or precise `SP-GPU-001` / `SP-GPU-004`). Distinguish real lost
-  (`HostCallback`) from synthetic inject in test names/API. Enumeration/device
-  create ≠ compute.
+  inject lost, close idempotence, cross-context / stale generation, owner
+  reopen success, DeviceCreate and **Select** reopen failures with report
+  synced to `CreateFailed` / `queue_present=false`.
+- **Host** (`tests/host_device_context.rs` + independent owner/callback probes):
+  open→features/limits readback→close; cross-context; owner reopen; failed
+  reopen recovery observability; real `device.destroy` + poll across
+  generations (old latch isolated; current gen Lost once).
 - Keep P2-F01 adapter unit + host enumerate regressions.
-- Diagnose: `spirula-gpu-diagnose --device`.
+- Diagnose: `cargo run -p spirula-gpu --bin spirula-gpu-diagnose -- --device`.
+
+### Host record (approval tip)
+
+- Code tip: `75d1bd48efcc8ba6451af368ce60387e6cead6b9`.
+- Independent full gate: `/tmp/spirula-p2-f02-75d1bd4-independent-verify.log`
+  (8/8).
+- Owner/cross-context/reopen/failure + non-default features/limits readback:
+  `/tmp/spirula-p2-f02-host-owner-probe/evidence-75d1bd4.txt`.
+- Actual host Destroyed callback isolation:
+  `/tmp/spirula-p2-f02-review/final_actual_callback_evidence-75d1bd4.txt`.
+- Sample diagnose host (this workstation): wgpu `30.0.1`, Metal,
+  `Apple M5 Max`, integrated-gpu; negotiated features read back enabled;
+  open/close only — **not** compute/train/UI.
+
+### Tested vs not tested
+
+| Tested | Not tested / not claimed |
+|---|---|
+| Headless create/close/reopen; handle validation; lost latch + poll | Buffer/texture/readback (P2-F03) |
+| Negotiation applied to device request; enabled features/limits readback | Pipelines / WGSL compute (P2-F04) |
+| Synthetic + real Destroyed callback isolation across generations | Full GPU error scopes / diagnostic events (P2-F05) |
+| `spirula-gpu-diagnose --device` | Application/CLI/UI session GPU ownership |
+| | Training, preview, or “device open ⇒ product ready” |
 
 ## Non-claims
 
