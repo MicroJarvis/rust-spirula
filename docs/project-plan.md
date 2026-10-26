@@ -311,8 +311,11 @@ lost latch→owner poll、不写 SessionState、无隐式重建；窄入口
 `spirula-gpu-diagnose --device`）。代码 tip
 `75d1bd48efcc8ba6451af368ce60387e6cead6b9`；独立 full gate 8/8 与 host
 owner/callback 证据见该契约。**诚实边界**：API owner 尚未接入
-`spirula-application`；无 compute/readback/training/UI 就绪声称。下一步为
-P2-F03（buffer/texture/readback）。Phase 2 退出条件仍未满足。2026-10-25 的
+`spirula-application`；无 compute/training/UI 就绪声称。P2-F03
+（buffer/texture/readback）为**当前 / 待审**：窄标签与 handle、staging
+upload/readback、显式 submit/wait/map、AccountedBytes 风格 scoped 预算；契约见
+`docs/phase-2/gpu-resources.md`；入口 `spirula-gpu-diagnose --resources`。无
+pipeline/WGSL；完整诊断事件仍 P2-F05。Phase 2 退出条件仍未满足。2026-10-25 的
 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。

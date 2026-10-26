@@ -1,15 +1,14 @@
-//! Headless GPU diagnose entry for P2-F01 (enumerate/select) and P2-F02 (device).
-//!
-//! Not a shared-session CLI command. Default path enumerates adapters; `--device`
-//! opens a session-owned context, prints the device report, and closes.
+//! Headless GPU diagnose: enumerate (P2-F01), device (P2-F02), resources (P2-F03).
 
 use spirula_core::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 use spirula_gpu::{
-    CapabilityRequest, FieldAvailability, OpenFailureStage, WGPU_VERSION, diagnose_device_open,
+    BufferDesc, BufferUsage, CapabilityRequest, FieldAvailability, GpuContext, OpenFailureStage,
+    ResourceLabel, Texture2dDesc, TextureFormat, TextureUsage, WGPU_VERSION, diagnose_device_open,
     diagnose_exit_code, enumerate_host_adapters, format_device_report, select_auto,
 };
 use std::env;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -19,17 +18,24 @@ fn main() -> ExitCode {
     }
 
     let device = args.iter().any(|a| a == "--device");
-    let unknown: Vec<&String> = args.iter().filter(|a| a.as_str() != "--device").collect();
-    if !unknown.is_empty() {
-        eprintln!("error: unknown argument (usage: spirula-gpu-diagnose [--device] [--help])");
+    let resources = args.iter().any(|a| a == "--resources");
+    let unknown: Vec<&String> = args
+        .iter()
+        .filter(|a| a.as_str() != "--device" && a.as_str() != "--resources")
+        .collect();
+    if !unknown.is_empty() || (device && resources) {
+        eprintln!("error: usage: spirula-gpu-diagnose [--device | --resources] [--help]");
         return ExitCode::from(EXIT_USAGE);
     }
 
-    match if device {
+    let result = if resources {
+        run_resources()
+    } else if device {
         run_device()
     } else {
         run_enumerate()
-    } {
+    };
+    match result {
         Ok(()) => ExitCode::from(EXIT_SUCCESS),
         Err(code) => ExitCode::from(code),
     }
@@ -37,17 +43,17 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "spirula-gpu-diagnose — enumerate adapters / open session device (P2-F01/P2-F02)\n\
+        "spirula-gpu-diagnose — enumerate / device / resource round-trip (P2-F01–F03)\n\
          \n\
          Usage:\n\
            spirula-gpu-diagnose\n\
            spirula-gpu-diagnose --device\n\
+           spirula-gpu-diagnose --resources\n\
            spirula-gpu-diagnose --help\n\
          \n\
          Exit codes: 0 success, 1 adapter/device unavailable, 2 usage.\n\
          wgpu pin: {WGPU_VERSION}\n\
-         --device opens then closes a session-owned context; not a session CLI command.\n\
-         Does not claim compute/train/UI readiness."
+         Not a session CLI command. Does not claim compute/train/UI readiness."
     );
 }
 
@@ -102,28 +108,6 @@ fn run_enumerate() -> Result<(), u8> {
                 sel.adapter.identity.backend.as_str(),
                 sel.adapter.identity.class.as_str(),
             );
-            println!(
-                "negotiated subgroup={:?} shader_f16={:?} timestamp={:?} float_atomic={:?}",
-                sel.negotiated.subgroup,
-                sel.negotiated.shader_f16,
-                sel.negotiated.timestamp,
-                sel.negotiated.float_atomic,
-            );
-            let lim = &sel.negotiated.limits;
-            println!(
-                "resolved_limits max_buffer_size={{desired={:?},effective={},met={}}} \
-                 max_storage_buffers_per_stage={{desired={:?},effective={},met={}}} \
-                 max_compute_workgroup_storage={{desired={:?},effective={},met={}}}",
-                lim.max_buffer_size.desired,
-                lim.max_buffer_size.effective,
-                lim.max_buffer_size.desired_met,
-                lim.max_storage_buffers_per_shader_stage.desired,
-                lim.max_storage_buffers_per_shader_stage.effective,
-                lim.max_storage_buffers_per_shader_stage.desired_met,
-                lim.max_compute_workgroup_storage_size.desired,
-                lim.max_compute_workgroup_storage_size.effective,
-                lim.max_compute_workgroup_storage_size.desired_met,
-            );
             Ok(())
         }
         Err(err) => {
@@ -149,23 +133,128 @@ fn run_device() -> Result<(), u8> {
             println!("note: device open/close succeeded; not a compute/train/UI readiness claim");
             Ok(())
         }
-        Err(failure) => {
-            let line =
-                if env::var_os("SPIRULA_ERROR_CODES").is_some_and(|v| v == "1" || v == "true") {
-                    failure.error.cli_stderr_line(true)
-                } else {
-                    failure.error.cli_stderr_line(false)
-                };
-            eprintln!("{line}");
-            eprintln!(
-                "open_failure_stage={:?}{}",
-                failure.stage,
-                match failure.stage {
-                    OpenFailureStage::EnumerateEmpty => " (no adapter — not a false pass)",
-                    _ => "",
-                }
-            );
-            Err(diagnose_exit_code(&failure.error).max(EXIT_FAILURE))
-        }
+        Err(failure) => print_open_failure(failure),
     }
+}
+
+fn run_resources() -> Result<(), u8> {
+    println!("spirula-gpu-diagnose --resources");
+    println!("wgpu_version={WGPU_VERSION}");
+    let request = CapabilityRequest::diagnose_default();
+    let mut ctx = match GpuContext::open(&request) {
+        Ok(c) => c,
+        Err(failure) => return print_open_failure(failure),
+    };
+    let backend = ctx
+        .report()
+        .map(|r| r.backend.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".into());
+    let name = ctx
+        .report()
+        .map(|r| r.adapter.identity.name.clone())
+        .unwrap_or_default();
+    println!("device name={name:?} backend={backend}");
+
+    let t_upload = Instant::now();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:diagnose").unwrap(),
+            size: 32,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let pattern: Vec<u8> = (0..32).collect();
+    ctx.upload_buffer(&buf, 0, &pattern)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let sub = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(sub, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let upload_ns = t_upload.elapsed().as_nanos();
+
+    let t_rb = Instant::now();
+    let ticket = ctx
+        .readback_buffer(&buf, 0, 32)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let sub2 = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(sub2, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let out = ctx
+        .map_readback(ticket)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let readback_ns = t_rb.elapsed().as_nanos();
+    if out != pattern {
+        eprintln!("error: buffer round-trip mismatch");
+        return Err(EXIT_FAILURE);
+    }
+
+    let tex = ctx
+        .create_texture_2d(Texture2dDesc {
+            label: ResourceLabel::parse("spirula:gpu:texture:diagnose").unwrap(),
+            width: 3,
+            height: 1,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsage::COPY_SRC_DST,
+        })
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let pixels: Vec<u8> = (0..12).collect();
+    ctx.upload_texture_rgba8(&tex, &pixels)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let s = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(s, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let ticket = ctx
+        .readback_texture_rgba8(&tex)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let s2 = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(s2, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let out = ctx
+        .map_readback(ticket)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    if out != pixels {
+        eprintln!("error: texture round-trip mismatch (width=3 non-256 row)");
+        return Err(EXIT_FAILURE);
+    }
+
+    let acc = ctx.resource_accounting();
+    println!(
+        "accounted source={} allocated={} current={} peak={} budget={:?}",
+        acc.source, acc.allocated_bytes, acc.current_bytes, acc.peak_bytes, acc.budget_limit
+    );
+    println!("phase upload_wait_ns={upload_ns} readback_map_ns={readback_ns}");
+    drop(buf);
+    drop(tex);
+    println!(
+        "after_drop current={}",
+        ctx.resource_accounting().current_bytes
+    );
+    ctx.close();
+    println!("note: resource round-trip ok; not compute/train/UI readiness");
+    Ok(())
+}
+
+fn print_open_failure(failure: spirula_gpu::OpenError) -> Result<(), u8> {
+    let line = if env::var_os("SPIRULA_ERROR_CODES").is_some_and(|v| v == "1" || v == "true") {
+        failure.error.cli_stderr_line(true)
+    } else {
+        failure.error.cli_stderr_line(false)
+    };
+    eprintln!("{line}");
+    eprintln!(
+        "open_failure_stage={:?}{}",
+        failure.stage,
+        match failure.stage {
+            OpenFailureStage::EnumerateEmpty => " (no adapter — not a false pass)",
+            _ => "",
+        }
+    );
+    Err(diagnose_exit_code(&failure.error).max(EXIT_FAILURE))
 }

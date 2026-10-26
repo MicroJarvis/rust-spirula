@@ -104,8 +104,9 @@ context id/generation, explicit close/`reopen`, lost latch + owner poll; no
 global singleton, no auto-rebuild). Application does not yet own the context;
 device open does not imply compute/train/UI readiness. Bindings:
 [phase-2/gpu-adapter.md](phase-2/gpu-adapter.md),
-[phase-2/device-context.md](phase-2/device-context.md). Next is buffer/texture
-(P2-F03); pipelines (P2-F04) and smoke (P2-F06) remain later. Each GPU feature
+[phase-2/device-context.md](phase-2/device-context.md). P2-F03 (当前) adds narrow buffer/RGBA8 texture staging upload/readback with
+explicit submit/wait and scoped accounted-byte budgets — not a general wgpu
+mirror. Pipelines (P2-F04) and smoke (P2-F06) remain later. Each GPU feature
 has a CPU reference or deterministic fixture where practical, followed by a GPU
 tolerance test.
 

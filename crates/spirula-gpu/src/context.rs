@@ -145,7 +145,7 @@ static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Host device-lost latch. Triggered state and reason share one mutex so a
 /// consumer cannot observe "lost" with an empty reason (the prior flag-then-
 /// message write order could lose the real callback string forever).
-struct LostWatch {
+pub(crate) struct LostWatch {
     notice: Arc<Mutex<Option<String>>>,
 }
 
@@ -181,11 +181,11 @@ impl LostWatch {
     }
 }
 
-enum Backend {
+pub(crate) enum Backend {
     Wgpu {
         _instance: wgpu::Instance,
-        _device: wgpu::Device,
-        _queue: wgpu::Queue,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         lost: LostWatch,
     },
     /// Synthetic backend for fault-injection tests (no wgpu device).
@@ -197,10 +197,37 @@ pub struct GpuContext {
     id: ContextId,
     generation: ContextGeneration,
     status: ContextStatus,
-    backend: Option<Backend>,
+    pub(crate) backend: Option<Backend>,
     report: Option<DeviceOpenReport>,
     lost_notices: Vec<LostNotice>,
     closed: bool,
+    pub(crate) resource_ledger: std::sync::Arc<std::sync::Mutex<crate::resource::ResourceLedger>>,
+}
+
+impl GpuContext {
+    /// Cloneable wgpu device/queue handles when on the real backend.
+    pub(crate) fn backend_device_queue(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        match &self.backend {
+            Some(Backend::Wgpu { device, queue, .. }) => Some((device.clone(), queue.clone())),
+            _ => None,
+        }
+    }
+
+    fn fresh_ledger(
+        id: ContextId,
+        generation: ContextGeneration,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::resource::ResourceLedger>> {
+        std::sync::Arc::new(std::sync::Mutex::new(crate::resource::ResourceLedger::new(
+            id, generation,
+        )))
+    }
+
+    fn reset_resources_for_generation(&mut self) {
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.invalidate_all();
+        }
+        self.resource_ledger = Self::fresh_ledger(self.id, self.generation);
+    }
 }
 
 impl GpuContext {
@@ -217,6 +244,7 @@ impl GpuContext {
                 report: Some(with_ids(report, id, ContextGeneration(1))),
                 lost_notices: Vec::new(),
                 closed: false,
+                resource_ledger: Self::fresh_ledger(id, ContextGeneration(1)),
             }),
             Err(failure) => Err(failure),
         }
@@ -287,6 +315,7 @@ impl GpuContext {
             report: Some(report),
             lost_notices: Vec::new(),
             closed: false,
+            resource_ledger: Self::fresh_ledger(id, generation),
         })
     }
 
@@ -376,6 +405,9 @@ impl GpuContext {
         if self.status == ContextStatus::Live {
             self.status = ContextStatus::Closed;
         }
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.invalidate_all();
+        }
         self.backend = None;
         if let Some(report) = self.report.as_mut() {
             report.status = self.status;
@@ -405,6 +437,9 @@ impl GpuContext {
             report.status = ContextStatus::Lost;
             report.queue_present = false;
         }
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.invalidate_all();
+        }
         self.backend = None;
     }
 
@@ -427,6 +462,9 @@ impl GpuContext {
             if let Some(report) = self.report.as_mut() {
                 report.status = ContextStatus::Lost;
                 report.queue_present = false;
+            }
+            if let Ok(mut led) = self.resource_ledger.lock() {
+                led.invalidate_all();
             }
             self.backend = None;
         }
@@ -536,8 +574,8 @@ fn create_live_backend(
     Ok((
         Backend::Wgpu {
             _instance: instance,
-            _device: device,
-            _queue: queue,
+            device,
+            queue,
             lost,
         },
         report,
@@ -696,6 +734,9 @@ impl GpuContext {
         self.status = ContextStatus::CreateFailed;
         self.closed = true;
         self.backend = None;
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.invalidate_all();
+        }
         if let Some(report) = self.report.as_mut() {
             report.status = ContextStatus::CreateFailed;
             report.queue_present = false;
@@ -715,6 +756,7 @@ impl GpuContext {
                 self.status = ContextStatus::Live;
                 self.backend = Some(backend);
                 self.report = Some(with_ids(report, self.id, next_gen));
+                self.reset_resources_for_generation();
                 Ok(())
             }
             Err(failure) => {
@@ -786,6 +828,7 @@ impl GpuContext {
             adapter: selection.adapter,
             negotiated: selection.negotiated,
         });
+        self.reset_resources_for_generation();
         Ok(())
     }
 }
