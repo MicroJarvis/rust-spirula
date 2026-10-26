@@ -162,18 +162,29 @@ Source/dirty stay honestly unavailable. No train/GPU/UI runtime.
 # P1-F09 verification record
 
 Recorded: 2026-10-26, worktree `.worktrees/p1-f09` on branch `codex/p1-f09`,
-parent tip `26da464` (P1-F08 on main).
+parent tip `26da464` (P1-F08 on main). Independent review READY on immutable
+candidate **`958d6ab2693a4e4cdd72b57140c5287c996593c7`**.
 
 ## Scope and result
 
-P1-F09 is **in progress** (HOLD-MERGE; not complete; not merged). Tip
-implements: CLI adapter; sticky cancel across load→run; bounded async
-stdout; disk Warning via F07 `bound_error`; join deadline includes mutex
-acquisition with truthful `sink_alive` / handle retain; Drop always signals
-disk shutdown; `SPIRULA_TEST_HOLD_AFTER_CANCEL` exact-2 SIGINT gate;
-`SPIRULA_TEST_TINY_NOTIFY` forced notify drops + `command_result`
-restoration (success and failure). Phase 1 exit / P1-F09 `已完成` stay
-blocked until outstanding review is closed. No merge/push until approval.
+P1-F09 is **complete**. Delivered: CLI process adapter; sticky cancel across
+load→run; bounded async stdout that never arms inherited `O_NONBLOCK`;
+`OutputSink::shutdown` absolute deadline includes join-mutex acquisition
+(`try_lock_until`); live/query/drain terminal dedup; disk Warning via F07
+`bound_error`; disk join/Drop budgets with honest `sink_alive`; projected
+budget trim and rotation shift-collision safety; SIGINT exit 130 / exact-2
+`SIG_DFL` gate; notify-pressure `command_result` recovery. Phase 1 exit
+conditions are met (shared session/CLI skeleton + measurement; **no** claim
+of real training, preview, GPU, or UI). Next feature is P2-F01.
+
+## Corrections retained in tip history
+
+| tip | change |
+|---|---|
+| through `0687cca` | stdout OFD flag policy + parent flag paths; disk D1/D2; presentation dedup |
+| `e3f104e` | OutputSink shutdown `try_lock_until` |
+| `752d29f` | **test-only** IO atomic barrier order (`publish` after parent checks); no production IO change |
+| `958d6ab` | concurrent shutdown regression isolated in `--exact` + env child |
 
 ## Evidence
 
@@ -181,10 +192,16 @@ blocked until outstanding review is closed. No merge/push until approval.
 |---|---|
 | Binding decisions | [cli.md](cli.md), [application.md](application.md) diagnostics |
 | CLI crate | `crates/spirula-cli` (deps: `spirula-core`, `spirula-application`) |
-| Disk sink / concurrent join / budget degrade | `crates/spirula-application/src/disk_log.rs` (projected-budget trim, shift-collision preserve, rotation-block degrade, startup max_files trim) |
-| Subprocess / SIGINT / cancel-gap / notify / parent OFD flags | `crates/spirula-cli/tests/cli_subprocess.rs` |
-| Session disk / bounded Warning | `crates/spirula-application/tests/disk_diagnostics.rs` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (tip recorded in commit; F09 still 进行中) |
+| Disk sink | `crates/spirula-application/src/disk_log.rs` |
+| Subprocess / SIGINT / OFD flags | `crates/spirula-cli/tests/cli_subprocess.rs` |
+| Concurrent shutdown (subprocess) | `present::tests::concurrent_shutdown_deadline_includes_mutex_wait` |
+| Session disk / Warning | `crates/spirula-application/tests/disk_diagnostics.rs` |
+| Code SHA | `958d6ab2693a4e4cdd72b57140c5287c996593c7` |
+| Host-only gate | `cargo run -p spirula-xtask -- verify` (**8/8**; rustc host `--target` pin; not a cross matrix) |
+
+Ephemeral `/tmp` HOLD-MERGE probes used during review are **not** repository
+entry points; authoritative evidence is the crate tests and xtask verify
+above.
 
 ## Non-claims
 
@@ -193,3 +210,13 @@ blocked until outstanding review is closed. No merge/push until approval.
 - Disk diagnostics are best-effort bounded logs, not a crash reporter.
 - Full presentation queues may drop lines under backpressure; that is the
   explicit policy so control never stalls.
+- Host-only verify does not imply Windows/cross-target coverage (P9-F01).
+
+---
+
+# Phase 1 exit
+
+P1-F01 through P1-F09 are `已完成`. Phase 1 exit conditions are satisfied:
+workspace gate green on this host; headless session + CLI adapter +
+performance sample infrastructure exist without claiming real render, train,
+or UI capability. Current plan pointer: **P2-F01**.

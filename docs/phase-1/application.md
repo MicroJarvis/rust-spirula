@@ -2,7 +2,7 @@
 
 `spirula-application` is the unique owner of session state, command admission,
 control history, cancellation, and subscriber fanout. Public deps remain
-`spirula-core` only; P1-F09 adds optional rotated disk diagnostics through
+`spirula-core` only; completed P1-F09 adds optional rotated disk diagnostics through
 `std::fs` inside this crate (still no `spirula-train` / `spirula-gpu`).
 Workers are fake probes that exercise lifecycle contracts. Real
 load/train/preview attach later (P3/P4/P5/P6); this crate must not claim

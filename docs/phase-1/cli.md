@@ -1,5 +1,9 @@
 # P1-F09: minimal CLI session entry
 
+Status: **已完成** (code tip `958d6ab2693a4e4cdd72b57140c5287c996593c7`;
+Phase 1 exit closed). Real train/preview remain unavailable until later
+features.
+
 `spirula-cli` is a process adapter only: argv parse, text presentation, and
 SIGINT. All business orchestration, fake probe lifecycle, recoverable
 `command_result` / replay, and rotated disk diagnostics are owned by

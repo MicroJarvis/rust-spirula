@@ -20,14 +20,15 @@ pinned commit, toolchain and build/test entry points are recorded in
 [docs/phase-0/reference-baseline.md](docs/phase-0/reference-baseline.md); set
 `SPIRULA_REFERENCE_REPO` to locate the checkout (default `../spirula-studio`).
 
-Phase 0 is complete. Phase 1 runs through P1-F09; P1-F01–P1-F08 are done and
-P1-F09 is next. Phase 0 evidence is in
-[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). The P1-F06/F07/F08
-records are in [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
+Phase 0 is complete. Phase 1 (P1-F01–P1-F09) is complete; the next feature is
+P2-F01. Phase 0 evidence is in
+[docs/phase-0/exit-report.md](docs/phase-0/exit-report.md). Phase 1 records
+are in [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
 P1-F07 bindings are [docs/phase-1/application.md](docs/phase-1/application.md);
 P1-F08 bindings are
-[docs/phase-1/performance.md](docs/phase-1/performance.md). The single local
-verification entry is:
+[docs/phase-1/performance.md](docs/phase-1/performance.md);
+P1-F09 bindings are [docs/phase-1/cli.md](docs/phase-1/cli.md). The single
+local verification entry is:
 
 ```bash
 cargo run -p spirula-xtask -- verify
@@ -46,9 +47,10 @@ splat files stay in P3. Checkpoint bundle markers stay in P5-F05.
 `spirula-application` (P1-F07) owns the headless session, bounded commands,
 control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
-binary in `spirula-core`/`spirula-io`. `spirula-cli` stays an entry adapter
-until P1-F09. The next feature is P1-F09 in
-[docs/project-plan.md](docs/project-plan.md). Phase 2 has not started.
+binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
+adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
+real train/preview/GPU/UI stay later features. The next feature is P2-F01 in
+[docs/project-plan.md](docs/project-plan.md).
 
 The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
 planned early session/CLI delivery, differentiable rendering, resource budgets,
