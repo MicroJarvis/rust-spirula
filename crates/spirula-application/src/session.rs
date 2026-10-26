@@ -21,6 +21,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 use crate::command::{Command, CommandPayload, SubmitOutcome};
+use crate::disk_log::{DiskLogCounters, DiskLogHandle};
 use crate::event::{
     CommandResult, CursorError, DropCounters, Event, EventCursor, EventEnvelope, LogLevel,
     ReplayOutcome, RunOutcome, Snapshot, outcome_from_terminal,
@@ -86,6 +87,8 @@ struct State {
     latest_progress: Option<spirula_core::ProgressSnapshot>,
     /// Live save-on-cancel flag shared with the running fake worker.
     active_save_on_cancel: Option<Arc<AtomicBool>>,
+    /// Optional disk diagnostics handle (clone of [`Shared::disk_log`]).
+    disk_log: Option<DiskLogHandle>,
 }
 
 impl State {
@@ -127,6 +130,8 @@ struct Shared {
     worker: Mutex<WorkerHandle>,
     behavior: Arc<Mutex<FakeWorkerBehavior>>,
     stall: StallGate,
+    /// Optional rotated disk diagnostics (P1-F09). Enqueue never blocks owner.
+    disk_log: Option<DiskLogHandle>,
 }
 
 /// Headless application/session service (P1-F07).
@@ -142,6 +147,15 @@ pub struct ApplicationService {
 
 impl ApplicationService {
     pub fn start(limits: SessionLimits) -> Self {
+        Self::start_with(limits, None)
+    }
+
+    /// Start with optional rotated disk diagnostics (P1-F09). Disk I/O never
+    /// blocks command admission, workers, or notify fanout.
+    pub fn start_with(
+        limits: SessionLimits,
+        disk_log: Option<crate::disk_log::DiskLogConfig>,
+    ) -> Self {
         let limits = limits.normalized();
         let session_id = SessionId::allocate();
         let notifier = Notifier::new(&limits);
@@ -152,7 +166,7 @@ impl ApplicationService {
             mpsc::sync_channel(limits.worker_progress_queue_capacity.max(1));
         let (result_tx, result_rx) = mpsc::sync_channel(limits.worker_result_queue_capacity.max(1));
 
-        let state = State {
+        let mut state = State {
             session_id,
             limits: limits.clone(),
             phase: SessionState::Idle,
@@ -177,6 +191,7 @@ impl ApplicationService {
             run_ids: IdGen::new(1),
             latest_progress: None,
             active_save_on_cancel: None,
+            disk_log: None,
         };
 
         let worker = WorkerHandle::spawn(
@@ -185,12 +200,15 @@ impl ApplicationService {
             progress_tx.clone(),
             result_tx.clone(),
         );
+        let disk_handle = disk_log.map(DiskLogHandle::start);
+        state.disk_log = disk_handle.clone();
         let shared = Arc::new(Shared {
             state: Mutex::new(state),
             notifier: Arc::clone(&notifier),
             worker: Mutex::new(worker),
             behavior: Arc::clone(&behavior),
             stall,
+            disk_log: disk_handle,
         });
 
         let owner_shared = Arc::clone(&shared);
@@ -531,6 +549,19 @@ impl ApplicationService {
         }
         pred(&self.snapshot())
     }
+
+    /// Disk diagnostics counters when a sink was configured; otherwise `None`.
+    pub fn disk_log_counters(&self) -> Option<DiskLogCounters> {
+        self.shared.disk_log.as_ref().map(|d| d.counters())
+    }
+
+    /// Flush the disk sink within `deadline` (no-op when unset).
+    pub fn flush_disk_log(&self, deadline: Duration) -> bool {
+        match &self.shared.disk_log {
+            Some(d) => d.flush(deadline),
+            None => true,
+        }
+    }
 }
 
 impl Drop for ApplicationService {
@@ -567,6 +598,12 @@ impl Drop for ApplicationService {
         // Join the fake worker before Drop returns (no survivors).
         if let Ok(mut w) = self.shared.worker.lock() {
             w.shutdown_join();
+        }
+        // Disk sink flush/join under the same teardown deadline (never blocks
+        // workers while running; only Drop waits).
+        if let Some(disk) = &self.shared.disk_log {
+            let _ = disk.flush(deadline);
+            let _ = disk.join(deadline);
         }
     }
 }
@@ -1328,6 +1365,8 @@ fn publish_control(
     if st.shutdown_done {
         return;
     }
+    let is_shutdown_complete = matches!(event, Event::ShutdownComplete);
+    mirror_disk_log(st, &event);
     let seq = st.next_seq();
     let envelope = EventEnvelope {
         event_version: 1,
@@ -1340,6 +1379,10 @@ fn publish_control(
     };
     st.history.push_control(envelope.clone(), &mut st.drops);
     notifier.publish(&envelope, &mut st.drops);
+    // Never publish after ShutdownComplete.
+    if !is_shutdown_complete {
+        emit_disk_failure_warning_once(st, notifier);
+    }
 }
 
 fn publish_replaceable(
@@ -1352,6 +1395,7 @@ fn publish_replaceable(
     if st.shutdown_done {
         return;
     }
+    mirror_disk_log(st, &event);
     let seq = st.next_seq();
     let envelope = EventEnvelope {
         event_version: 1,
@@ -1363,6 +1407,78 @@ fn publish_replaceable(
         event,
     };
     // Not retained in control history (intentional gaps on replay).
+    notifier.publish(&envelope, &mut st.drops);
+    emit_disk_failure_warning_once(st, notifier);
+}
+
+/// Mirror diagnostic text to the async disk sink. Never blocks; never
+/// re-enters the sink when recording a disk-failure warning.
+fn mirror_disk_log(st: &State, event: &Event) {
+    let Some(disk) = st.disk_log.as_ref() else {
+        return;
+    };
+    match event {
+        Event::Log { level, message } => {
+            let tag = match level {
+                LogLevel::Trace => "TRACE",
+                LogLevel::Debug => "DEBUG",
+                LogLevel::Info => "INFO",
+                LogLevel::Warn => "WARN",
+                LogLevel::Error => "ERROR",
+            };
+            let _ = disk.try_enqueue_line(format!("{tag} {message}"));
+        }
+        Event::Warning { error } => {
+            // Skip disk mirror for the dedicated disk-failure warning code path
+            // by using a distinct marker in context — see emit helper.
+            if error.context_value(ContextKey::Field) == Some("disk_log") {
+                return;
+            }
+            let _ = disk.try_enqueue_line(format!("WARN {error}"));
+        }
+        Event::StateChanged { from, to, reason } => {
+            let _ = disk.try_enqueue_line(format!(
+                "STATE {} -> {} ({reason})",
+                from.as_str(),
+                to.as_str()
+            ));
+        }
+        Event::Completed { outcome } => {
+            let _ = disk.try_enqueue_line(format!("COMPLETED {outcome:?}"));
+        }
+        Event::ShutdownComplete => {
+            let _ = disk.try_enqueue_line("SHUTDOWN");
+        }
+        _ => {}
+    }
+}
+
+fn emit_disk_failure_warning_once(st: &mut State, notifier: &Arc<Notifier>) {
+    let Some(disk) = st.disk_log.clone() else {
+        return;
+    };
+    if !disk.take_failure_notice() {
+        return;
+    }
+    if st.shutdown_done {
+        return;
+    }
+    let error = DomainError::try_new(ErrorCode::WriteFailed, "disk diagnostics write failed")
+        .expect("message")
+        .with_context(ContextKey::Field, "disk_log")
+        .expect("field");
+    // Publish in-memory only: mirror_disk_log skips field=disk_log warnings.
+    let seq = st.next_seq();
+    let envelope = EventEnvelope {
+        event_version: 1,
+        session_id: st.session_id,
+        run_id: None,
+        seq,
+        command_id: None,
+        monotonic_ms: st.monotonic_ms(),
+        event: Event::Warning { error },
+    };
+    st.history.push_control(envelope.clone(), &mut st.drops);
     notifier.publish(&envelope, &mut st.drops);
 }
 

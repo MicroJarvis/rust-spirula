@@ -3,11 +3,24 @@ name = "spirula-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "CLI entry adapter over the shared application/session owner"
+publish = false
+
+[lib]
+name = "spirula_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "spirula"
 path = "src/main.rs"
 
+[dependencies]
+spirula-core = { path = "../spirula-core" }
+spirula-application = { path = "../spirula-application" }
+libc = "0.2"
+
+[dev-dependencies]
+libc = "0.2"
 
 [lints]
 workspace = true

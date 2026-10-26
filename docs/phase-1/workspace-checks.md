@@ -84,10 +84,10 @@ Additional external / layer rules:
 
 Policy enforces **dependency** shape for `spirula-cli`: only
 `spirula-core` and `spirula-application` are allowed workspace edges. It does
-**not** AST-scan `main.rs` for business logic (`std::fs`, inline training, and
-similar would not be detected). The current `main.rs` is a documented skeleton
-placeholder until P1-F09 wires application commands; keep business orchestration
-out of this crate by convention and review, not by substring bans.
+**not** AST-scan sources for business logic. P1-F09 wires help/capabilities/
+fake probe commands and SIGINT through `ApplicationService`; keep business
+orchestration and disk-log lifecycle out of this crate by convention and
+review ([cli.md](cli.md)), not by substring bans.
 
 ## Commands
 

@@ -155,6 +155,11 @@ dependencies = [
 [[package]]
 name = "spirula-cli"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "spirula-application",
+ "spirula-core",
+]
 
 [[package]]
 name = "spirula-core"

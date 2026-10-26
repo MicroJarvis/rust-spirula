@@ -2,12 +2,14 @@
 //!
 //! P1-F07 owns command admission, cancel/control, recoverable control
 //! history, bounded progress/log/notify fanout, and a fake worker that
-//! exercises lifecycle contracts. Session state is serialized under one
-//! owner mutex (not a single exclusive writer thread). It depends only on
-//! `spirula-core`. Binding decisions: `docs/phase-1/application.md`.
+//! exercises lifecycle contracts. P1-F09 adds an optional rotated disk
+//! diagnostics sink owned here (not in CLI). Session state is serialized
+//! under one owner mutex (not a single exclusive writer thread). Binding
+//! decisions: `docs/phase-1/application.md`, `docs/phase-1/cli.md`.
 
 mod bound;
 mod command;
+mod disk_log;
 mod event;
 mod history;
 mod ids;
@@ -18,6 +20,7 @@ mod state;
 mod worker;
 
 pub use command::{Command, CommandPayload, SubmitOutcome};
+pub use disk_log::{DiskLogConfig, DiskLogCounters, DiskLogHandle, DiskLogLimits};
 pub use event::{
     CommandResult, CursorError, DropCounters, Event, EventCursor, EventEnvelope, LogLevel,
     ReplayOutcome, RunOutcome, Snapshot,

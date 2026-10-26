@@ -1,10 +1,11 @@
 # P1-F07: minimal headless application/session
 
 `spirula-application` is the unique owner of session state, command admission,
-control history, cancellation, and subscriber fanout. It depends only on
-`spirula-core` in this slice: no `spirula-train`, no `spirula-gpu`, and no
-filesystem I/O. Workers are fake probes that exercise lifecycle contracts.
-Real load/train/preview attach later (P3/P4/P5/P6); this crate must not claim
+control history, cancellation, and subscriber fanout. Public deps remain
+`spirula-core` only; P1-F09 adds optional rotated disk diagnostics through
+`std::fs` inside this crate (still no `spirula-train` / `spirula-gpu`).
+Workers are fake probes that exercise lifecycle contracts. Real
+load/train/preview attach later (P3/P4/P5/P6); this crate must not claim
 training capability.
 
 ## Reference behavior
@@ -257,11 +258,16 @@ reserved for a future **explicit Save** command failure after entering
 ### Diagnostics policy (honest)
 
 - **Implemented in F07:** bounded in-memory log tail (`log_tail_capacity` ×
-  `log_message_max_bytes`) and drop counters. No disk writes.
-- **Unavailable in F07:** rotated disk diagnostics. Not implemented; not
-  marked done. **P1-F09** owns CLI-facing disk log integration when that
-  slice lands. Failure policy for a future disk sink is therefore not
-  claimable here.
+  `log_message_max_bytes`) and drop counters.
+- **Extended in P1-F09:** optional rotated disk diagnostics via
+  `ApplicationService::start_with(..., Some(DiskLogConfig))`. Caps:
+  `line_max_bytes`, `queue_capacity`, `tail_capacity`, `rotation_bytes`,
+  `max_files`, `global_disk_budget_bytes`, `flush_join_deadline`. Async
+  sink with `try_enqueue` only; drop/failure counters; at most one
+  in-memory `Warning` (`field=disk_log`) on write failure — never a
+  recursive disk-bound warning loop. Flush/join honor deadlines; service
+  Drop joins the sink under `teardown_deadline`. Workers never await the
+  sink. Details: [cli.md](cli.md).
 
 ### Run identity
 
@@ -288,5 +294,6 @@ and `TerminalOutcome` as defined. Cancellation remains
 
 ## Out of scope
 
-- Real dataset load, GPU device ownership, training steps, Slint, CLI SIGINT
-  and disk log wiring (P1-F09), measurement infrastructure (P1-F08).
+- Real dataset load, GPU device ownership, training steps, Slint. CLI SIGINT
+  and disk log wiring are P1-F09 ([cli.md](cli.md)). Measurement
+  infrastructure is P1-F08.

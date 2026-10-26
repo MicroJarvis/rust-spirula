@@ -114,15 +114,16 @@ verify above.
 
 ## Non-claims
 
-- No real dataset load, training, GPU, Slint, or CLI SIGINT.
-- No rotated disk log sink (explicitly unavailable, not a finished stub).
+- No real dataset load, training, GPU, or Slint.
+- Rotated disk log sink and CLI SIGINT landed in P1-F09 (see below).
 
 ---
 
 # P1-F08 verification record
 
 Recorded: 2026-10-25, worktree `.worktrees/p1-f08` on branch `codex/p1-f08`,
-parent tip `3c85d92` (P1-F07 on main).
+parent tip `3c85d92` (P1-F07 on main). Merged to main as tip
+`26da4640e396fc6e5ae683df2626c527208b6509`.
 
 ## Scope and result
 
@@ -134,8 +135,7 @@ under a **scoped** resident 8192 work-buffer budget — not process RSS),
 generates and reloads a report with checked accounted bytes, nanosecond
 timings, and explicit unavailable reasons for OS process peak, device memory,
 GPU counters, GPU timestamp-query timing, and absolute wall-clock timestamps.
-Source/dirty stay honestly unavailable. No train/GPU/UI runtime. Next feature
-is P1-F09. Branch remains unmerged until explicitly approved.
+Source/dirty stay honestly unavailable. No train/GPU/UI runtime.
 
 ## Evidence
 
@@ -147,7 +147,7 @@ is P1-F09. Branch remains unmerged until explicitly approved.
 | Sample binary | `cargo run -p spirula-io --bin spirula-perf-sample -- <path>` |
 | Contract tests | `cargo test -p spirula-core perf -- --test-threads=1` |
 | IO tests | `cargo test -p spirula-io perf -- --test-threads=1` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `3ad635a`) |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8**) |
 
 ## Non-claims
 
@@ -156,3 +156,40 @@ is P1-F09. Branch remains unmerged until explicitly approved.
   timestamp measurement.
 - No per-feature baselines beyond the infrastructure sample (those land with
   later slices; aggregation remains P9-F02).
+
+---
+
+# P1-F09 verification record
+
+Recorded: 2026-10-26, worktree `.worktrees/p1-f09` on branch `codex/p1-f09`,
+parent tip `26da464` (P1-F08 on main).
+
+## Scope and result
+
+P1-F09 is complete: `spirula-cli` is a core+application adapter with help,
+capabilities, explicit fake `probe-load` / `probe-run` / `probe` entry,
+unavailable `train`/`preview` (exit 2), stable exits 0/1/2/130, SIGINT →
+`Stop{save:true}` then exit 130 (second SIGINT restores default disposition),
+and terminal recovery via `command_result` when the live subscriber drops.
+Application owns optional rotated disk diagnostics (bounded line/queue/tail/
+rotation/files/global budget; async sink; drop/failure counters; flush/join
+deadlines; no recursive warning loops). Real train/preview remain later.
+Phase 1 feature table (P1-F01–P1-F09) is complete; next feature is P2-F01.
+Branch remains unmerged until explicitly approved.
+
+## Evidence
+
+| item | location / command |
+|---|---|
+| Binding decisions | [cli.md](cli.md), [application.md](application.md) diagnostics |
+| CLI crate | `crates/spirula-cli` (deps: `spirula-core`, `spirula-application`) |
+| Disk sink | `crates/spirula-application/src/disk_log.rs` |
+| Subprocess / SIGINT | `crates/spirula-cli/tests/cli_subprocess.rs` |
+| Session disk | `crates/spirula-application/tests/disk_diagnostics.rs` |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on this tip) |
+
+## Non-claims
+
+- No real dataset load, training, preview, GPU, or Slint.
+- No full C++ CLI flag/preset parity (P6-F02).
+- Disk diagnostics are best-effort bounded logs, not a crash reporter.

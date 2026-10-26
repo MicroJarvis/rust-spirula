@@ -73,10 +73,12 @@ Slint widgets.
 
 Unique logical session owner: command admission, Stop/Shutdown control, cancel
 token, recoverable control history, snapshots/cursors, bounded notify fanout,
-and (for P1-F07) a fake probe worker. State mutations are serialized through
-one owner mutex (callers and the mailbox loop); UI/CLI must not duplicate the
-business state machine. Public deps today: `spirula-core` only. Bindings:
-[phase-1/application.md](phase-1/application.md).
+a fake probe worker (P1-F07), and optional rotated disk diagnostics (P1-F09).
+State mutations are serialized through one owner mutex (callers and the
+mailbox loop); UI/CLI must not duplicate the business state machine. Public
+deps today: `spirula-core` only. Bindings:
+[phase-1/application.md](phase-1/application.md),
+[phase-1/cli.md](phase-1/cli.md).
 
 ### `spirula-ui`
 
@@ -86,11 +88,11 @@ create GPU pipelines, or implement training rules.
 
 ### `spirula-cli`
 
-Argument parsing and process entry point. CLI commands will call the same
+Argument parsing, presentation, and SIGINT. CLI commands call the same
 application/session services as the desktop UI (P1-F09). Allowed workspace
 deps are `spirula-core` and `spirula-application` only (no direct
-IO/train/render/GPU). `main.rs` remains a skeleton placeholder until P1-F09;
-see [phase-1/workspace-checks.md](phase-1/workspace-checks.md).
+IO/train/render/GPU). Bindings: [phase-1/cli.md](phase-1/cli.md),
+[phase-1/workspace-checks.md](phase-1/workspace-checks.md).
 
 ## GPU strategy
 

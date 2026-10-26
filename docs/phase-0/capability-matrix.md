@@ -109,7 +109,7 @@ refer to [fixtures.md](fixtures.md).
 | C-CLI-06 | resume command | `cli/main.cpp:539-542`, `checkpoint/Resume.h` | run dir/checkpoint | resumed session | explicit flags override checkpoint config | P6-F02/P5-F05 | `spirula-cli` | 未开始 |
 | C-CLI-07 | subcommands other than train | `Main.cpp:71-106`, `Tools.h:52-62` | argv | tool output | sfm/sam/mesh/geometry/dense/e57/lidar/partition/encode later | P8/P7 target features | `spirula-cli` | 未开始 |
 | C-APP-01 | command/event session API | (new; reference is `TrainerSession` + GUI worker) | commands | events | one application owner, bounded history/snapshots, source seq gaps and resync | P1-F07/P6-F01 | `spirula-application` | 进行中（P1-F07 fake probe owner；真实业务 P6-F01） |
-| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P1-F07/P1-F09/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中（P1-F03+P1-F07；SIGINT P1-F09） |
+| C-APP-02 | cancellation and progress | (new; reference atomics) | token | events | cooperative, idempotent cancel, defined terminal event | P1-F03/P1-F07/P1-F09/P5-F06/P6-F01 | `spirula-core`/`spirula-application` | 进行中（P1-F03+P1-F07+P1-F09 SIGINT；训练取消 P5-F06） |
 
 ## Cross-cutting
 
@@ -145,8 +145,8 @@ refer to [fixtures.md](fixtures.md).
 - `C-DATA-22` is implemented in `spirula-core` (P1-F02): the 251-field
   config table, `schema_version` 1, and legacy reads. `C-X-03` stays
   `进行中` because checkpoint `format_version` validation is still P3-F07.
-- `C-APP-02` has the core token and progress/terminal payloads (P1-F03).
-  Application channels/cancellation start in P1-F07/P1-F09; actual training
+- `C-APP-02` has the core token and progress/terminal payloads (P1-F03),
+  application channels (P1-F07), and CLI SIGINT (P1-F09). Actual training
   checkpoints and complete UI integration remain P5-F06/P6-F01, so the row
   stays `进行中`.
 - `C-DATA-14` has the P0 pinhole path: OpenGL `c2w`, OpenCV `k1 k2 p1 p2`,
