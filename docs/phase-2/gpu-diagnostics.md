@@ -1,6 +1,7 @@
 # P2-F05: GPU errors and diagnostic events
 
-Status: **已完成** (HOLD-MERGE pending independent review). Owner: `spirula-gpu`.
+Status: **当前 / 进行中** (HOLD-MERGE pending independent delta review; not
+approved — do not treat as 已完成 / do not advance P2-F06). Owner: `spirula-gpu`.
 Builds on [device-context.md](device-context.md), [gpu-resources.md](gpu-resources.md),
 [gpu-pipelines.md](gpu-pipelines.md). Surface smoke stays P2-F06; application
 session wiring of these events stays P6-F01. Phase 2 exit remains open.
@@ -27,15 +28,28 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 | No eligible adapter / open select | `SP-GPU-001` | Unchanged (P2-F01) |
 | Device lost / destroy callback / inject lost | `SP-GPU-002` | Status `Lost`; handles rejected; one diagnostic |
 | Submit / wait / scoped validation during submit path | `SP-GPU-003` | Retryable per catalog |
-| OOM / allocation fail | `SP-GPU-004` | Attach requested/current/budget when known |
+| OOM / allocation fail (create/upload/readback/dispatch) | `SP-GPU-004` | Attach operation + spirula label + requested/current/budget; never remap OOM → input |
 | Shader / pipeline compile | `SP-GPU-005` | Unchanged (P2-F04); emits diagnostic on scoped failure |
 | Resource-path scoped validation (host probe) | `SP-INP-003` | Same F03 mapping; diagnostic emitted (not silent) |
 
 Public GPU failures carry `operation` (`GpuOperation` → `ContextKey::Command`),
-optional `ResourceLabel`, and budget fields when applicable. Pre-wgpu typed
-rejects (alignment, alias, etc.) stay as today; budget preflight keeps the
-P1-F08 `Resource=accounted_work_buffer` key while the spirula label is on the
-diagnostic event.
+spirula `ResourceLabel` (wins over P1-F08 `accounted_work_buffer` placeholder),
+and budget fields when applicable. Upload/readback/map allocation and scoped
+failures emit diagnostics; on failure only the unsubmitted reserve is rolled
+back (F03 retry/lifetime unchanged).
+
+### Post-submit scope observation
+
+`queue.submit` may accept work before error-scope pop. When scopes (or
+`inject_next_post_submit_scope_error`) report after accept:
+
+- submission record stays; **`Ok(SubmissionHandle)` is returned** so the caller
+  can `wait`/reap;
+- a typed diagnostic is emitted (not silent);
+- inflight bytes are **not** freed until wait/teardown (no premature free).
+
+Pre-mutation `inject_next_submit_error` still returns `Err` with no handle
+(work never submitted).
 
 ### Diagnostic events (GPU-local only)
 
@@ -43,69 +57,45 @@ Events live on `GpuContext` — **not** the application control history (P6-F01)
 
 ```text
 GpuDiagnosticEvent {
-  seq,                  // strictly increasing within a live generation
-  context_id,
-  generation,
-  kind,                 // Error | DeviceLost | Warning | Info
-  operation,            // create|upload|dispatch|readback|submit|wait|destroy|open|…
-  label,                // optional spirula:… resource label
-  code,                 // optional SP-GPU-00x / SP-INP-003
-  message,
+  seq, context_id, generation, kind, operation, label?, code?, message,
   requested_bytes?, current_bytes?, budget_bytes?
 }
 ```
 
-Ring policy (explicit; phase-0 control-history style, GPU-scoped):
-
-- Default capacity **64** events (`DEFAULT_DIAGNOSTIC_CAPACITY`; tests may shrink).
-- On overflow: **drop oldest**, increment `dropped_oldest` (never silent-drop
-  without a counter).
-- `poll_diagnostics(since_seq)` returns retained events with `seq > since_seq`
-  in order; does not clear the ring (read copy).
-- `filter_diagnostics(since_seq, kind?, label?)` for observable subscription.
-- `close` / `reopen` / generation bump **clears** the ring and resets `seq` so
-  events never cross generations.
-- Subscribers are pull-based cursors; slow readers observe gaps via
-  `dropped_oldest` / missing seq — they do not block GPU work.
+Ring policy: default capacity **64**; overflow **drop oldest** +
+`dropped_oldest`; `poll_diagnostics` / `filter_diagnostics` are pull copies;
+close/reopen clears so events never cross generations.
 
 ### Probes
 
-- Synthetic: `inject_lost`, `inject_next_submit_error`, `inject_next_scope_error`.
-- Host: `host_probe_validation_scope` (invalid WGSL under error scopes);
-  `destroy_host_device_without_poll` + `wait`/`poll_host_lost` for Destroyed →
-  lost mapping + event; `inject_next_submit_error` on a live host device.
-- Real host OOM: **unsupported** — not claimed. Typed `SP-GPU-004` covered by
-  budget preflight + synthetic `ScopeErrorInject::OutOfMemory`.
+- Synthetic: `inject_lost`, `inject_next_submit_error`, `inject_next_scope_error`,
+  `inject_next_post_submit_scope_error`.
+- Host: `host_probe_validation_scope`; destroy/lost; upload-budget metadata;
+  post-submit scope → waitable reclaim.
+- Real host OOM: **unsupported** — not claimed.
 
-## Acceptance
+## Acceptance (pending independent review)
 
 1. Scoped validation/OOM/submit/wait/lost map to stable codes with operation +
-   label (+ budget fields when applicable). ✅
-2. Lost marks context Lost; prior handles reject; one lost notice + one
-   device-lost diagnostic for a single inject/callback delivery. ✅
-3. Diagnostic ring: ordered seq, bounded capacity, observable oldest-drop,
-   generation-isolated; filterable by label / kind. ✅
-4. Host evidence for validation-scope typed failure and destroy/lost → event;
-   OOM hardware path honest **unsupported**. ✅
-5. No application session subscription; no F06 surface; F03/F04 behavior
-   preserved. ✅
+   label (+ budget) — including upload/readback/map paths.
+2. Lost marks context Lost; prior handles reject; one lost notice + diagnostic.
+3. Diagnostic ring: ordered, bounded, drop-oldest observable, generation-isolated.
+4. Post-submit scope failure leaves a waitable handle (no orphan inflight).
+5. Dispatch/create OOM keeps `SP-GPU-004` (not remapped to input).
+6. No application session subscription; no F06 surface.
 
 ## Evidence
 
 | Check | Command / artifact |
 |---|---|
 | Synthetic diagnostics | `cargo test -p spirula-gpu --test diagnostics_lifecycle_synthetic` |
-| Host validation + lost | `cargo test -p spirula-gpu --test host_diagnostics` |
-| Focused GPU suite | `/tmp/spirula-codex-p2-f05-focused-gpu-tests.log` |
-| Fresh full gate | `cargo run -p spirula-xtask -- verify` → `/tmp/spirula-codex-p2-f05-independent-verify.log` |
+| Host validation/lost/budget/post-submit | `cargo test -p spirula-gpu --test host_diagnostics` |
+| Focused | `/tmp/spirula-cursor-p2-f05-focused-diag.log` |
+| Fresh full gate | `/tmp/spirula-cursor-p2-f05-verify.log` |
 
 ## Non-claims
 
-- Not a general logging framework or P9 metrics aggregation.
-- Not application/train/UI event fan-out (P6-F01).
-- Not surface present smoke (P2-F06).
-- Not a guaranteed 60 s stall watchdog implementation in this slice (reference
-  noted; host Destroyed + inject cover loss mapping).
-- Not real hardware OOM reproduction.
-- Phase 2 exit is **not** closed; 74-ID plan keeps application/train/UI off this
-  GPU-local diagnostic boundary.
+- Not independently approved / docs-closure complete.
+- Not F06 surface smoke; not app/train/UI / P6-F01 fan-out.
+- Not real hardware OOM; not 60 s stall watchdog.
+- Not a general logging framework or P9 aggregation.

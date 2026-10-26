@@ -192,3 +192,129 @@ fn synthetic_close_clears_diagnostics() {
     ctx.close();
     assert!(ctx.poll_diagnostics(0).is_empty());
 }
+
+#[test]
+fn synthetic_upload_budget_carries_label_operation_and_event() {
+    let mut ctx = open_ctx();
+    let label = ResourceLabel::parse("spirula:gpu:buffer:upload-budget").unwrap();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: label.clone(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.set_resource_budget(Some(64));
+    let Err(err) = ctx.upload_buffer(&buf, 0, &[3u8; 64]) else {
+        panic!("expected upload budget failure");
+    };
+    assert_eq!(err.code().as_str(), "SP-GPU-004");
+    assert_eq!(err.context_value(ContextKey::Command), Some("upload"));
+    assert_eq!(
+        err.context_value(ContextKey::Resource),
+        Some("spirula:gpu:buffer:upload-budget")
+    );
+    let events = ctx.filter_diagnostics(0, None, Some(label.as_str()));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].operation, GpuOperation::Upload);
+    assert_eq!(events[0].code.as_deref(), Some("SP-GPU-004"));
+    assert_eq!(ctx.resource_accounting().current_bytes, 64);
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_readback_budget_carries_label_operation_and_event() {
+    let mut ctx = open_ctx();
+    let label = ResourceLabel::parse("spirula:gpu:buffer:readback-budget").unwrap();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: label.clone(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.set_resource_budget(Some(64));
+    let Err(err) = ctx.readback_buffer(&buf, 0, 64) else {
+        panic!("expected readback budget failure");
+    };
+    assert_eq!(err.code().as_str(), "SP-GPU-004");
+    assert_eq!(err.context_value(ContextKey::Command), Some("readback"));
+    assert_eq!(
+        err.context_value(ContextKey::Resource),
+        Some("spirula:gpu:buffer:readback-budget")
+    );
+    let events = ctx.filter_diagnostics(0, None, Some(label.as_str()));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].operation, GpuOperation::Readback);
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_post_submit_scope_returns_waitable_handle() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:post-submit").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[3u8; 64]).unwrap();
+    ctx.inject_next_post_submit_scope_error(ScopeErrorInject::Validation);
+    let handle = ctx
+        .submit()
+        .expect("post-submit scope must still return handle");
+    assert_eq!(ctx.retained_submission_count(), 1);
+    let events = ctx.poll_diagnostics(0);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].code.as_deref(), Some("SP-GPU-003"));
+    assert_eq!(events[0].operation, GpuOperation::Submit);
+    drop(buf);
+    ctx.wait(handle, None).unwrap();
+    assert_eq!(ctx.retained_submission_count(), 0);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    assert_eq!(ctx.status(), ContextStatus::Live);
+}
+
+#[test]
+fn synthetic_dispatch_oom_keeps_sp_gpu_004() {
+    use spirula_gpu::{AFFINE_U32_PARAMS_BYTES, BufferUsage as BU};
+    let mut ctx = open_ctx();
+    let pipe = ctx.obtain_affine_u32_pipeline(0).unwrap();
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:params").unwrap(),
+            size: AFFINE_U32_PARAMS_BYTES,
+            usage: BU::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let input = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:input").unwrap(),
+            size: 4,
+            usage: BU::STORAGE_COPY,
+        })
+        .unwrap();
+    let output = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:output").unwrap(),
+            size: 4,
+            usage: BU::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.inject_next_scope_error(ScopeErrorInject::OutOfMemory {
+        requested_bytes: Some(64),
+        current_bytes: Some(24),
+        budget_bytes: Some(1 << 20),
+    });
+    let err = ctx
+        .dispatch_affine_u32(&pipe, &params, &input, &output, 1)
+        .unwrap_err();
+    assert_eq!(err.code().as_str(), "SP-GPU-004");
+    assert_eq!(err.context_value(ContextKey::Command), Some("dispatch"));
+    let events = ctx.poll_diagnostics(0);
+    assert_eq!(events[0].code.as_deref(), Some("SP-GPU-004"));
+    assert_eq!(events[0].operation, GpuOperation::Dispatch);
+}

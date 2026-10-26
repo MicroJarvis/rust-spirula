@@ -672,6 +672,17 @@ impl GpuContext {
         }
 
         let scope_inject = self.take_scope_inject();
+        if let Some(inj) = scope_inject {
+            // Deterministic probe on both host and synthetic — preserve typed code.
+            return Err(self.fail_gpu(
+                inj.into_domain_error(crate::diagnostics::ScopeClass::Resource),
+                crate::diagnostics::GpuOperation::Dispatch,
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
         let is_synthetic = self.backend_device_queue().is_none();
         if is_synthetic {
             return self.dispatch_affine_synthetic(pipeline, params_buf, input, output, count);
@@ -721,7 +732,7 @@ impl GpuContext {
         let finished = match wgpu_scoped(
             &device,
             crate::diagnostics::ScopeClass::Resource,
-            scope_inject,
+            None,
             || {
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("spirula:gpu:bg:affine-u32"),
@@ -771,10 +782,11 @@ impl GpuContext {
             Ok(cmd) => cmd,
             Err(e) => {
                 // No pending_commands / note_pending on failure.
+                // Keep typed GPU identity (SP-GPU-004 OOM, SP-GPU-003 submit-class,
+                // SP-INP-003 resource validation) — do not remap all scopes to input.
                 drop(led);
-                let err = range_err(format!("affine bind/encode failed: {}", e.message()));
                 return Err(self.fail_gpu(
-                    err,
+                    e,
                     crate::diagnostics::GpuOperation::Dispatch,
                     None,
                     None,

@@ -1170,13 +1170,26 @@ impl GpuContext {
         if !entry.usage.copy_dst {
             return Err(inp("buffer missing copy_dst for upload", "usage"));
         }
+        let label = entry.label.clone();
         let end = offset
             .checked_add(size)
             .ok_or_else(|| range_err("upload offset+len overflow"))?;
         if end > entry.size {
             return Err(range_err("upload range exceeds buffer size"));
         }
-        led.reserve(size)?;
+        if let Err(e) = led.reserve(size) {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                e,
+                crate::diagnostics::GpuOperation::Upload,
+                Some(&label),
+                Some(size),
+                Some(current),
+                budget,
+            ));
+        }
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
         match self.backend_device_queue() {
@@ -1196,15 +1209,38 @@ impl GpuContext {
                 ) {
                     Ok(b) => b,
                     Err(e) => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(size);
-                        return Err(e);
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            e,
+                            crate::diagnostics::GpuOperation::Upload,
+                            Some(&label),
+                            Some(size),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 {
-                    let mut view = staging
-                        .slice(..)
-                        .get_mapped_range_mut()
-                        .map_err(|e| submit_err(format!("map upload staging failed: {e}")))?;
+                    let mut view = match staging.slice(..).get_mapped_range_mut() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let current = led.tracker.current_bytes();
+                            let budget = led.budget_limit;
+                            let _ = led.tracker.free(size);
+                            drop(led);
+                            return Err(self.fail_gpu(
+                                submit_err(format!("map upload staging failed: {e}")),
+                                crate::diagnostics::GpuOperation::Upload,
+                                Some(&label),
+                                Some(size),
+                                Some(current),
+                                budget,
+                            ));
+                        }
+                    };
                     view.copy_from_slice(data);
                 }
                 staging.unmap();
@@ -1212,8 +1248,18 @@ impl GpuContext {
                 let dst = match led.buffers.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuBuffer::Wgpu(b)) => b,
                     _ => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(size);
-                        return Err(gpu_lost("buffer gpu storage missing"));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            gpu_lost("buffer gpu storage missing"),
+                            crate::diagnostics::GpuOperation::Upload,
+                            Some(&label),
+                            Some(size),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1279,12 +1325,12 @@ impl GpuContext {
         self.require_live()?;
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(handle.context_id(), handle.generation())?;
-        let (width, height, usage_ok) = {
+        let (width, height, usage_ok, label) = {
             let e = led
                 .textures
                 .get(&handle.id())
                 .ok_or_else(|| inp("unknown texture handle", "texture"))?;
-            (e.width, e.height, e.usage.copy_dst)
+            (e.width, e.height, e.usage.copy_dst, e.label.clone())
         };
         if !usage_ok {
             return Err(inp("texture missing copy_dst for upload", "usage"));
@@ -1299,7 +1345,19 @@ impl GpuContext {
         let bpr = rgba8_bytes_per_row(width)?;
         let padded = rgba8_padded_bytes(width, height)?;
         self.ensure_staging_fits_device(padded)?;
-        led.reserve(padded)?;
+        if let Err(e) = led.reserve(padded) {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                e,
+                crate::diagnostics::GpuOperation::Upload,
+                Some(&label),
+                Some(padded),
+                Some(current),
+                budget,
+            ));
+        }
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
         // Expand tight rows into padded staging layout.
@@ -1329,14 +1387,38 @@ impl GpuContext {
                 ) {
                     Ok(b) => b,
                     Err(e) => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(padded);
-                        return Err(e);
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            e,
+                            crate::diagnostics::GpuOperation::Upload,
+                            Some(&label),
+                            Some(padded),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 {
-                    let mut view = staging.slice(..).get_mapped_range_mut().map_err(|e| {
-                        submit_err(format!("map texture upload staging failed: {e}"))
-                    })?;
+                    let mut view = match staging.slice(..).get_mapped_range_mut() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let current = led.tracker.current_bytes();
+                            let budget = led.budget_limit;
+                            let _ = led.tracker.free(padded);
+                            drop(led);
+                            return Err(self.fail_gpu(
+                                submit_err(format!("map texture upload staging failed: {e}")),
+                                crate::diagnostics::GpuOperation::Upload,
+                                Some(&label),
+                                Some(padded),
+                                Some(current),
+                                budget,
+                            ));
+                        }
+                    };
                     view.copy_from_slice(&padded_bytes);
                 }
                 staging.unmap();
@@ -1344,8 +1426,18 @@ impl GpuContext {
                 let tex = match led.textures.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuTexture::Wgpu(t)) => t,
                     _ => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(padded);
-                        return Err(gpu_lost("texture gpu storage missing"));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            gpu_lost("texture gpu storage missing"),
+                            crate::diagnostics::GpuOperation::Upload,
+                            Some(&label),
+                            Some(padded),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1444,13 +1536,26 @@ impl GpuContext {
         if !entry.usage.copy_src {
             return Err(inp("buffer missing copy_src for readback", "usage"));
         }
+        let label = entry.label.clone();
         let end = offset
             .checked_add(size)
             .ok_or_else(|| range_err("readback offset+size overflow"))?;
         if end > entry.size {
             return Err(range_err("readback range exceeds buffer size"));
         }
-        led.reserve(size)?;
+        if let Err(e) = led.reserve(size) {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                e,
+                crate::diagnostics::GpuOperation::Readback,
+                Some(&label),
+                Some(size),
+                Some(current),
+                budget,
+            ));
+        }
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
         match self.backend_device_queue() {
@@ -1470,15 +1575,35 @@ impl GpuContext {
                 ) {
                     Ok(b) => b,
                     Err(e) => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(size);
-                        return Err(e);
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            e,
+                            crate::diagnostics::GpuOperation::Readback,
+                            Some(&label),
+                            Some(size),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 let src = match led.buffers.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuBuffer::Wgpu(b)) => b,
                     _ => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(size);
-                        return Err(gpu_lost("buffer gpu storage missing"));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            gpu_lost("buffer gpu storage missing"),
+                            crate::diagnostics::GpuOperation::Readback,
+                            Some(&label),
+                            Some(size),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1510,8 +1635,18 @@ impl GpuContext {
                         v[offset as usize..(offset + size) as usize].to_vec()
                     }
                     _ => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(size);
-                        return Err(gpu_lost("buffer gpu storage missing"));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            gpu_lost("buffer gpu storage missing"),
+                            crate::diagnostics::GpuOperation::Readback,
+                            Some(&label),
+                            Some(size),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 led.stagings.insert(
@@ -1552,12 +1687,12 @@ impl GpuContext {
         self.require_live()?;
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(handle.context_id(), handle.generation())?;
-        let (width, height, usage_ok) = {
+        let (width, height, usage_ok, label) = {
             let e = led
                 .textures
                 .get(&handle.id())
                 .ok_or_else(|| inp("unknown texture handle", "texture"))?;
-            (e.width, e.height, e.usage.copy_src)
+            (e.width, e.height, e.usage.copy_src, e.label.clone())
         };
         if !usage_ok {
             return Err(inp("texture missing copy_src for readback", "usage"));
@@ -1566,7 +1701,19 @@ impl GpuContext {
         let padded = rgba8_padded_bytes(width, height)?;
         let logical = rgba8_logical_bytes(width, height)?;
         self.ensure_staging_fits_device(padded)?;
-        led.reserve(padded)?;
+        if let Err(e) = led.reserve(padded) {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                e,
+                crate::diagnostics::GpuOperation::Readback,
+                Some(&label),
+                Some(padded),
+                Some(current),
+                budget,
+            ));
+        }
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
         match self.backend_device_queue() {
@@ -1586,15 +1733,35 @@ impl GpuContext {
                 ) {
                     Ok(b) => b,
                     Err(e) => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(padded);
-                        return Err(e);
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            e,
+                            crate::diagnostics::GpuOperation::Readback,
+                            Some(&label),
+                            Some(padded),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 let tex = match led.textures.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuTexture::Wgpu(t)) => t,
                     _ => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(padded);
-                        return Err(gpu_lost("texture gpu storage missing"));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            gpu_lost("texture gpu storage missing"),
+                            crate::diagnostics::GpuOperation::Readback,
+                            Some(&label),
+                            Some(padded),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1644,8 +1811,18 @@ impl GpuContext {
                 let data = match led.textures.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuTexture::Synthetic { data, .. }) => data.clone(),
                     _ => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(padded);
-                        return Err(gpu_lost("texture gpu storage missing"));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            gpu_lost("texture gpu storage missing"),
+                            crate::diagnostics::GpuOperation::Readback,
+                            Some(&label),
+                            Some(padded),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 };
                 led.stagings.insert(
@@ -1703,6 +1880,7 @@ impl GpuContext {
                 None,
             ));
         }
+        let post_inject = self.take_post_submit_scope_inject();
 
         let mut led = self.resource_ledger.lock().expect("ledger");
         let sub_id = NEXT_SUBMISSION_ID.fetch_add(1, Ordering::SeqCst);
@@ -1737,24 +1915,33 @@ impl GpuContext {
                 let buffers: Vec<wgpu::CommandBuffer> =
                     cmds.into_iter().map(|c| c.command).collect();
                 // Host error scopes around submit (runtime-contracts §6.3).
-                // Always keep the submission index so inflight ownership stays
-                // waitable even when the scope reports validation/OOM.
+                // queue.submit accepts work before scope pop — keep the index so
+                // the returned handle can wait/reap even when scopes report.
                 let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
                 let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let index = queue.submit(buffers);
                 let validation = pollster::block_on(validation_scope.pop());
                 let oom = pollster::block_on(oom_scope.pop());
-                let err = validation.or(oom).map(|e| {
+                let mut err = validation.or(oom).map(|e| {
                     crate::diagnostics::map_wgpu_scope_error(
                         e,
                         crate::diagnostics::ScopeClass::Submit,
                     )
                 });
+                if err.is_none()
+                    && let Some(inj) = post_inject
+                {
+                    err = Some(inj.into_domain_error(crate::diagnostics::ScopeClass::Submit));
+                }
                 (Some(index), err)
             }
             None => {
                 led.pending_commands.clear();
-                (None, None)
+                // Synthetic: no host queue; post-submit inject still surfaces as
+                // a diagnostic while returning a waitable (immediate) handle.
+                let err = post_inject
+                    .map(|inj| inj.into_domain_error(crate::diagnostics::ScopeClass::Submit));
+                (None, err)
             }
         };
 
@@ -1770,22 +1957,27 @@ impl GpuContext {
         );
         drop(led);
 
+        let handle = SubmissionHandle {
+            context_id: self.id(),
+            generation: self.generation(),
+            id: sub_id,
+        };
+
         if let Some(err) = scope_err {
-            return Err(self.fail_gpu(
+            // GPU (or synthetic) already accepted the submission — never return
+            // Err without a reclaimable handle. Emit typed diagnostic; caller
+            // waits on Ok(handle) to reap. Do not free inflight before wait.
+            let _ = self.fail_gpu(
                 err,
                 crate::diagnostics::GpuOperation::Submit,
                 None,
                 None,
                 None,
                 None,
-            ));
+            );
         }
 
-        Ok(SubmissionHandle {
-            context_id: self.id(),
-            generation: self.generation(),
-            id: sub_id,
-        })
+        Ok(handle)
     }
 
     /// Wait for a submission. `timeout` `None` waits indefinitely (host).
@@ -2071,7 +2263,15 @@ impl GpuContext {
                                 if let Some(st) = led.stagings.get_mut(&staging_id) {
                                     st.gpu = Some(GpuBuffer::Wgpu(buf));
                                 }
-                                return Err(submit_err(format!("get_mapped_range failed: {e}")));
+                                drop(led);
+                                return Err(self.fail_gpu(
+                                    submit_err(format!("get_mapped_range failed: {e}")),
+                                    crate::diagnostics::GpuOperation::Map,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                ));
                             }
                         };
                         buf.unmap();
@@ -2092,18 +2292,34 @@ impl GpuContext {
                         if let Some(st) = led.stagings.get_mut(&staging_id) {
                             st.gpu = Some(GpuBuffer::Wgpu(buf));
                         }
-                        Err(submit_err(format!(
-                            "{msg} (staging retained idle for retry; pending map cancelled via unmap)"
-                        )))?
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            submit_err(format!(
+                                "{msg} (staging retained idle for retry; pending map cancelled via unmap)"
+                            )),
+                            crate::diagnostics::GpuOperation::Map,
+                            None,
+                            None,
+                            None,
+                            None,
+                        ));
                     }
                     Err(msg) if msg.contains("disconnected") => {
                         let mut led = self.resource_ledger.lock().expect("ledger");
                         if let Some(st) = led.stagings.get_mut(&staging_id) {
                             st.gpu = Some(GpuBuffer::Wgpu(buf));
                         }
-                        Err(submit_err(format!(
-                            "{msg} (staging retained; GPU copy already complete)"
-                        )))?
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            submit_err(format!(
+                                "{msg} (staging retained; GPU copy already complete)"
+                            )),
+                            crate::diagnostics::GpuOperation::Map,
+                            None,
+                            None,
+                            None,
+                            None,
+                        ));
                     }
                     Err(msg) => {
                         // Definitive map failure after GPU copy complete: retire staging.
@@ -2114,7 +2330,15 @@ impl GpuContext {
                         ticket.inner.consumed.store(true, Ordering::SeqCst);
                         // buf drops without unmap if never mapped — ok for failed map_async
                         drop(buf);
-                        return Err(submit_err(msg));
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            submit_err(msg),
+                            crate::diagnostics::GpuOperation::Map,
+                            None,
+                            None,
+                            None,
+                            None,
+                        ));
                     }
                 }
             }
@@ -2122,8 +2346,14 @@ impl GpuContext {
                 if force_deadline {
                     // No map_async on synthetic; restore and return deadline Err.
                     st.gpu = Some(GpuBuffer::Synthetic(data));
-                    return Err(submit_err(
-                        "map_readback deadline (staging retained for retry)",
+                    drop(led);
+                    return Err(self.fail_gpu(
+                        submit_err("map_readback deadline (staging retained for retry)"),
+                        crate::diagnostics::GpuOperation::Map,
+                        None,
+                        None,
+                        None,
+                        None,
                     ));
                 }
                 let accounted = st.accounted;

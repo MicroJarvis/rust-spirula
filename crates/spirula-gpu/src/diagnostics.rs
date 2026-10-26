@@ -255,7 +255,33 @@ impl DiagnosticRing {
     }
 }
 
+/// Rebuild `err` without `drop_key`, preserving code/message/action/retry/other context.
+fn rebuild_without_context_key(err: DomainError, drop_key: ContextKey) -> DomainError {
+    let kept: Vec<(ContextKey, String)> = err
+        .context()
+        .iter()
+        .filter(|(k, _)| *k != drop_key)
+        .cloned()
+        .collect();
+    let mut rebuilt = DomainError::try_new(err.code(), err.message()).expect("non-empty");
+    if let Some(action) = err.user_action() {
+        rebuilt = rebuilt.with_user_action(action);
+    }
+    if let Some(r) = err.retryable_override() {
+        rebuilt = rebuilt.with_retryable(r);
+    }
+    for (k, v) in kept {
+        rebuilt = rebuilt
+            .with_context(k, v)
+            .expect("context keys unique after filter");
+    }
+    rebuilt
+}
+
 /// Attach operation / resource / budget context to a GPU error (idempotent keys).
+///
+/// When `label` is provided, it wins over the P1-F08 tracker placeholder
+/// `accounted_work_buffer` so GPU resource failures carry the spirula label.
 pub fn enrich_gpu_error(
     err: DomainError,
     operation: GpuOperation,
@@ -268,10 +294,17 @@ pub fn enrich_gpu_error(
     if out.context_value(ContextKey::Command).is_none() {
         let _ = out.insert_context(ContextKey::Command, operation.as_str());
     }
-    if let Some(label) = label
-        && out.context_value(ContextKey::Resource).is_none()
-    {
-        let _ = out.insert_context(ContextKey::Resource, label.as_str());
+    if let Some(label) = label {
+        match out.context_value(ContextKey::Resource) {
+            None => {
+                let _ = out.insert_context(ContextKey::Resource, label.as_str());
+            }
+            Some("accounted_work_buffer") => {
+                out = rebuild_without_context_key(out, ContextKey::Resource);
+                let _ = out.insert_context(ContextKey::Resource, label.as_str());
+            }
+            Some(_) => {}
+        }
     }
     if out.context_value(ContextKey::Expected).is_none() {
         if let Some(n) = requested_bytes {

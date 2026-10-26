@@ -3,7 +3,7 @@
 Status: **已完成** (code tip `75d1bd48efcc8ba6451af368ce60387e6cead6b9`).
 Owner: `spirula-gpu`. Builds on [gpu-adapter.md](gpu-adapter.md) (P2-F01).
 Buffer/texture/readback are P2-F03; shaders/pipelines/compute are P2-F04;
-GPU error scopes / diagnostic events are P2-F05 (已完成). Phase 2 exit
+GPU error scopes / diagnostic events are P2-F05 (当前 / HOLD). Phase 2 exit
 remains open.
 
 ## Reference behavior

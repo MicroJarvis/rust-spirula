@@ -228,6 +228,8 @@ pub struct GpuContext {
     pub(crate) diagnostics: DiagnosticRing,
     pub(crate) pending_submit_inject: bool,
     pub(crate) pending_scope_inject: Option<ScopeErrorInject>,
+    /// Applied *after* a real `queue.submit` when observing scopes (not pre-mutation).
+    pub(crate) pending_post_submit_scope_inject: Option<ScopeErrorInject>,
 }
 
 impl GpuContext {
@@ -270,6 +272,7 @@ impl GpuContext {
             .clear_for_generation(self.id, self.generation);
         self.pending_submit_inject = false;
         self.pending_scope_inject = None;
+        self.pending_post_submit_scope_inject = None;
     }
 }
 
@@ -296,6 +299,7 @@ impl GpuContext {
                 ),
                 pending_submit_inject: false,
                 pending_scope_inject: None,
+                pending_post_submit_scope_inject: None,
             }),
             Err(failure) => Err(failure),
         }
@@ -375,6 +379,7 @@ impl GpuContext {
             diagnostics: DiagnosticRing::new(id, generation, DEFAULT_DIAGNOSTIC_CAPACITY),
             pending_submit_inject: false,
             pending_scope_inject: None,
+            pending_post_submit_scope_inject: None,
         })
     }
 
@@ -480,6 +485,7 @@ impl GpuContext {
             .clear_for_generation(self.id, self.generation);
         self.pending_submit_inject = false;
         self.pending_scope_inject = None;
+        self.pending_post_submit_scope_inject = None;
         if let Some(report) = self.report.as_mut() {
             report.status = self.status;
             report.queue_present = false;
@@ -788,6 +794,13 @@ impl GpuContext {
         self.pending_scope_inject = Some(inject);
     }
 
+    /// After a real `queue.submit`, treat the next scope observation as this
+    /// error. The submission remains recorded and the returned handle is
+    /// waitable (GPU work already accepted) — diagnostics carry the typed code.
+    pub fn inject_next_post_submit_scope_error(&mut self, inject: ScopeErrorInject) {
+        self.pending_post_submit_scope_inject = Some(inject);
+    }
+
     pub(crate) fn take_scope_inject(&mut self) -> Option<ScopeErrorInject> {
         self.pending_scope_inject.take()
     }
@@ -796,6 +809,10 @@ impl GpuContext {
         let pending = self.pending_submit_inject;
         self.pending_submit_inject = false;
         pending
+    }
+
+    pub(crate) fn take_post_submit_scope_inject(&mut self) -> Option<ScopeErrorInject> {
+        self.pending_post_submit_scope_inject.take()
     }
 
     #[allow(clippy::too_many_arguments)]
