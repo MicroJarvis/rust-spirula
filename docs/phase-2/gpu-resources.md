@@ -72,7 +72,10 @@ require a 256-byte staging that exceeds a low buffer limit.
 - **`ReadbackTicket`**: Arc + RAII. `map_readback(&ticket)` borrows so not-ready
   / deadline `Err` never consumes the only reclaim path. Drop of the last clone
   abandons staging (free if pending or GPU-ready; if submitted incomplete, mark
-  abandon-on-complete so wait reaps). Successful map marks consumed.
+  abandon-on-complete so wait reaps). Successful map marks consumed. Pending
+  abandon removes the command that **owns** that staging id (P2-F04 compute
+  commands carry no staging and must not be index-paired away). Read-only
+  `pending_resource_counts` observes queue lengths without mutating.
 
 ### Submit / wait / map
 

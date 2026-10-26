@@ -22,6 +22,26 @@ pub const COPY_BUFFER_ALIGNMENT: u64 = 4;
 /// Counter source for scoped GPU resource accounting (not device-wide VRAM).
 pub const RESOURCE_ACCOUNT_SOURCE: &str = "accounted_scoped:gpu_context_resources";
 
+/// Read-only snapshot of pre-submit pending queues (immutable copy for tests/diagnose).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingResourceCounts {
+    pub commands: usize,
+    pub stagings: usize,
+    pub buffers: usize,
+    pub textures: usize,
+    pub current_bytes: u64,
+}
+
+/// One encoded GPU command with optional staging ownership.
+///
+/// Upload/readback commands own a staging id; compute commands do not. Ticket
+/// Drop must remove by this ownership link — never by assuming
+/// `pending_commands.len() == pending_staging.len()` or shared indices.
+pub(crate) struct PendingGpuCommand {
+    pub command: wgpu::CommandBuffer,
+    pub staging_id: Option<u64>,
+}
+
 static NEXT_RESOURCE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_SUBMISSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -494,8 +514,8 @@ pub(crate) struct ResourceLedger {
     textures: HashMap<u64, TextureEntry>,
     stagings: HashMap<u64, StagingEntry>,
     submissions: HashMap<u64, SubmissionEntry>,
-    /// Pending encoder command buffers waiting for submit (wgpu path).
-    pub(crate) pending_commands: Vec<wgpu::CommandBuffer>,
+    /// Pending encoder commands waiting for submit (wgpu path).
+    pub(crate) pending_commands: Vec<PendingGpuCommand>,
     pending_staging: Vec<u64>,
     pending_buffers: Vec<u64>,
     pending_textures: Vec<u64>,
@@ -676,14 +696,19 @@ impl ResourceLedger {
             self.free_staging(staging_id);
             return;
         }
-        // Still encoded pending (not submitted): drop command + holds + staging.
+        // Still encoded pending (not submitted): remove the command that owns
+        // this staging (by staging_id, not by parallel index), then holds +
+        // staging. Compute commands carry `staging_id: None` and are untouched.
+        // Synthetic may have staging without a wgpu command — free staging only.
         if let Some(idx) = self.pending_staging.iter().position(|&id| id == staging_id) {
-            let n_staging = self.pending_staging.len();
-            let n_cmd = self.pending_commands.len();
-            self.pending_staging.remove(idx);
-            if n_cmd == n_staging && idx < self.pending_commands.len() {
-                self.pending_commands.remove(idx);
+            if let Some(cmd_idx) = self
+                .pending_commands
+                .iter()
+                .position(|c| c.staging_id == Some(staging_id))
+            {
+                self.pending_commands.remove(cmd_idx);
             }
+            self.pending_staging.remove(idx);
             let hold = self
                 .stagings
                 .get(&staging_id)
@@ -722,6 +747,16 @@ impl ResourceLedger {
         // Submitted, GPU not finished: wait will reap.
         if let Some(st) = self.stagings.get_mut(&staging_id) {
             st.abandon_when_complete = true;
+        }
+    }
+
+    fn pending_counts(&self) -> PendingResourceCounts {
+        PendingResourceCounts {
+            commands: self.pending_commands.len(),
+            stagings: self.pending_staging.len(),
+            buffers: self.pending_buffers.len(),
+            textures: self.pending_textures.len(),
+            current_bytes: self.tracker.current_bytes(),
         }
     }
 
@@ -818,6 +853,20 @@ impl GpuContext {
                 current_bytes: 0,
                 peak_bytes: 0,
                 budget_limit: None,
+            })
+    }
+
+    /// Immutable copy of pre-submit pending queue lengths and current accounted bytes.
+    pub fn pending_resource_counts(&self) -> PendingResourceCounts {
+        self.resource_ledger
+            .lock()
+            .map(|l| l.pending_counts())
+            .unwrap_or(PendingResourceCounts {
+                commands: 0,
+                stagings: 0,
+                buffers: 0,
+                textures: 0,
+                current_bytes: 0,
             })
     }
 
@@ -1079,7 +1128,10 @@ impl GpuContext {
                     label: Some("spirula:gpu:encoder:upload-buffer"),
                 });
                 encoder.copy_buffer_to_buffer(&staging, 0, dst, offset, size);
-                led.pending_commands.push(encoder.finish());
+                led.pending_commands.push(PendingGpuCommand {
+                    command: encoder.finish(),
+                    staging_id: Some(staging_id),
+                });
                 // Keep staging alive until submit/wait — store it.
                 led.stagings.insert(
                     staging_id,
@@ -1223,7 +1275,10 @@ impl GpuContext {
                         depth_or_array_layers: 1,
                     },
                 );
-                led.pending_commands.push(encoder.finish());
+                led.pending_commands.push(PendingGpuCommand {
+                    command: encoder.finish(),
+                    staging_id: Some(staging_id),
+                });
                 led.stagings.insert(
                     staging_id,
                     StagingEntry {
@@ -1328,7 +1383,10 @@ impl GpuContext {
                     label: Some("spirula:gpu:encoder:readback-buffer"),
                 });
                 encoder.copy_buffer_to_buffer(src, offset, &staging, 0, size);
-                led.pending_commands.push(encoder.finish());
+                led.pending_commands.push(PendingGpuCommand {
+                    command: encoder.finish(),
+                    staging_id: Some(staging_id),
+                });
                 led.stagings.insert(
                     staging_id,
                     StagingEntry {
@@ -1456,7 +1514,10 @@ impl GpuContext {
                         depth_or_array_layers: 1,
                     },
                 );
-                led.pending_commands.push(encoder.finish());
+                led.pending_commands.push(PendingGpuCommand {
+                    command: encoder.finish(),
+                    staging_id: Some(staging_id),
+                });
                 led.stagings.insert(
                     staging_id,
                     StagingEntry {
@@ -1544,7 +1605,9 @@ impl GpuContext {
                 if cmds.is_empty() && staging_ids.is_empty() {
                     // Allow empty submit as no-op token for symmetry.
                 }
-                Some(queue.submit(cmds))
+                let buffers: Vec<wgpu::CommandBuffer> =
+                    cmds.into_iter().map(|c| c.command).collect();
+                Some(queue.submit(buffers))
             }
             None => {
                 led.pending_commands.clear();

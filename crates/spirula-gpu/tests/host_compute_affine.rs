@@ -303,3 +303,125 @@ fn broken( { this is not wgsl
         }
     }
 }
+
+#[test]
+fn host_mixed_compute_readback_abandon_removes_owned_command_only() {
+    let request = CapabilityRequest::diagnose_default();
+    let Ok(mut ctx) = GpuContext::open(&request) else {
+        eprintln!("host_mixed_pending_drop skipped: device unavailable");
+        return;
+    };
+    let pipe = ctx.obtain_affine_u32_pipeline(0).unwrap();
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:pd-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:pd-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:pd-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, 4).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+
+    ctx.dispatch_affine_u32(&pipe, &params, &inn, &out, 4)
+        .unwrap();
+    let other = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:pd-other"),
+            size: 4096,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let ticket = ctx.readback_buffer(&other, 0, 4096).unwrap();
+    let before = ctx.pending_resource_counts();
+    eprintln!(
+        "host_pending_drop before={:?} device={:?}",
+        before,
+        ctx.report().map(|r| &r.adapter.identity.name)
+    );
+    assert_eq!(before.commands, 2);
+    assert_eq!(before.stagings, 1);
+    assert_eq!(before.buffers, 4);
+    assert_eq!(before.current_bytes, 8240);
+
+    // Drop ticket then source: must remove only the readback-owned command.
+    drop(ticket);
+    drop(other);
+    let after = ctx.pending_resource_counts();
+    eprintln!("host_pending_drop after={after:?}");
+    assert_eq!(after.commands, 1, "compute command must remain");
+    assert_eq!(after.stagings, 0);
+    assert_eq!(after.buffers, 3);
+    assert_eq!(after.current_bytes, 48);
+
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+    let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(
+        bytes_to_words(&ctx.map_readback(&t).unwrap()),
+        vec![7, 9, 11, 13]
+    );
+
+    // Interleaved abandons: compute + two readbacks; drop tickets before sources.
+    ctx.dispatch_affine_u32(&pipe, &params, &inn, &out, 4)
+        .unwrap();
+    let a = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:pd-a"),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let b = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:pd-b"),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let ta = ctx.readback_buffer(&a, 0, 64).unwrap();
+    let tb = ctx.readback_buffer(&b, 0, 64).unwrap();
+    assert_eq!(ctx.pending_resource_counts().commands, 3);
+    assert_eq!(ctx.pending_resource_counts().stagings, 2);
+    drop(tb);
+    drop(ta);
+    let mid = ctx.pending_resource_counts();
+    assert_eq!(mid.commands, 1);
+    assert_eq!(mid.stagings, 0);
+    drop(b);
+    drop(a);
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+    let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(
+        bytes_to_words(&ctx.map_readback(&t).unwrap()),
+        vec![7, 9, 11, 13]
+    );
+
+    drop(params);
+    drop(inn);
+    drop(out);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    ctx.close();
+}

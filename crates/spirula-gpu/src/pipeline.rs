@@ -691,7 +691,11 @@ impl GpuContext {
             }
         };
 
-        led.pending_commands.push(finished);
+        led.pending_commands
+            .push(crate::resource::PendingGpuCommand {
+                command: finished,
+                staging_id: None,
+            });
         led.note_pending_buffer(params_buf.id());
         led.note_pending_buffer(input.id());
         led.note_pending_buffer(output.id());

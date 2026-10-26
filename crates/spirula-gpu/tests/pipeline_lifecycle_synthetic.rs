@@ -631,3 +631,145 @@ fn synthetic_inject_lost_clears_pipeline_cache() {
         ErrorCode::DeviceLost
     );
 }
+
+#[test]
+fn synthetic_mixed_compute_readback_ticket_drop_keeps_compute() {
+    let mut ctx = open_ctx();
+    let pipe = ctx.obtain_affine_u32_pipeline(0).unwrap();
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:mix-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:mix-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:mix-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, 4).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+
+    ctx.dispatch_affine_u32(&pipe, &params, &inn, &out, 4)
+        .unwrap();
+    // Synthetic has no wgpu commands; pending staging only appears on readback.
+    let other = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:mix-other"),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let ticket = ctx.readback_buffer(&other, 0, 64).unwrap();
+    let before = ctx.pending_resource_counts();
+    assert_eq!(before.stagings, 1);
+    assert_eq!(before.buffers, 4); // params+in+out holds from compute + other
+    drop(ticket);
+    let after_ticket = ctx.pending_resource_counts();
+    assert_eq!(after_ticket.stagings, 0);
+    // Source still held until drop; compute buffer holds remain.
+    drop(other);
+    let after = ctx.pending_resource_counts();
+    assert_eq!(after.stagings, 0);
+    assert_eq!(after.buffers, 3); // compute pending holds only
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    assert_eq!(
+        bytes_to_words(&ctx.map_readback(&t).unwrap()),
+        vec![7, 9, 11, 13]
+    );
+    drop(params);
+    drop(inn);
+    drop(out);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_interleaved_readback_abandons_do_not_drop_compute_holds() {
+    let mut ctx = open_ctx();
+    let pipe = ctx.obtain_affine_u32_pipeline(0).unwrap();
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:il-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:il-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:il-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, 4).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+
+    ctx.dispatch_affine_u32(&pipe, &params, &inn, &out, 4)
+        .unwrap();
+    let a = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:il-a"),
+            size: 32,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let b = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:il-b"),
+            size: 32,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let ta = ctx.readback_buffer(&a, 0, 32).unwrap();
+    let tb = ctx.readback_buffer(&b, 0, 32).unwrap();
+    assert_eq!(ctx.pending_resource_counts().stagings, 2);
+    // Drop tickets before sources, interleaved.
+    drop(tb);
+    drop(ta);
+    assert_eq!(ctx.pending_resource_counts().stagings, 0);
+    drop(b);
+    drop(a);
+    assert_eq!(ctx.pending_resource_counts().buffers, 3);
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    assert_eq!(
+        bytes_to_words(&ctx.map_readback(&t).unwrap()),
+        vec![7, 9, 11, 13]
+    );
+    drop(params);
+    drop(inn);
+    drop(out);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}

@@ -68,6 +68,11 @@ handles are rejected (`SP-INP-001` / `SP-GPU-002`).
   Rust before wgpu (typed error, not panic). Params bind as a narrow 16-byte
   range; storage as `count*4` — not entire-buffer binds. Bind/encode/finish run
   under error scope; failures leave no pending command/reserve.
+- Pending commands carry optional staging ownership. Compute commands have no
+  staging; upload/readback commands own theirs. Abandoning a pending readback
+  ticket removes **that** owned command (not by equal-len/index pairing with
+  `pending_staging`). `GpuContext::pending_resource_counts` exposes a read-only
+  immutable snapshot for tests/diagnose.
 - Pipeline resolve is by **handle id**. Same-key source rebuild replaces the
   cache entry only after successful create; old handles are typed-rejected and
   must not execute the new body. Failed same-key replace keeps the prior entry.
