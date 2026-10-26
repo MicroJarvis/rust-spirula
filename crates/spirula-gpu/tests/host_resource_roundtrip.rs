@@ -184,6 +184,54 @@ fn host_texture_staging_respects_max_buffer_size_or_unavailable() {
 }
 
 #[test]
+fn host_map_deadline_cancel_unmap_then_retry_or_unavailable() {
+    let request = CapabilityRequest::diagnose_default();
+    match GpuContext::open(&request) {
+        Ok(mut ctx) => {
+            let buf = ctx
+                .create_buffer(BufferDesc {
+                    label: ResourceLabel::parse("spirula:gpu:buffer:map-deadline").unwrap(),
+                    size: 4,
+                    usage: BufferUsage::COPY_SRC_DST,
+                })
+                .unwrap();
+            ctx.upload_buffer(&buf, 0, &[1, 2, 3, 4]).unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+            let ticket = ctx.readback_buffer(&buf, 0, 4).unwrap();
+            let s2 = ctx.submit().unwrap();
+            ctx.wait(s2, Some(Duration::from_secs(5))).unwrap();
+            let before = ctx.resource_accounting().current_bytes;
+
+            // Inject after map_async: unmap cancel, no callback drain hang.
+            ctx.inject_next_map_deadline();
+            let err = ctx.map_readback(&ticket).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::SubmitFailed);
+            assert_eq!(ctx.resource_accounting().current_bytes, before);
+            assert!(
+                err.message().contains("cancelled") || err.message().contains("timed out"),
+                "msg={}",
+                err.message()
+            );
+
+            let out = ctx.map_readback(&ticket).unwrap();
+            assert_eq!(out, [1, 2, 3, 4]);
+            drop(ticket);
+            drop(buf);
+            assert_eq!(ctx.resource_accounting().current_bytes, 0);
+            ctx.close();
+        }
+        Err(failure) => {
+            eprintln!(
+                "host_map_deadline_unavailable stage={:?} {}",
+                failure.stage,
+                failure.error.message()
+            );
+        }
+    }
+}
+
+#[test]
 fn host_wait_observes_loss_delivered_during_poll_or_unavailable() {
     let request = CapabilityRequest::diagnose_default();
     match GpuContext::open(&request) {

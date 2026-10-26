@@ -87,12 +87,13 @@ require a 256-byte staging that exceeds a low buffer limit.
   observed **after** poll and **before** reporting success → `SP-GPU-002`.
   Ledger is not held across poll (avoids deadlock with lost invalidate).
 - Readback: `map` only after wait has marked staging ready (GPU copy finished).
-  Injected map-deadline is a **caller-side** test hook only (before map_async);
-  it does not prove real already-pending / already-mapped retry safety. On a
-  real map_async poll timeout the in-flight map is drained and the buffer is
-  returned to Idle (`unmap`) so a later `map_readback` retry cannot panic on
-  pending/mapped state. Completed map, ticket Drop/abandon, teardown, or
-  definitive post-GPU map failure frees the reserve.
+  Map deadline (inject or real poll timeout) **returns without waiting** on a
+  pending callback: `unmap` cancels in-flight `map_async` (wgpu Waiting→Idle /
+  MapAborted), staging stays accounted for retry. Inject issues `map_async`
+  then takes that cancel path (not a pre-map Err). Do not busy-drain the
+  callback after the caller deadline — that would hold `&mut GpuContext`
+  indefinitely. Completed map, ticket Drop/abandon, teardown, or definitive
+  post-GPU map failure frees the reserve.
 - Device limits: `create_texture_2d` checks actual `max_texture_dimension_2d`
   before wgpu; staging paths check `max_buffer_size`. Create/staging paths use
   a minimal validation/OOM error scope so illegal sizes return typed errors with
@@ -128,10 +129,11 @@ accounting reaches zero after completion.
    cycles / ticket abandon / early-map Err paths do not leak budget; completed
    submission metadata is reaped (retained count stays bounded); peak source
    recorded.
-5. Post-submit wait timeout preserves accounted current and allows a later
-   wait to complete; wait that observes host loss during its poll returns
-   `SP-GPU-002` (not Ok); inject map-deadline retains staging for retry but is
-   not the sole claim for real map-pending safety (drain/unmap covers that).
+5. Post-submit wait timeout retains **this submission’s** staging/resources and
+   allows a later wait to complete; unrelated handle/ticket Drop during the
+   unlocked poll window may change total current and must not panic. Wait that
+   observes host loss during its poll returns `SP-GPU-002`. Map deadline
+   cancels via `unmap` and retries on the same ticket.
 6. Diagnose prints device/backend, accounted current/peak/budget, phase
    timings for upload/wait/readback; unavailable device → precise reason.
 

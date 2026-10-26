@@ -754,16 +754,16 @@ impl GpuContext {
         }
     }
 
-    /// Test/diagnose hook: next `wait` returns timeout without completing or freeing.
+    /// Test/diagnose hook: next `wait` returns timeout after releasing the ledger
+    /// (unlocked window) without completing or freeing this submission.
     pub fn inject_next_wait_timeout(&mut self) {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.inject_wait_timeout = true;
         }
     }
 
-    /// Test hook: next `map_readback` returns deadline **before** `map_async`.
-    /// Does not exercise real already-pending/already-mapped retry; that path
-    /// drains/unmaps on actual map poll timeout instead.
+    /// Test hook: next `map_readback` issues `map_async` (host) then takes the
+    /// deadline cancel path (`unmap` aborts pending map) — not a pre-map Err.
     pub fn inject_next_map_deadline(&mut self) {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.inject_map_deadline = true;
@@ -1552,6 +1552,12 @@ impl GpuContext {
         led.ensure_live(submission.context_id, submission.generation)?;
         if led.inject_wait_timeout {
             led.inject_wait_timeout = false;
+            // Release the ledger so unrelated handles may Drop during the
+            // unlocked window (same as a real poll); this submission is kept.
+            drop(led);
+            for _ in 0..64 {
+                std::thread::yield_now();
+            }
             return Err(submit_err(
                 "submission wait timed out (caller deadline; in-flight staging retained)",
             ));
@@ -1571,8 +1577,8 @@ impl GpuContext {
                 Some((d, _)) => d,
                 None => return Err(gpu_lost("device missing during wait")),
             };
-            // Drop ledger lock across poll (lost callback may need the mutex).
-            let staging_snapshot_current = led.tracker.current_bytes();
+            // Drop ledger lock across poll (lost callback may need the mutex;
+            // unrelated BufferHandle/TextureHandle/ReadbackTicket Drop is legal).
             drop(led);
             let poll = device.poll(wgpu::PollType::Wait {
                 submission_index: Some(index),
@@ -1587,11 +1593,10 @@ impl GpuContext {
             match poll {
                 Ok(_) => {}
                 Err(wgpu::PollError::Timeout) => {
-                    debug_assert_eq!(
-                        led.tracker.current_bytes(),
-                        staging_snapshot_current,
-                        "wait timeout must not change accounted bytes"
-                    );
+                    // Do not assert whole-ledger current_bytes: other threads may
+                    // have freed unrelated idle resources while the lock was down.
+                    // This submission's staging/resources stay reserved until a
+                    // later successful wait or teardown.
                     return Err(submit_err(
                         "submission wait timed out (caller deadline; in-flight staging retained)",
                     ));
@@ -1728,12 +1733,10 @@ impl GpuContext {
                 "readback",
             ));
         }
-        if led.inject_map_deadline {
+        // Consume inject flag up front; host path still issues map_async then cancels.
+        let force_deadline = led.inject_map_deadline;
+        if force_deadline {
             led.inject_map_deadline = false;
-            // GPU copy already finished (`mapped_ready`); deadline is caller-side only.
-            return Err(submit_err(
-                "map_readback deadline (staging retained for retry)",
-            ));
         }
 
         let st = led
@@ -1752,20 +1755,25 @@ impl GpuContext {
                     .backend_device_queue()
                     .ok_or_else(|| gpu_lost("device missing during map"))?
                     .0;
-                let start = Instant::now();
-                let map_result = loop {
-                    let _ = device.poll(wgpu::PollType::Poll);
-                    match rx.try_recv() {
-                        Ok(Ok(())) => break Ok(()),
-                        Ok(Err(e)) => break Err(format!("map_async failed: {e}")),
-                        Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            if start.elapsed() > Duration::from_secs(30) {
-                                break Err("map_async timed out".into());
+
+                let map_result = if force_deadline {
+                    Err("map_async timed out".to_string())
+                } else {
+                    let start = Instant::now();
+                    loop {
+                        let _ = device.poll(wgpu::PollType::Poll);
+                        match rx.try_recv() {
+                            Ok(Ok(())) => break Ok(()),
+                            Ok(Err(e)) => break Err(format!("map_async failed: {e}")),
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                if start.elapsed() > Duration::from_secs(30) {
+                                    break Err("map_async timed out".into());
+                                }
+                                std::thread::yield_now();
                             }
-                            std::thread::yield_now();
-                        }
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            break Err("map_async channel disconnected".into());
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                break Err("map_async channel disconnected".into());
+                            }
                         }
                     }
                 };
@@ -1792,35 +1800,17 @@ impl GpuContext {
                         data
                     }
                     Err(msg) if msg.contains("timed out") => {
-                        // Drain the in-flight map_async so a retry cannot hit
-                        // already-pending / already-mapped. Then unmap to Idle.
-                        let drained = loop {
-                            let _ = device.poll(wgpu::PollType::Poll);
-                            match rx.try_recv() {
-                                Ok(Ok(())) => break Ok(()),
-                                Ok(Err(e)) => break Err(format!("map_async failed: {e}")),
-                                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                                    std::thread::yield_now();
-                                }
-                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                    break Err("map_async channel disconnected".into());
-                                }
-                            }
-                        };
-                        match drained {
-                            Ok(()) => {
-                                buf.unmap();
-                            }
-                            Err(_) => {
-                                // Failed map_async: buffer was never mapped.
-                            }
-                        }
+                        // Bounded cancel: unmap terminates pending map_async
+                        // (Waiting→Idle + MapAborted). Do **not** wait on rx.
+                        buf.unmap();
+                        let _ = device.poll(wgpu::PollType::Poll);
+                        let _ = rx.try_recv(); // MapAborted or empty — never block
                         let mut led = self.resource_ledger.lock().expect("ledger");
                         if let Some(st) = led.stagings.get_mut(&staging_id) {
                             st.gpu = Some(GpuBuffer::Wgpu(buf));
                         }
                         Err(submit_err(format!(
-                            "{msg} (staging retained idle for retry; GPU copy already complete)"
+                            "{msg} (staging retained idle for retry; pending map cancelled via unmap)"
                         )))?
                     }
                     Err(msg) if msg.contains("disconnected") => {
@@ -1846,6 +1836,13 @@ impl GpuContext {
                 }
             }
             Some(GpuBuffer::Synthetic(data)) => {
+                if force_deadline {
+                    // No map_async on synthetic; restore and return deadline Err.
+                    st.gpu = Some(GpuBuffer::Synthetic(data));
+                    return Err(submit_err(
+                        "map_readback deadline (staging retained for retry)",
+                    ));
+                }
                 let accounted = st.accounted;
                 led.stagings.remove(&staging_id);
                 let _ = led.tracker.free(accounted);

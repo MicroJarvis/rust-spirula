@@ -228,6 +228,58 @@ fn synthetic_wait_timeout_retains_budget_then_retry_completes() {
 }
 
 #[test]
+fn synthetic_wait_timeout_allows_unrelated_drop_then_completes() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let mut ctx = open_ctx();
+    let idle = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:idle-drop").unwrap(),
+            size: 32,
+            usage: BufferUsage::COPY_DST,
+        })
+        .unwrap();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:timeout-drop").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[9u8; 64]).unwrap();
+    let sub = ctx.submit().unwrap();
+    let before = ctx.resource_accounting().current_bytes;
+    assert_eq!(before, 32 + 64 + 64); // idle + device + staging
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier_drop = Arc::clone(&barrier);
+    let dropper = thread::spawn(move || {
+        barrier_drop.wait();
+        drop(idle);
+    });
+
+    ctx.inject_next_wait_timeout();
+    // Release dropper as wait enters its unlocked timeout window (yields).
+    barrier.wait();
+    let err = ctx.wait(sub, None).unwrap_err();
+    dropper
+        .join()
+        .expect("idle drop must not panic via poisoned ledger");
+    assert_eq!(err.code(), ErrorCode::SubmitFailed);
+    let after = ctx.resource_accounting().current_bytes;
+    assert_eq!(
+        after,
+        before - 32,
+        "unrelated idle Drop during unlocked timeout is legal; submission retained"
+    );
+
+    ctx.wait(sub, None).unwrap();
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
 fn synthetic_map_deadline_retains_staging_for_retry() {
     let mut ctx = open_ctx();
     let buf = ctx
