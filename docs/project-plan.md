@@ -303,8 +303,12 @@ probe、SIGINT 0/1/2/130、rotated disk sink；真实 train/preview 仍不可用
 `spirula-xtask verify` 8/8。P2-F01（adapter 选择与能力协商）已在
 `spirula-gpu` 落地，契约见 `docs/phase-2/gpu-adapter.md`（wgpu 30.0.1、
 required/optional feature 与 limit、`ResolvedLimits` 保留 required floor、
-`spirula-gpu-diagnose`；无 device/queue/kernel）。代码 tip
-`20718b3077e581c951bc17dbce91e9c7cdc0285f`；下一步为 P2-F02。Phase 2 退出
-条件仍未满足。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，
-见 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因
-本次规划调整而提前完成。
+`spirula-gpu-diagnose`）。P2-F02（device/queue/context 生命周期）为**当前 /
+待审**：session-owned `GpuContext`、协商结果写入 `DeviceDescriptor`、
+`DeviceHandle` identity/generation、显式 close/`reopen`、typed lost notice
+（不写 SessionState、无隐式重建）；契约见
+`docs/phase-2/device-context.md`；窄入口 `spirula-gpu-diagnose --device`。
+未接 application/CLI/UI；无 buffer/pipeline/compute；完整诊断事件仍 P2-F05。
+Phase 2 退出条件仍未满足。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能
+与依赖调整，见 [审查记录](research/ooosplat-brush-review.md)。训练与 UI
+实现状态没有因本次规划调整而提前完成。

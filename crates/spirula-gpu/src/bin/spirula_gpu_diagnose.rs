@@ -1,11 +1,12 @@
-//! Headless GPU adapter diagnose entry for P2-F01.
+//! Headless GPU diagnose entry for P2-F01 (enumerate/select) and P2-F02 (device).
 //!
-//! Not a shared-session CLI command. Prints adapter table + auto-selection.
+//! Not a shared-session CLI command. Default path enumerates adapters; `--device`
+//! opens a session-owned context, prints the device report, and closes.
 
 use spirula_core::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 use spirula_gpu::{
-    CapabilityRequest, FieldAvailability, WGPU_VERSION, diagnose_exit_code,
-    enumerate_host_adapters, select_auto,
+    CapabilityRequest, FieldAvailability, OpenFailureStage, WGPU_VERSION, diagnose_device_open,
+    diagnose_exit_code, enumerate_host_adapters, format_device_report, select_auto,
 };
 use std::env;
 use std::process::ExitCode;
@@ -16,12 +17,19 @@ fn main() -> ExitCode {
         print_help();
         return ExitCode::from(EXIT_SUCCESS);
     }
-    if !args.is_empty() {
-        eprintln!("error: unknown argument (usage: spirula-gpu-diagnose [--help])");
+
+    let device = args.iter().any(|a| a == "--device");
+    let unknown: Vec<&String> = args.iter().filter(|a| a.as_str() != "--device").collect();
+    if !unknown.is_empty() {
+        eprintln!("error: unknown argument (usage: spirula-gpu-diagnose [--device] [--help])");
         return ExitCode::from(EXIT_USAGE);
     }
 
-    match run() {
+    match if device {
+        run_device()
+    } else {
+        run_enumerate()
+    } {
         Ok(()) => ExitCode::from(EXIT_SUCCESS),
         Err(code) => ExitCode::from(code),
     }
@@ -29,19 +37,21 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "spirula-gpu-diagnose — enumerate wgpu adapters and auto-select (P2-F01)\n\
+        "spirula-gpu-diagnose — enumerate adapters / open session device (P2-F01/P2-F02)\n\
          \n\
          Usage:\n\
            spirula-gpu-diagnose\n\
+           spirula-gpu-diagnose --device\n\
            spirula-gpu-diagnose --help\n\
          \n\
-         Exit codes: 0 success, 1 no eligible adapter (SP-GPU-001), 2 usage.\n\
+         Exit codes: 0 success, 1 adapter/device unavailable, 2 usage.\n\
          wgpu pin: {WGPU_VERSION}\n\
-         Does not create a device/queue (P2-F02) and is not a session CLI command."
+         --device opens then closes a session-owned context; not a session CLI command.\n\
+         Does not claim compute/train/UI readiness."
     );
 }
 
-fn run() -> Result<(), u8> {
+fn run_enumerate() -> Result<(), u8> {
     println!("spirula-gpu-diagnose");
     println!("wgpu_version={WGPU_VERSION}");
     let adapters = enumerate_host_adapters().map_err(|e| diagnose_exit_code(&e))?;
@@ -125,6 +135,37 @@ fn run() -> Result<(), u8> {
                 };
             eprintln!("{line}");
             Err(diagnose_exit_code(&err).max(EXIT_FAILURE))
+        }
+    }
+}
+
+fn run_device() -> Result<(), u8> {
+    println!("spirula-gpu-diagnose --device");
+    println!("wgpu_version={WGPU_VERSION}");
+    let request = CapabilityRequest::diagnose_default();
+    match diagnose_device_open(&request) {
+        Ok(report) => {
+            print!("{}", format_device_report(&report));
+            println!("note: device open/close succeeded; not a compute/train/UI readiness claim");
+            Ok(())
+        }
+        Err(failure) => {
+            let line =
+                if env::var_os("SPIRULA_ERROR_CODES").is_some_and(|v| v == "1" || v == "true") {
+                    failure.error.cli_stderr_line(true)
+                } else {
+                    failure.error.cli_stderr_line(false)
+                };
+            eprintln!("{line}");
+            eprintln!(
+                "open_failure_stage={:?}{}",
+                failure.stage,
+                match failure.stage {
+                    OpenFailureStage::EnumerateEmpty => " (no adapter — not a false pass)",
+                    _ => "",
+                }
+            );
+            Err(diagnose_exit_code(&failure.error).max(EXIT_FAILURE))
         }
     }
 }
