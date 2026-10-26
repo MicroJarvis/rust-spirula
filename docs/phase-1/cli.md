@@ -94,7 +94,10 @@ flush+join.
 
 Full / oversized → drop counters. Write failure → counters + at most one
 in-memory `Warning` per sink lifetime (`field=disk_log`; never re-enters the
-sink). Rotation rebuilds inventory from the real directory (numeric order);
+sink). The Warning is sized with F07 `bound_error` under `SessionLimits`.
+Join’s absolute deadline includes mutex acquisition across clones; Drop
+always signals OOB shutdown even with a zero remaining teardown budget.
+Rotation rebuilds inventory from the real directory (numeric order);
 failed `remove_file` does not subtract bytes or forget the path. Non-file
 siblings (e.g. directories named like `stem.N`) are not treated as successful
 trims.

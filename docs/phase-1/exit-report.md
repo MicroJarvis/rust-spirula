@@ -193,7 +193,7 @@ approved.
 | CLI crate | `crates/spirula-cli` (deps: `spirula-core`, `spirula-application`) |
 | Disk sink | `crates/spirula-application/src/disk_log.rs` |
 | Subprocess / SIGINT / cancel-gap | `crates/spirula-cli/tests/cli_subprocess.rs` (`sigint_at_load_run_gap_*`, `sigint_while_stdout_blocked_*`) |
-| Session disk | `crates/spirula-application/tests/disk_diagnostics.rs` |
+| Session disk / bounded Warning | `crates/spirula-application/tests/disk_diagnostics.rs`; `disk_log` join/mutex unit tests |
 | Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded in commit) |
 
 ## Non-claims

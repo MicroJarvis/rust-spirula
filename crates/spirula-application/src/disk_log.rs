@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -369,20 +369,31 @@ impl DiskLogHandle {
         }
     }
 
-    /// Stop the sink within one absolute `deadline` from entry.
-    ///
-    /// Shutdown is signaled out-of-band so a full data queue cannot block
-    /// cancellation. On timeout the join handle is retained and this returns
-    /// `false`; a later retry may still succeed. Never returns `true` while
-    /// the sink thread is known alive.
-    pub fn join(&self, deadline: Duration) -> bool {
-        let end = Instant::now() + deadline;
+    /// Signal out-of-band shutdown without waiting for the sink thread.
+    /// Safe to call repeatedly; used when Drop has no remaining join budget.
+    pub fn signal_shutdown(&self) {
         self.closed.store(true, Ordering::Release);
         self.shutdown.store(true, Ordering::Release);
+    }
 
-        let mut slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
+    /// Stop the sink within one absolute `deadline` from entry (includes
+    /// join-mutex acquisition). Concurrent clones that cannot acquire the
+    /// mutex before the deadline return `false` without claiming success.
+    ///
+    /// Shutdown is always signaled out-of-band first so a full data queue
+    /// cannot block cancellation. On timeout the join handle is retained and
+    /// this returns `false`; a later retry may still succeed. Never returns
+    /// `true` while the sink thread is known alive.
+    pub fn join(&self, deadline: Duration) -> bool {
+        let end = Instant::now() + deadline;
+        self.signal_shutdown();
+
+        let Some(mut slot) = try_lock_until(&self.join, end) else {
+            // Deadline spent waiting for another join; sink may still be alive.
+            return false;
+        };
         let Some(handle) = slot.take() else {
-            // Prior successful join, or concurrent join won the race.
+            // Prior successful join, or concurrent join finished it.
             return true;
         };
         while Instant::now() < end {
@@ -402,11 +413,34 @@ impl DiskLogHandle {
     }
 
     /// Whether the sink thread handle is still held (not successfully joined).
+    /// If another join holds the mutex, reports alive (honest under contention).
     pub fn sink_alive(&self) -> bool {
-        let slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
-        match slot.as_ref() {
-            Some(h) => !h.is_finished(),
-            None => false,
+        match self.join.try_lock() {
+            Ok(slot) => match slot.as_ref() {
+                Some(h) => !h.is_finished(),
+                None => false,
+            },
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Poisoned(p)) => match p.into_inner().as_ref() {
+                Some(h) => !h.is_finished(),
+                None => false,
+            },
+        }
+    }
+}
+
+/// Acquire `mutex` without exceeding absolute `end`. Returns `None` on timeout.
+fn try_lock_until<'a, T>(mutex: &'a Mutex<T>, end: Instant) -> Option<MutexGuard<'a, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                if Instant::now() >= end {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 }
@@ -808,6 +842,61 @@ mod tests {
             let _reader = File::open(&fifo);
             let _ = handle.join(Duration::from_secs(2));
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_join_deadline_includes_mutex_wait() {
+        let dir = temp_dir("conc-join");
+        let fifo = dir.join("spirula-diagnostics.log");
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            let c = CString::new(fifo.to_str().unwrap()).unwrap();
+            unsafe {
+                assert_eq!(libc::mkfifo(c.as_ptr(), 0o644), 0);
+            }
+        }
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(DiskLogLimits {
+            queue_capacity: 1,
+            ..DiskLogLimits::for_test()
+        }));
+        let clone = handle.clone();
+        let _ = handle.try_enqueue_line("block-open");
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let long = thread::spawn(move || {
+            let _ = ready_tx.send(());
+            // Holds the join mutex while the sink is stalled on FIFO open.
+            let _ = clone.join(Duration::from_millis(400));
+        });
+        ready_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        let ok = handle.join(Duration::from_millis(40));
+        let elapsed = start.elapsed();
+        assert!(!ok, "must not claim success while contended/alive");
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "absolute deadline must include lock wait: {elapsed:?}"
+        );
+        let _reader = File::open(&fifo);
+        let _ = handle.join(Duration::from_secs(2));
+        let _ = long.join();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn join_zero_deadline_still_signals_shutdown() {
+        let dir = temp_dir("join-zero");
+        let handle =
+            DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(DiskLogLimits::for_test()));
+        let _ = handle.try_enqueue_line("x");
+        // Zero budget must still trip OOB shutdown; retry can finish the join.
+        let _ = handle.join(Duration::ZERO);
+        // Enqueues after signal must drop (closed/shutdown).
+        assert!(!handle.try_enqueue_line("after-signal"));
+        assert!(handle.join(Duration::from_secs(1)));
+        assert!(!handle.sink_alive());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -603,11 +603,14 @@ impl Drop for ApplicationService {
         if let Ok(mut w) = self.shared.worker.lock() {
             w.shutdown_join();
         }
-        // Disk flush+join share the *remaining* teardown budget (one absolute
-        // wall clock for the whole Drop disk phase).
+        // Disk flush+join share the *remaining* teardown budget. Always signal
+        // OOB shutdown (even with zero remaining budget) so a live clone/state
+        // sender cannot leave the sink thread running after Drop.
         if let Some(disk) = &self.shared.disk_log {
             let left = end.saturating_duration_since(Instant::now());
-            if !left.is_zero() {
+            if left.is_zero() {
+                let _ = disk.join(Duration::ZERO);
+            } else {
                 let flush_budget = left / 2;
                 let _ = disk.flush(flush_budget);
                 let join_budget = end.saturating_duration_since(Instant::now());
@@ -1476,6 +1479,8 @@ fn emit_disk_failure_warning_once(st: &mut State, notifier: &Arc<Notifier>) {
         .expect("message")
         .with_context(ContextKey::Field, "disk_log")
         .expect("field");
+    // Same F07 event-size path as other Warning payloads; never re-enter disk.
+    let error = bound_error(&error, &st.limits);
     // Publish in-memory only: mirror_disk_log skips field=disk_log warnings.
     let seq = st.next_seq();
     let envelope = EventEnvelope {

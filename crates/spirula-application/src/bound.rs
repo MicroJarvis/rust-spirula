@@ -145,20 +145,28 @@ pub(crate) fn bound_error(error: &DomainError, limits: &SessionLimits) -> Domain
     if let Some(action) = visible.user_action() {
         substitute = substitute.with_user_action(action);
     }
-    // Add a short field context only while the result still fits the cap.
-    if let Ok(with_field) = DomainError::try_new(visible.code(), OVERSIZED_ERROR_MESSAGE)
-        .expect("message")
-        .with_context(ContextKey::Field, "error_payload")
-    {
-        let mut with_field = with_field;
-        if let Some(retryable) = visible.retryable_override() {
-            with_field = with_field.with_retryable(retryable);
-        }
-        if let Some(action) = visible.user_action() {
-            with_field = with_field.with_user_action(action);
-        }
-        if error_fits(&with_field, limits) {
-            return with_field;
+    // Prefer preserving an original Field (e.g. disk_log non-recursive marker),
+    // then a generic overflow marker — only while the result still fits.
+    let mut field_candidates: Vec<&str> = Vec::with_capacity(2);
+    if let Some(existing) = visible.context_value(ContextKey::Field) {
+        field_candidates.push(existing);
+    }
+    field_candidates.push("error_payload");
+    for field in field_candidates {
+        if let Ok(with_field) = DomainError::try_new(visible.code(), OVERSIZED_ERROR_MESSAGE)
+            .expect("message")
+            .with_context(ContextKey::Field, field)
+        {
+            let mut with_field = with_field;
+            if let Some(retryable) = visible.retryable_override() {
+                with_field = with_field.with_retryable(retryable);
+            }
+            if let Some(action) = visible.user_action() {
+                with_field = with_field.with_user_action(action);
+            }
+            if error_fits(&with_field, limits) {
+                return with_field;
+            }
         }
     }
     debug_assert!(
