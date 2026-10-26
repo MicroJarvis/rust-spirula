@@ -263,15 +263,19 @@ reserved for a future **explicit Save** command failure after entering
   `ApplicationService::start_with(..., Some(DiskLogConfig))`. Caps:
   `line_max_bytes`, `queue_capacity`, `tail_capacity`, `rotation_bytes`,
   `max_files`, `global_disk_budget_bytes`, `flush_join_deadline`. Async
-  sink with `try_enqueue` only; drop/failure counters; at most one
-  in-memory `Warning` (`field=disk_log`) on write failure — never a
-  recursive disk-bound warning loop. That Warning is passed through the
-  same F07 `bound_error` / `SessionLimits` caps as other event errors.
-  Flush/join use one absolute deadline that includes join-mutex wait;
-  timed-out join keeps the handle (`sink_alive`) for an honest retry.
-  Service Drop always signals OOB disk shutdown even when the remaining
-  teardown budget is zero, then joins under whatever budget remains.
-  Workers never await the sink. Details: [cli.md](cli.md).
+  sink with `try_enqueue` only; drop/failure/degraded counters; at most one
+  in-memory `Warning` (`field=disk_log`) on write failure or policy
+  degrade — never a recursive disk-bound warning loop. That Warning is
+  passed through the same F07 `bound_error` / `SessionLimits` caps as
+  other event errors. When rotation/trim cannot keep owned files within
+  `max_files` / `rotation_bytes` / `global_disk_budget_bytes`, further
+  appends stop (existing data preserved). Startup enforces `max_files`
+  against on-disk siblings before accepting writes. Flush/join use one
+  absolute deadline that includes join-mutex wait; timed-out join keeps
+  the handle (`sink_alive`) for an honest retry. Service Drop always
+  signals OOB disk shutdown even when the remaining teardown budget is
+  zero, then joins under whatever budget remains. Workers never await
+  the sink. Details: [cli.md](cli.md).
 
 ### Run identity
 

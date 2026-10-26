@@ -100,7 +100,12 @@ always signals OOB shutdown even with a zero remaining teardown budget.
 Rotation rebuilds inventory from the real directory (numeric order);
 failed `remove_file` does not subtract bytes or forget the path. Non-file
 siblings (e.g. directories named like `stem.N`) are not treated as successful
-trims.
+trims and block rotation — the sink then enters **degraded** mode
+(`writes_disabled`, `dropped_degraded`, `degraded` counters + Warning): no
+further appends that would violate `rotation_bytes` / `global_disk_budget_bytes`
+/ `max_files`. Startup trims all owned numeric siblings until `max_files`
+holds (no arbitrary iteration ceiling); if caps still cannot be met, degraded
+starts before accepting writes.
 
 **Honest limit:** the sink thread itself may block inside kernel open/write
 on a FIFO or hanging filesystem; caller-side `join` still returns by the

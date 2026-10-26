@@ -180,11 +180,15 @@ pub struct DiskLogCounters {
     pub written: u64,
     pub dropped_full: u64,
     pub dropped_oversized: u64,
+    /// Dropped because rotation/trim could not keep owned files within caps.
+    pub dropped_degraded: u64,
     pub write_failures: u64,
     pub rotations: u64,
     pub budget_trimmed: u64,
     pub open_failures: u64,
     pub trim_failures: u64,
+    /// Non-zero once the sink entered degraded (no further disk appends).
+    pub degraded: u64,
 }
 
 enum DataMsg {
@@ -199,6 +203,8 @@ struct SharedCounters {
     failure_pending: AtomicBool,
     /// Lifetime latch: at most one in-memory warning for this sink.
     warning_surfaced: AtomicBool,
+    /// Out-of-band: further enqueues/writes are dropped (policy degraded).
+    writes_disabled: AtomicBool,
 }
 
 impl SharedCounters {
@@ -217,6 +223,27 @@ impl SharedCounters {
         if !self.warning_surfaced.load(Ordering::Acquire) {
             self.failure_pending.store(true, Ordering::Release);
         }
+    }
+
+    fn enter_degraded(&self) {
+        if self
+            .writes_disabled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.with(|c| {
+                c.degraded = 1;
+            });
+            if !self.warning_surfaced.load(Ordering::Acquire) {
+                self.failure_pending.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    fn note_dropped_degraded(&self) {
+        self.with(|c| {
+            c.dropped_degraded = c.dropped_degraded.saturating_add(1);
+        });
     }
 }
 
@@ -244,6 +271,7 @@ impl DiskLogHandle {
             counters: Mutex::new(DiskLogCounters::default()),
             failure_pending: AtomicBool::new(false),
             warning_surfaced: AtomicBool::new(false),
+            writes_disabled: AtomicBool::new(false),
         });
         let shutdown = Arc::new(AtomicBool::new(false));
         let shared_thread = Arc::clone(&shared);
@@ -305,7 +333,12 @@ impl DiskLogHandle {
         true
     }
 
-    /// Non-blocking enqueue. Oversized / full / closed → drop + counter.
+    /// True when rotation/trim could not honor caps; further writes are dropped.
+    pub fn writes_disabled(&self) -> bool {
+        self.shared.writes_disabled.load(Ordering::Acquire)
+    }
+
+    /// Non-blocking enqueue. Oversized / full / closed / degraded → drop + counter.
     /// Newline and CR are rejected (count as oversized), not silently stripped
     /// into a longer-than-cap payload.
     pub fn try_enqueue_line(&self, line: impl Into<String>) -> bool {
@@ -313,6 +346,10 @@ impl DiskLogHandle {
             self.shared.with(|c| {
                 c.dropped_full = c.dropped_full.saturating_add(1);
             });
+            return false;
+        }
+        if self.shared.writes_disabled.load(Ordering::Acquire) {
+            self.shared.note_dropped_degraded();
             return false;
         }
         let line = line.into();
@@ -482,8 +519,24 @@ impl SinkState {
         };
         state.reopen_active();
         state.rebuild_inventory_from_disk();
+        // Enforce max_files / budget before any accepted write — no false caps.
         state.trim_to_policy();
+        if !state.policy_ok() {
+            state.shared.enter_degraded();
+        }
         state
+    }
+
+    /// Owned active file (if present) + rotated file count and byte budget.
+    /// Active must stay strictly below `rotation_bytes` (rotate before next append).
+    fn policy_ok(&self) -> bool {
+        let active_file = fs::metadata(&self.active_path)
+            .ok()
+            .is_some_and(|m| m.is_file());
+        let owned = usize::from(active_file) + self.rotated.len();
+        owned <= self.limits.max_files
+            && self.total_bytes <= self.limits.global_disk_budget_bytes
+            && self.active_bytes < self.limits.rotation_bytes
     }
 
     fn reopen_active(&mut self) {
@@ -569,11 +622,36 @@ impl SinkState {
     }
 
     fn write_line(&mut self, line: &str) {
+        if self.shared.writes_disabled.load(Ordering::Acquire) {
+            self.shared.note_dropped_degraded();
+            return;
+        }
+        let payload_len = (line.len() as u64).saturating_add(1);
+        // Rotate before append when the active file is already at the threshold.
+        if self.active_bytes >= self.limits.rotation_bytes {
+            self.rotate();
+            if self.active_bytes >= self.limits.rotation_bytes {
+                self.shared.enter_degraded();
+                self.shared.note_dropped_degraded();
+                return;
+            }
+        }
+        // Do not grow past the global budget when trim cannot free space.
+        if self.total_bytes.saturating_add(payload_len) > self.limits.global_disk_budget_bytes {
+            self.trim_to_policy();
+            if self.total_bytes.saturating_add(payload_len) > self.limits.global_disk_budget_bytes {
+                self.shared.enter_degraded();
+                self.shared.note_dropped_degraded();
+                return;
+            }
+        }
         if self.file.is_none() {
             self.reopen_active();
         }
         let Some(file) = self.file.as_mut() else {
             self.shared.note_io_failure(false);
+            self.shared.enter_degraded();
+            self.shared.note_dropped_degraded();
             return;
         };
         let payload = format!("{line}\n");
@@ -582,7 +660,6 @@ impl SinkState {
             .and_then(|_| file.flush())
         {
             Ok(()) => {
-                // Prefer actual file length after write for honest accounting.
                 if let Ok(meta) = fs::metadata(&self.active_path) {
                     self.active_bytes = meta.len();
                 } else {
@@ -598,10 +675,14 @@ impl SinkState {
                 } else {
                     self.trim_to_policy();
                 }
+                if !self.policy_ok() {
+                    self.shared.enter_degraded();
+                }
             }
             Err(_) => {
                 self.file = None;
                 self.shared.note_io_failure(false);
+                self.shared.enter_degraded();
             }
         }
     }
@@ -637,10 +718,17 @@ impl SinkState {
     fn rotate(&mut self) {
         self.file = None;
         // Free a slot among retained files if needed (active will become .1).
-        self.trim_to_policy_for_count(self.limits.max_files.saturating_sub(1).max(1));
+        self.trim_to_policy_for_count(self.limits.max_files.saturating_sub(1));
 
-        // Shift on-disk names by rebuilding after each rename attempt.
-        let max_idx = self.limits.max_files.saturating_mul(2).max(8);
+        // Shift owned file siblings; bound by the real inventory size, not an
+        // arbitrary constant that can leave hundreds of files behind.
+        self.rebuild_inventory_from_disk();
+        let max_idx = self
+            .rotated
+            .len()
+            .saturating_add(2)
+            .max(self.limits.max_files.saturating_mul(2))
+            .max(8);
         for idx in (1..=max_idx).rev() {
             let from = self.directory.join(format!("{}.{}", self.stem, idx));
             let to = self.directory.join(format!("{}.{}", self.stem, idx + 1));
@@ -649,47 +737,57 @@ impl SinkState {
             }
         }
         let dest = self.directory.join(format!("{}.1", self.stem));
+        // Non-file occupants of `.1` (directories) block rotation — do not
+        // pretend the active file was rotated.
+        if dest.exists() && !dest.is_file() {
+            self.shared.note_io_failure(false);
+            self.recompute_total_from_disk();
+            return;
+        }
         match fs::rename(&self.active_path, &dest) {
             Ok(()) => {
                 self.shared.with(|c| {
                     c.rotations = c.rotations.saturating_add(1);
                 });
+                self.active_bytes = 0;
+                self.reopen_active();
             }
             Err(_) => {
                 self.shared.note_io_failure(false);
+                // Keep the oversized active file; caller must degrade.
+                self.reopen_active();
             }
         }
-        self.active_bytes = 0;
-        self.reopen_active();
-        // Always refresh paths from disk after renames — never keep stale
-        // VecDeque entries that still point at pre-rename names.
         self.rebuild_inventory_from_disk();
         self.trim_to_policy();
     }
 
     fn trim_to_policy(&mut self) {
         self.trim_to_policy_for_count(self.limits.max_files.saturating_sub(1));
-        // Budget trim: remove oldest rotated files (highest index = back).
-        let mut guard = 0;
-        while self.total_bytes > self.limits.global_disk_budget_bytes && guard < 64 {
-            guard += 1;
+        // Budget trim: remove oldest rotated files until under budget or stuck.
+        loop {
             self.rebuild_inventory_from_disk();
+            if self.total_bytes <= self.limits.global_disk_budget_bytes {
+                break;
+            }
             let Some(old) = self.rotated.pop_back() else {
                 break;
             };
             if !self.try_remove_owned_file(&old) {
-                // Keep the undeleted file in inventory; stop looping on it.
                 self.rotated.push_back(old);
                 break;
             }
-            self.rebuild_inventory_from_disk();
         }
     }
 
     fn trim_to_policy_for_count(&mut self, max_rotated: usize) {
-        let mut guard = 0;
-        while self.rotated.len() > max_rotated && guard < 64 {
-            guard += 1;
+        // No arbitrary iteration ceiling — keep deleting until the cap holds
+        // or a remove fails (then degrade at the call site via policy_ok).
+        loop {
+            self.rebuild_inventory_from_disk();
+            if self.rotated.len() <= max_rotated {
+                break;
+            }
             let Some(old) = self.rotated.pop_back() else {
                 break;
             };
@@ -697,7 +795,6 @@ impl SinkState {
                 self.rotated.push_back(old);
                 break;
             }
-            self.rebuild_inventory_from_disk();
         }
     }
 }
@@ -1047,6 +1144,76 @@ mod tests {
             handle.counters()
         );
         assert!(handle.join(Duration::from_secs(1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn directory_sibling_blocks_rotation_enters_degraded_within_budget() {
+        // Probe: nonempty dir named stem.1 blocks rename; must not keep
+        // appending past rotation/budget (was 1700 bytes on budget 128).
+        let dir = temp_dir("rot-dir-block");
+        fs::create_dir_all(dir.join("spirula-diagnostics.log.1")).unwrap();
+        let mut limits = DiskLogLimits::for_test();
+        limits.line_max_bytes = 16;
+        limits.rotation_bytes = 64;
+        limits.global_disk_budget_bytes = 128;
+        limits.queue_capacity = 128;
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
+        let mut accepted = 0u32;
+        for _ in 0..100 {
+            if handle.try_enqueue_line("1234567890123456") {
+                accepted += 1;
+            }
+        }
+        assert!(handle.flush(Duration::from_secs(3)));
+        let active = dir.join("spirula-diagnostics.log");
+        let bytes = fs::metadata(&active).map(|m| m.len()).unwrap_or(0);
+        let c = handle.counters();
+        assert!(
+            bytes <= 128,
+            "active must stay within budget; bytes={bytes} counters={c:?}"
+        );
+        assert!(
+            c.degraded >= 1 || handle.writes_disabled(),
+            "must enter degraded when rotation cannot proceed: {c:?}"
+        );
+        assert!(
+            c.dropped_degraded >= 1 || accepted < 100,
+            "further writes must drop once degraded: accepted={accepted} {c:?}"
+        );
+        assert!(handle.take_failure_notice() || c.degraded >= 1);
+        assert!(handle.join(Duration::from_secs(2)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_trims_all_owned_siblings_to_max_files() {
+        // Probe: 200 numeric siblings + max_files=3 must not stop after 64
+        // iterations leaving ~137 files.
+        let dir = temp_dir("startup-trim");
+        for i in 1..=200 {
+            fs::write(dir.join(format!("spirula-diagnostics.log.{i}")), b"x").unwrap();
+        }
+        let mut limits = DiskLogLimits::for_test();
+        limits.max_files = 3;
+        limits.global_disk_budget_bytes = 1_000_000;
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
+        assert!(handle.flush(Duration::from_secs(3)));
+        let files = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.metadata().map(|m| m.is_file()).unwrap_or(false))
+            .count();
+        assert!(
+            files <= 3,
+            "startup must enforce max_files=3; actual={files} counters={:?}",
+            handle.counters()
+        );
+        assert!(
+            !handle.writes_disabled(),
+            "writable siblings must trim cleanly"
+        );
+        assert!(handle.join(Duration::from_secs(2)));
         let _ = fs::remove_dir_all(&dir);
     }
 
