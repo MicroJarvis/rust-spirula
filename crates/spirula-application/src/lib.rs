@@ -20,7 +20,9 @@ mod state;
 mod worker;
 
 pub use command::{Command, CommandPayload, SubmitOutcome};
-pub use disk_log::{DiskLogConfig, DiskLogCounters, DiskLogHandle, DiskLogLimits};
+pub use disk_log::{
+    DiskLogConfig, DiskLogCounters, DiskLogHandle, DiskLogLimits, validate_file_stem,
+};
 pub use event::{
     CommandResult, CursorError, DropCounters, Event, EventCursor, EventEnvelope, LogLevel,
     ReplayOutcome, RunOutcome, Snapshot,

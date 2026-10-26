@@ -149,6 +149,7 @@ dependencies = [
 name = "spirula-application"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "spirula-core",
 ]
 

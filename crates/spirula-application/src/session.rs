@@ -147,15 +147,16 @@ pub struct ApplicationService {
 
 impl ApplicationService {
     pub fn start(limits: SessionLimits) -> Self {
-        Self::start_with(limits, None)
+        Self::start_with(limits, None).expect("start without disk log")
     }
 
     /// Start with optional rotated disk diagnostics (P1-F09). Disk I/O never
-    /// blocks command admission, workers, or notify fanout.
+    /// blocks command admission, workers, or notify fanout. Invalid
+    /// `DiskLogConfig::file_stem` returns a typed `DomainError`.
     pub fn start_with(
         limits: SessionLimits,
         disk_log: Option<crate::disk_log::DiskLogConfig>,
-    ) -> Self {
+    ) -> Result<Self, DomainError> {
         let limits = limits.normalized();
         let session_id = SessionId::allocate();
         let notifier = Notifier::new(&limits);
@@ -200,7 +201,10 @@ impl ApplicationService {
             progress_tx.clone(),
             result_tx.clone(),
         );
-        let disk_handle = disk_log.map(DiskLogHandle::start);
+        let disk_handle = match disk_log {
+            Some(cfg) => Some(DiskLogHandle::try_start(cfg)?),
+            None => None,
+        };
         state.disk_log = disk_handle.clone();
         let shared = Arc::new(Shared {
             state: Mutex::new(state),
@@ -217,13 +221,13 @@ impl ApplicationService {
             .spawn(move || owner_loop(owner_shared, work_rx, progress_rx, result_rx))
             .expect("spawn owner");
 
-        Self {
+        Ok(Self {
             shared,
             work_tx,
             progress_inject_tx: progress_tx,
             result_inject_tx: result_tx,
             owner: Mutex::new(Some(owner)),
-        }
+        })
     }
 
     pub fn session_id(&self) -> SessionId {
@@ -574,11 +578,11 @@ impl Drop for ApplicationService {
             let _ = st.cancel.request(CancelReason::Shutdown);
         }
         let _ = self.submit(Command::new(CommandPayload::Shutdown));
-        let deadline = lock(&self.shared.state).limits.teardown_deadline;
+        let budget = lock(&self.shared.state).limits.teardown_deadline;
+        let end = Instant::now() + budget;
         if let Some(handle) = self.owner.lock().expect("owner").take() {
-            let start = Instant::now();
             while !handle.is_finished() {
-                if start.elapsed() >= deadline {
+                if Instant::now() >= end {
                     let mut st = lock(&self.shared.state);
                     if !st.shutdown_done {
                         force_teardown_terminals(&mut st, &self.shared.notifier);
@@ -599,11 +603,16 @@ impl Drop for ApplicationService {
         if let Ok(mut w) = self.shared.worker.lock() {
             w.shutdown_join();
         }
-        // Disk sink flush/join under the same teardown deadline (never blocks
-        // workers while running; only Drop waits).
+        // Disk flush+join share the *remaining* teardown budget (one absolute
+        // wall clock for the whole Drop disk phase).
         if let Some(disk) = &self.shared.disk_log {
-            let _ = disk.flush(deadline);
-            let _ = disk.join(deadline);
+            let left = end.saturating_duration_since(Instant::now());
+            if !left.is_zero() {
+                let flush_budget = left / 2;
+                let _ = disk.flush(flush_budget);
+                let join_budget = end.saturating_duration_since(Instant::now());
+                let _ = disk.join(join_budget);
+            }
         }
     }
 }

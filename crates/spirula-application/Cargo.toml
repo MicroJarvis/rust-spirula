@@ -11,5 +11,8 @@ publish = false
 [dependencies]
 spirula-core = { path = "../spirula-core" }
 
+[dev-dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

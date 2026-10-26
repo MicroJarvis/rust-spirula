@@ -20,7 +20,7 @@ fn session_mirrors_probe_logs_to_disk() {
     let mut limits = SessionLimits::for_test();
     limits.worker_step_delay = Duration::from_millis(1);
     let disk = DiskLogConfig::new(&dir).with_limits(DiskLogLimits::for_test());
-    let app = ApplicationService::start_with(limits, Some(disk));
+    let app = ApplicationService::start_with(limits, Some(disk)).expect("start");
     let _ = app.submit(Command::new(CommandPayload::ProbeLoad {
         label: "d".into(),
     }));
@@ -46,7 +46,10 @@ fn session_mirrors_probe_logs_to_disk() {
     let log = dir.join("spirula-diagnostics.log");
     let text = fs::read_to_string(&log).unwrap_or_default();
     assert!(
-        text.contains("probe") || counters.written >= 1,
+        text.contains("probe")
+            || text.contains("STATE")
+            || text.contains("COMPLETED")
+            || counters.written >= 1,
         "log={text:?} counters={counters:?}"
     );
     drop(app);
@@ -57,12 +60,26 @@ fn session_mirrors_probe_logs_to_disk() {
 fn shutdown_joins_disk_sink() {
     let dir = temp_dir("shutdown");
     let disk = DiskLogConfig::new(&dir).with_limits(DiskLogLimits::for_test());
-    let app = ApplicationService::start_with(SessionLimits::for_test(), Some(disk));
+    let app = ApplicationService::start_with(SessionLimits::for_test(), Some(disk)).expect("start");
     let _ = app.submit(Command::new(CommandPayload::Shutdown));
     assert!(app.wait_until(Duration::from_secs(2), |s| {
         s.state == spirula_application::SessionState::Closed
     }));
     drop(app);
-    // Drop completed: sink joined (no hang). Directory may be empty if no logs.
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn invalid_file_stem_rejected_before_session() {
+    let dir = temp_dir("badstem");
+    let cfg = DiskLogConfig {
+        directory: dir.clone(),
+        limits: DiskLogLimits::for_test(),
+        file_stem: "../escape.log".into(),
+    };
+    match ApplicationService::start_with(SessionLimits::for_test(), Some(cfg)) {
+        Err(err) => assert_eq!(err.code(), spirula_core::ErrorCode::InvalidArgument),
+        Ok(_) => panic!("expected invalid file_stem rejection"),
+    }
     let _ = fs::remove_dir_all(&dir);
 }

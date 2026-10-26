@@ -166,16 +166,20 @@ parent tip `26da464` (P1-F08 on main).
 
 ## Scope and result
 
-P1-F09 is complete: `spirula-cli` is a core+application adapter with help,
-capabilities, explicit fake `probe-load` / `probe-run` / `probe` entry,
-unavailable `train`/`preview` (exit 2), stable exits 0/1/2/130, SIGINT →
-`Stop{save:true}` then exit 130 (second SIGINT restores default disposition),
-and terminal recovery via `command_result` when the live subscriber drops.
-Application owns optional rotated disk diagnostics (bounded line/queue/tail/
-rotation/files/global budget; async sink; drop/failure counters; flush/join
-deadlines; no recursive warning loops). Real train/preview remain later.
-Phase 1 feature table (P1-F01–P1-F09) is complete; next feature is P2-F01.
-Branch remains unmerged until explicitly approved.
+P1-F09 is complete after HOLD-MERGE review fixes: `spirula-cli` is a
+core+application adapter with help, capabilities, explicit fake
+`probe-load` / `probe-run` / `probe` entry, unavailable `train`/`preview`
+(exit 2), stable exits 0/1/2/130, SIGINT → `Stop{save:true}` then exit 130,
+second SIGINT → `SIG_DFL` + `raise` (exactly two signals terminate with
+SIGINT). Terminal recovery via `command_result` every loop; exactly one
+stderr `error:` line with stable codes. Application owns optional rotated
+disk diagnostics (basename-validated stem; bounded line/queue/tail/rotation/
+files/global budget including newline; out-of-band shutdown; absolute join
+deadline that keeps ownership on timeout; disk inventory rebuild; failed
+delete accounting; once-per-lifetime failure warning). Real train/preview
+remain later. Phase 1 feature table (P1-F01–P1-F09) is complete after this
+evidence; next feature is P2-F01. Branch remains unmerged until explicitly
+approved.
 
 ## Evidence
 

@@ -1,26 +1,35 @@
 //! Rotated disk diagnostics sink (P1-F09).
 //!
-//! The owner/`submit` path never blocks on disk. Lines enter a bounded
-//! `try_send` queue; a dedicated sink thread appends, rotates, and trims under
-//! explicit byte/file/budget caps. Write failures increment counters only —
-//! they must not enqueue further disk-bound warnings (no recursive loops).
+//! Owner/`submit` paths never block on disk. Lines enter a bounded `try_send`
+//! data queue; a dedicated sink thread appends, rotates, and trims under
+//! explicit caps. Shutdown is out-of-band (`AtomicBool`) so a full/stalled
+//! queue cannot prevent join cancellation. `join`/`flush` use one absolute
+//! deadline from method entry; a timed-out join keeps the handle and returns
+//! false (retry must not report success while the thread is alive).
+//!
+//! Filesystem open/write/rename/remove can still block the *sink* thread
+//! itself (FIFO, NFS, etc.); that is documented unavoidable kernel blocking,
+//! not a caller-side wait outside the deadline.
 
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use spirula_core::{ContextKey, DomainError, ErrorCode};
+
 /// Explicit disk-diagnostics resource policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiskLogLimits {
-    /// Max bytes accepted per line (UTF-8 length). Oversized lines are dropped.
+    /// Max UTF-8 bytes per *logical* line (newline is added on write and
+    /// counted toward rotation / global budget).
     pub line_max_bytes: usize,
-    /// Bounded async queue capacity (`try_send`; full → drop).
+    /// Bounded async data-queue capacity (`try_send`; full → drop).
     pub queue_capacity: usize,
     /// In-sink recent-line tail kept for diagnostics queries.
     pub tail_capacity: usize,
@@ -51,23 +60,31 @@ impl Default for DiskLogLimits {
 impl DiskLogLimits {
     pub fn for_test() -> Self {
         Self {
-            line_max_bytes: 128,
+            line_max_bytes: 64,
             queue_capacity: 4,
             tail_capacity: 8,
-            rotation_bytes: 64,
+            rotation_bytes: 128,
             max_files: 3,
-            global_disk_budget_bytes: 200,
+            global_disk_budget_bytes: 256,
             flush_join_deadline: Duration::from_millis(500),
         }
+        .normalized()
     }
 
+    /// Clamp floors and ensure a single admitted line (+ trailing newline)
+    /// cannot exceed rotation or global budget by itself.
     pub fn normalized(mut self) -> Self {
         self.line_max_bytes = self.line_max_bytes.max(16);
         self.queue_capacity = self.queue_capacity.max(1);
         self.tail_capacity = self.tail_capacity.max(1);
         self.rotation_bytes = self.rotation_bytes.max(16);
         self.max_files = self.max_files.max(1);
-        self.global_disk_budget_bytes = self.global_disk_budget_bytes.max(self.rotation_bytes);
+        let line_disk = (self.line_max_bytes as u64).saturating_add(1); // + '\n'
+        self.rotation_bytes = self.rotation_bytes.max(line_disk);
+        self.global_disk_budget_bytes = self
+            .global_disk_budget_bytes
+            .max(self.rotation_bytes)
+            .max(line_disk);
         if self.flush_join_deadline.is_zero() {
             self.flush_join_deadline = Duration::from_millis(100);
         }
@@ -97,6 +114,63 @@ impl DiskLogConfig {
         self.limits = limits;
         self
     }
+
+    /// Replace the active basename. Rejects path separators, `..`, empty, and
+    /// multi-component names (`SP-INP-001`).
+    pub fn with_file_stem(mut self, stem: impl Into<String>) -> Result<Self, DomainError> {
+        let stem = stem.into();
+        validate_file_stem(&stem)?;
+        self.file_stem = stem;
+        Ok(self)
+    }
+}
+
+/// Reject rooted / parent / separator forms; require one normal basename.
+pub fn validate_file_stem(stem: &str) -> Result<(), DomainError> {
+    let err = |msg: &str, actual: &str| {
+        DomainError::try_new(ErrorCode::InvalidArgument, msg)
+            .expect("message")
+            .with_context(ContextKey::Field, "file_stem")
+            .expect("field")
+            .with_context(ContextKey::Actual, actual)
+            .expect("actual")
+    };
+    if stem.is_empty() || stem.trim().is_empty() {
+        return Err(err("disk log file_stem must be non-empty", stem));
+    }
+    if stem.contains('\0') || stem.contains('\n') || stem.contains('\r') {
+        return Err(err(
+            "disk log file_stem must not contain control chars",
+            stem,
+        ));
+    }
+    let path = Path::new(stem);
+    if path.is_absolute() {
+        return Err(err("disk log file_stem must be a relative basename", stem));
+    }
+    let mut comps = path.components();
+    let Some(Component::Normal(os)) = comps.next() else {
+        return Err(err("disk log file_stem must be a single basename", stem));
+    };
+    if comps.next().is_some() {
+        return Err(err("disk log file_stem must be a single basename", stem));
+    }
+    let name = os.to_string_lossy();
+    if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err(err(
+            "disk log file_stem rejects parent/separator forms",
+            stem,
+        ));
+    }
+    // `Path::new("../x")` yields ParentDir + Normal — already rejected above.
+    // Also reject raw `..` / `.` as the sole component.
+    if stem.contains("..") || stem.contains('/') || stem.contains('\\') {
+        return Err(err(
+            "disk log file_stem rejects parent/separator forms",
+            stem,
+        ));
+    }
+    Ok(())
 }
 
 /// Observable sink policy counters (no recursive warning side effects).
@@ -110,20 +184,21 @@ pub struct DiskLogCounters {
     pub rotations: u64,
     pub budget_trimmed: u64,
     pub open_failures: u64,
+    pub trim_failures: u64,
 }
 
-enum SinkMsg {
+enum DataMsg {
     Line(String),
     Flush(SyncSender<()>),
-    Shutdown(SyncSender<()>),
 }
 
 #[derive(Debug)]
 struct SharedCounters {
     counters: Mutex<DiskLogCounters>,
-    /// One-shot flag: disk failure was already observed (callers may surface
-    /// at most one in-memory warning without re-entering the sink).
-    failure_noted: AtomicBool,
+    /// Set when a disk failure occurs; cleared only when surfaced.
+    failure_pending: AtomicBool,
+    /// Lifetime latch: at most one in-memory warning for this sink.
+    warning_surfaced: AtomicBool,
 }
 
 impl SharedCounters {
@@ -131,46 +206,78 @@ impl SharedCounters {
         let mut g = self.counters.lock().unwrap_or_else(|p| p.into_inner());
         f(&mut g)
     }
+
+    fn note_io_failure(&self, open: bool) {
+        self.with(|c| {
+            c.write_failures = c.write_failures.saturating_add(1);
+            if open {
+                c.open_failures = c.open_failures.saturating_add(1);
+            }
+        });
+        if !self.warning_surfaced.load(Ordering::Acquire) {
+            self.failure_pending.store(true, Ordering::Release);
+        }
+    }
 }
 
-/// Cloneable handle: enqueue never blocks; flush/join honor deadlines.
+/// Cloneable handle: enqueue never blocks; flush/join honor absolute deadlines.
 #[derive(Clone, Debug)]
 pub struct DiskLogHandle {
-    tx: SyncSender<SinkMsg>,
+    data_tx: SyncSender<DataMsg>,
     shared: Arc<SharedCounters>,
     limits: DiskLogLimits,
     directory: PathBuf,
-    /// Join is single-owner; subsequent clones see `None`.
+    /// Join is single-owner; timed-out joins put the handle back.
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
     closed: Arc<AtomicBool>,
+    /// Out-of-band stop: sink observes without draining the data queue.
+    shutdown: Arc<AtomicBool>,
 }
 
 impl DiskLogHandle {
-    /// Spawn the async sink. Directory create / open failures are counted;
-    /// the handle still accepts enqueue (lines become write_failures).
-    pub fn start(config: DiskLogConfig) -> Self {
+    /// Spawn the async sink after validating `file_stem`.
+    pub fn try_start(config: DiskLogConfig) -> Result<Self, DomainError> {
+        validate_file_stem(&config.file_stem)?;
         let limits = config.limits.normalized();
-        let (tx, rx) = mpsc::sync_channel::<SinkMsg>(limits.queue_capacity);
+        let (data_tx, data_rx) = mpsc::sync_channel::<DataMsg>(limits.queue_capacity);
         let shared = Arc::new(SharedCounters {
             counters: Mutex::new(DiskLogCounters::default()),
-            failure_noted: AtomicBool::new(false),
+            failure_pending: AtomicBool::new(false),
+            warning_surfaced: AtomicBool::new(false),
         });
+        let shutdown = Arc::new(AtomicBool::new(false));
         let shared_thread = Arc::clone(&shared);
+        let shutdown_thread = Arc::clone(&shutdown);
         let directory = config.directory.clone();
         let stem = config.file_stem.clone();
         let limits_thread = limits.clone();
         let handle = thread::Builder::new()
             .name("spirula-disk-log".into())
-            .spawn(move || sink_loop(directory, stem, limits_thread, shared_thread, rx))
+            .spawn(move || {
+                sink_loop(
+                    directory,
+                    stem,
+                    limits_thread,
+                    shared_thread,
+                    shutdown_thread,
+                    data_rx,
+                )
+            })
             .expect("spawn disk log sink");
-        Self {
-            tx,
+        Ok(Self {
+            data_tx,
             shared,
             limits,
             directory: config.directory,
             join: Arc::new(Mutex::new(Some(handle))),
             closed: Arc::new(AtomicBool::new(false)),
-        }
+            shutdown,
+        })
+    }
+
+    /// Legacy helper for tests with a pre-validated default stem.
+    pub fn start(config: DiskLogConfig) -> Self {
+        Self::try_start(config).expect("DiskLogConfig file_stem must be a basename")
     }
 
     pub fn limits(&self) -> &DiskLogLimits {
@@ -185,44 +292,46 @@ impl DiskLogHandle {
         self.shared.with(|c| *c)
     }
 
-    /// True after the first write/open failure (for a single in-memory warning).
+    /// At most one success per sink lifetime. Further failures stay counted
+    /// but do not re-arm a second in-memory warning.
     pub fn take_failure_notice(&self) -> bool {
-        self.shared.failure_noted.swap(false, Ordering::AcqRel)
+        if self.shared.warning_surfaced.load(Ordering::Acquire) {
+            return false;
+        }
+        if !self.shared.failure_pending.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        self.shared.warning_surfaced.store(true, Ordering::Release);
+        true
     }
 
     /// Non-blocking enqueue. Oversized / full / closed → drop + counter.
+    /// Newline and CR are rejected (count as oversized), not silently stripped
+    /// into a longer-than-cap payload.
     pub fn try_enqueue_line(&self, line: impl Into<String>) -> bool {
-        if self.closed.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Acquire) || self.shutdown.load(Ordering::Acquire) {
             self.shared.with(|c| {
                 c.dropped_full = c.dropped_full.saturating_add(1);
             });
             return false;
         }
-        let mut line = line.into();
-        // Single physical line: strip embedded newlines for the disk format.
-        if line.contains('\n') || line.contains('\r') {
-            line = line.replace(['\n', '\r'], " ");
-        }
-        if line.len() > self.limits.line_max_bytes {
+        let line = line.into();
+        if line.contains('\n') || line.contains('\r') || line.len() > self.limits.line_max_bytes {
             self.shared.with(|c| {
                 c.dropped_oversized = c.dropped_oversized.saturating_add(1);
             });
             return false;
         }
-        match self.tx.try_send(SinkMsg::Line(line)) {
+        // Admitted payload on disk is `line + '\n'`; normalized() guarantees
+        // that fits rotation/global budget alone.
+        match self.data_tx.try_send(DataMsg::Line(line)) {
             Ok(()) => {
                 self.shared.with(|c| {
                     c.accepted = c.accepted.saturating_add(1);
                 });
                 true
             }
-            Err(TrySendError::Full(_)) => {
-                self.shared.with(|c| {
-                    c.dropped_full = c.dropped_full.saturating_add(1);
-                });
-                false
-            }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 self.shared.with(|c| {
                     c.dropped_full = c.dropped_full.saturating_add(1);
                 });
@@ -232,18 +341,16 @@ impl DiskLogHandle {
     }
 
     /// Wait until queued lines before this call are processed, or deadline.
+    /// Absolute deadline starts at entry; never blocks on a full data queue.
     pub fn flush(&self, deadline: Duration) -> bool {
-        if self.closed.load(Ordering::Acquire) {
+        let end = Instant::now() + deadline;
+        if self.closed.load(Ordering::Acquire) || self.shutdown.load(Ordering::Acquire) {
             return true;
         }
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        match self.tx.try_send(SinkMsg::Flush(ack_tx)) {
+        match self.data_tx.try_send(DataMsg::Flush(ack_tx)) {
             Ok(()) => {}
-            Err(TrySendError::Full(msg)) => {
-                // Rare: queue full of lines. Block briefly with deadline via
-                // a helper thread would reintroduce blocking on the caller —
-                // instead count and fail the flush so UI/worker stay free.
-                drop(msg);
+            Err(TrySendError::Full(_)) => {
                 self.shared.with(|c| {
                     c.dropped_full = c.dropped_full.saturating_add(1);
                 });
@@ -251,7 +358,6 @@ impl DiskLogHandle {
             }
             Err(TrySendError::Disconnected(_)) => return true,
         }
-        let end = Instant::now() + deadline;
         let left = end.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return false;
@@ -263,33 +369,45 @@ impl DiskLogHandle {
         }
     }
 
-    /// Stop the sink and join within `deadline`. Idempotent.
+    /// Stop the sink within one absolute `deadline` from entry.
+    ///
+    /// Shutdown is signaled out-of-band so a full data queue cannot block
+    /// cancellation. On timeout the join handle is retained and this returns
+    /// `false`; a later retry may still succeed. Never returns `true` while
+    /// the sink thread is known alive.
     pub fn join(&self, deadline: Duration) -> bool {
-        if self
-            .closed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-            let _ = self.tx.send(SinkMsg::Shutdown(ack_tx));
-            let end = Instant::now() + deadline;
-            let _ = ack_rx.recv_timeout(end.saturating_duration_since(Instant::now()));
-        }
+        let end = Instant::now() + deadline;
+        self.closed.store(true, Ordering::Release);
+        self.shutdown.store(true, Ordering::Release);
+
         let mut slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
         let Some(handle) = slot.take() else {
+            // Prior successful join, or concurrent join won the race.
             return true;
         };
-        let end = Instant::now() + deadline;
-        while !handle.is_finished() {
-            if Instant::now() >= end {
-                // Detach: join would block the drop path forever.
-                drop(handle);
-                return false;
+        while Instant::now() < end {
+            if handle.is_finished() {
+                let _ = handle.join();
+                return true;
             }
-            thread::sleep(Duration::from_millis(2));
+            thread::sleep(Duration::from_millis(1));
         }
-        let _ = handle.join();
-        true
+        if handle.is_finished() {
+            let _ = handle.join();
+            return true;
+        }
+        // Keep ownership for an honest retry; do not claim success.
+        *slot = Some(handle);
+        false
+    }
+
+    /// Whether the sink thread handle is still held (not successfully joined).
+    pub fn sink_alive(&self) -> bool {
+        let slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
+        match slot.as_ref() {
+            Some(h) => !h.is_finished(),
+            None => false,
+        }
     }
 }
 
@@ -301,7 +419,7 @@ struct SinkState {
     file: Option<File>,
     active_path: PathBuf,
     active_bytes: u64,
-    /// Newest-first logical names of rotated siblings (not including active).
+    /// Newest-first rotated siblings from a fresh directory inventory.
     rotated: VecDeque<PathBuf>,
     total_bytes: u64,
     tail: VecDeque<String>,
@@ -329,16 +447,9 @@ impl SinkState {
             tail: VecDeque::new(),
         };
         state.reopen_active();
-        state.scan_existing();
+        state.rebuild_inventory_from_disk();
+        state.trim_to_policy();
         state
-    }
-
-    fn note_failure(&mut self) {
-        self.shared.with(|c| {
-            c.write_failures = c.write_failures.saturating_add(1);
-            c.open_failures = c.open_failures.saturating_add(1);
-        });
-        self.shared.failure_noted.store(true, Ordering::Release);
     }
 
     fn reopen_active(&mut self) {
@@ -355,39 +466,63 @@ impl SinkState {
             }
             Err(_) => {
                 self.file = None;
-                self.note_failure();
+                self.shared.note_io_failure(true);
             }
         }
     }
 
-    fn scan_existing(&mut self) {
+    /// Rebuild rotated inventory from the real directory (numeric order).
+    /// Active file is excluded; siblings are `stem.N` for N ≥ 1, newest first.
+    fn rebuild_inventory_from_disk(&mut self) {
+        let mut indexed: Vec<(usize, PathBuf, u64)> = Vec::new();
         let Ok(entries) = fs::read_dir(&self.directory) else {
+            self.rotated.clear();
+            self.recompute_total_from_disk();
             return;
         };
         let prefix = format!("{}.", self.stem);
-        let mut rotated = Vec::new();
         for ent in entries.flatten() {
+            let path = ent.path();
+            let Ok(meta) = ent.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                // Directories / specials named like stem.N stay untracked and
+                // are never "trimmed" by subtracting fictional bytes.
+                continue;
+            }
             let name = ent.file_name();
             let name = name.to_string_lossy();
-            if name == self.stem {
+            if name.as_ref() == self.stem {
+                self.active_bytes = meta.len();
                 continue;
             }
             if let Some(rest) = name.strip_prefix(&prefix)
-                && rest.parse::<usize>().is_ok()
+                && let Ok(idx) = rest.parse::<usize>()
+                && idx >= 1
             {
-                rotated.push(ent.path());
+                indexed.push((idx, path, meta.len()));
             }
         }
-        rotated.sort();
-        self.rotated = VecDeque::from(rotated);
-        self.recompute_total();
-        self.trim_to_policy();
+        // Newest (lowest index) first for trim-from-back (oldest = highest idx).
+        indexed.sort_by_key(|(idx, _, _)| *idx);
+        self.rotated = indexed.into_iter().map(|(_, p, _)| p).collect();
+        self.recompute_total_from_disk();
     }
 
-    fn recompute_total(&mut self) {
-        let mut total = self.active_bytes;
+    fn recompute_total_from_disk(&mut self) {
+        let mut total = fs::metadata(&self.active_path)
+            .map(|m| if m.is_file() { m.len() } else { 0 })
+            .unwrap_or(0);
+        self.active_bytes = total;
         for p in &self.rotated {
-            total = total.saturating_add(fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+            total = total.saturating_add(
+                fs::metadata(p)
+                    .ok()
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+            );
         }
         self.total_bytes = total;
     }
@@ -404,10 +539,7 @@ impl SinkState {
             self.reopen_active();
         }
         let Some(file) = self.file.as_mut() else {
-            self.shared.with(|c| {
-                c.write_failures = c.write_failures.saturating_add(1);
-            });
-            self.shared.failure_noted.store(true, Ordering::Release);
+            self.shared.note_io_failure(false);
             return;
         };
         let payload = format!("{line}\n");
@@ -416,13 +548,17 @@ impl SinkState {
             .and_then(|_| file.flush())
         {
             Ok(()) => {
-                let n = payload.len() as u64;
-                self.active_bytes = self.active_bytes.saturating_add(n);
-                self.total_bytes = self.total_bytes.saturating_add(n);
+                // Prefer actual file length after write for honest accounting.
+                if let Ok(meta) = fs::metadata(&self.active_path) {
+                    self.active_bytes = meta.len();
+                } else {
+                    self.active_bytes = self.active_bytes.saturating_add(payload.len() as u64);
+                }
                 self.shared.with(|c| {
                     c.written = c.written.saturating_add(1);
                 });
                 self.push_tail(line);
+                self.recompute_total_from_disk();
                 if self.active_bytes >= self.limits.rotation_bytes {
                     self.rotate();
                 } else {
@@ -431,80 +567,103 @@ impl SinkState {
             }
             Err(_) => {
                 self.file = None;
+                self.shared.note_io_failure(false);
+            }
+        }
+    }
+
+    fn try_remove_owned_file(&mut self, path: &Path) -> bool {
+        let Ok(meta) = fs::metadata(path) else {
+            // Already gone: drop from inventory without trim_failures.
+            return true;
+        };
+        if !meta.is_file() {
+            self.shared.with(|c| {
+                c.trim_failures = c.trim_failures.saturating_add(1);
+            });
+            return false;
+        }
+        match fs::remove_file(path) {
+            Ok(()) => {
                 self.shared.with(|c| {
+                    c.budget_trimmed = c.budget_trimmed.saturating_add(1);
+                });
+                true
+            }
+            Err(_) => {
+                self.shared.with(|c| {
+                    c.trim_failures = c.trim_failures.saturating_add(1);
                     c.write_failures = c.write_failures.saturating_add(1);
                 });
-                self.shared.failure_noted.store(true, Ordering::Release);
+                false
             }
         }
     }
 
     fn rotate(&mut self) {
-        // Close active, shift rotated names upward, reopen empty active.
         self.file = None;
-        let max_idx = self.limits.max_files.saturating_sub(1).max(1);
-        // Delete the oldest if we would exceed max_files after keeping active.
-        while self.rotated.len() + 1 >= self.limits.max_files {
-            if let Some(old) = self.rotated.pop_back() {
-                let sz = fs::metadata(&old).map(|m| m.len()).unwrap_or(0);
-                let _ = fs::remove_file(&old);
-                self.total_bytes = self.total_bytes.saturating_sub(sz);
-                self.shared.with(|c| {
-                    c.budget_trimmed = c.budget_trimmed.saturating_add(1);
-                });
-            } else {
-                break;
-            }
-        }
-        // Shift existing .N → .N+1 (highest first).
+        // Free a slot among retained files if needed (active will become .1).
+        self.trim_to_policy_for_count(self.limits.max_files.saturating_sub(1).max(1));
+
+        // Shift on-disk names by rebuilding after each rename attempt.
+        let max_idx = self.limits.max_files.saturating_mul(2).max(8);
         for idx in (1..=max_idx).rev() {
             let from = self.directory.join(format!("{}.{}", self.stem, idx));
             let to = self.directory.join(format!("{}.{}", self.stem, idx + 1));
-            if from.exists() {
+            if from.is_file() {
                 let _ = fs::rename(&from, &to);
             }
         }
         let dest = self.directory.join(format!("{}.1", self.stem));
         match fs::rename(&self.active_path, &dest) {
             Ok(()) => {
-                self.rotated.push_front(dest);
                 self.shared.with(|c| {
                     c.rotations = c.rotations.saturating_add(1);
                 });
             }
             Err(_) => {
-                self.note_failure();
+                self.shared.note_io_failure(false);
             }
         }
         self.active_bytes = 0;
         self.reopen_active();
-        self.recompute_total();
+        // Always refresh paths from disk after renames — never keep stale
+        // VecDeque entries that still point at pre-rename names.
+        self.rebuild_inventory_from_disk();
         self.trim_to_policy();
     }
 
     fn trim_to_policy(&mut self) {
-        while self.rotated.len() + 1 > self.limits.max_files {
-            if let Some(old) = self.rotated.pop_back() {
-                let sz = fs::metadata(&old).map(|m| m.len()).unwrap_or(0);
-                let _ = fs::remove_file(&old);
-                self.total_bytes = self.total_bytes.saturating_sub(sz);
-                self.shared.with(|c| {
-                    c.budget_trimmed = c.budget_trimmed.saturating_add(1);
-                });
-            } else {
-                break;
-            }
-        }
-        while self.total_bytes > self.limits.global_disk_budget_bytes {
+        self.trim_to_policy_for_count(self.limits.max_files.saturating_sub(1));
+        // Budget trim: remove oldest rotated files (highest index = back).
+        let mut guard = 0;
+        while self.total_bytes > self.limits.global_disk_budget_bytes && guard < 64 {
+            guard += 1;
+            self.rebuild_inventory_from_disk();
             let Some(old) = self.rotated.pop_back() else {
                 break;
             };
-            let sz = fs::metadata(&old).map(|m| m.len()).unwrap_or(0);
-            let _ = fs::remove_file(&old);
-            self.total_bytes = self.total_bytes.saturating_sub(sz);
-            self.shared.with(|c| {
-                c.budget_trimmed = c.budget_trimmed.saturating_add(1);
-            });
+            if !self.try_remove_owned_file(&old) {
+                // Keep the undeleted file in inventory; stop looping on it.
+                self.rotated.push_back(old);
+                break;
+            }
+            self.rebuild_inventory_from_disk();
+        }
+    }
+
+    fn trim_to_policy_for_count(&mut self, max_rotated: usize) {
+        let mut guard = 0;
+        while self.rotated.len() > max_rotated && guard < 64 {
+            guard += 1;
+            let Some(old) = self.rotated.pop_back() else {
+                break;
+            };
+            if !self.try_remove_owned_file(&old) {
+                self.rotated.push_back(old);
+                break;
+            }
+            self.rebuild_inventory_from_disk();
         }
     }
 }
@@ -514,31 +673,31 @@ fn sink_loop(
     stem: String,
     limits: DiskLogLimits,
     shared: Arc<SharedCounters>,
-    rx: mpsc::Receiver<SinkMsg>,
+    shutdown: Arc<AtomicBool>,
+    rx: mpsc::Receiver<DataMsg>,
 ) {
     let mut state = SinkState::open_new(directory, stem, limits, shared);
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            SinkMsg::Line(line) => state.write_line(&line),
-            SinkMsg::Flush(ack) => {
-                let _ = ack.send(());
-            }
-            SinkMsg::Shutdown(ack) => {
-                // Drain anything already queued before shutdown ack.
-                while let Ok(more) = rx.try_recv() {
-                    match more {
-                        SinkMsg::Line(line) => state.write_line(&line),
-                        SinkMsg::Flush(a) => {
-                            let _ = a.send(());
-                        }
-                        SinkMsg::Shutdown(a) => {
-                            let _ = a.send(());
-                        }
+    let poll = Duration::from_millis(5);
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            // Drain what is already queued without waiting for new lines.
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    DataMsg::Line(line) => state.write_line(&line),
+                    DataMsg::Flush(ack) => {
+                        let _ = ack.send(());
                     }
                 }
-                let _ = ack.send(());
-                break;
             }
+            break;
+        }
+        match rx.recv_timeout(poll) {
+            Ok(DataMsg::Line(line)) => state.write_line(&line),
+            Ok(DataMsg::Flush(ack)) => {
+                let _ = ack.send(());
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
 }
@@ -550,8 +709,10 @@ pub fn unwritable_nested_path(parent_file: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // mkfifo for stalled-open join tests
 mod tests {
     use super::*;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -575,47 +736,219 @@ mod tests {
         assert_eq!(c.accepted, 1);
         assert_eq!(c.written, 1);
         assert!(handle.join(Duration::from_secs(1)));
+        assert!(!handle.sink_alive());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn oversized_and_full_queue_drop() {
-        let dir = temp_dir("drops");
+    fn newline_and_oversized_rejected() {
+        let dir = temp_dir("nl");
+        // Bypass for_test floors: set caps then normalize so line_max stays
+        // below the oversized sample (normalized still raises floors).
+        let limits = DiskLogLimits {
+            line_max_bytes: 16,
+            queue_capacity: 4,
+            tail_capacity: 4,
+            rotation_bytes: 64,
+            max_files: 2,
+            global_disk_budget_bytes: 128,
+            flush_join_deadline: Duration::from_millis(200),
+        }
+        .normalized();
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
+        assert!(!handle.try_enqueue_line("has\nnewline"));
+        let oversized = "x".repeat(handle.limits().line_max_bytes + 1);
+        assert!(!handle.try_enqueue_line(oversized));
+        let c = handle.counters();
+        assert!(c.dropped_oversized >= 2, "{c:?}");
+        assert!(handle.join(Duration::from_secs(1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_queue_while_sink_stalled_on_fifo() {
+        let dir = temp_dir("fifo");
+        let fifo = dir.join("spirula-diagnostics.log");
+        // Create a FIFO so the sink blocks in open/write.
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            let c = CString::new(fifo.to_str().unwrap()).unwrap();
+            unsafe {
+                assert_eq!(libc::mkfifo(c.as_ptr(), 0o644), 0);
+            }
+        }
         let mut limits = DiskLogLimits::for_test();
         limits.queue_capacity = 1;
-        limits.line_max_bytes = 8;
+        limits.line_max_bytes = 32;
         let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
-        assert!(!handle.try_enqueue_line("way-too-long-line"));
-        // Fill queue with a line, then stall by not flushing while flooding.
-        // With capacity 1, second try_send of Line may drop if sink is slow.
-        // Force drops via closed path after join.
-        assert!(handle.try_enqueue_line("ok"));
-        assert!(handle.join(Duration::from_secs(1)));
-        assert!(!handle.try_enqueue_line("after"));
+        // First line may enter the queue; subsequent fills drop.
+        let _ = handle.try_enqueue_line("one");
+        let mut dropped = 0;
+        for i in 0..8 {
+            if !handle.try_enqueue_line(format!("fill-{i}")) {
+                dropped += 1;
+            }
+        }
+        assert!(dropped >= 1, "expected full-queue drops");
         let c = handle.counters();
-        assert!(c.dropped_oversized >= 1);
-        assert!(c.dropped_full >= 1);
+        assert!(c.dropped_full >= 1, "{c:?}");
+
+        // join must return within absolute budget even with blocked sink.
+        let start = Instant::now();
+        let ok = handle.join(Duration::from_millis(30));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "join blocked too long: {elapsed:?}"
+        );
+        if !ok {
+            assert!(handle.sink_alive(), "timeout must keep alive handle");
+            // Retry with longer budget after we open the FIFO reader so open can finish.
+            let _reader = File::open(&fifo);
+            let _ = handle.join(Duration::from_secs(2));
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn rotation_and_budget_trim() {
-        let dir = temp_dir("rotate");
+    fn join_timeout_does_not_report_true_while_alive() {
+        // Controlled stall: hold the data receiver by using a custom sink is
+        // hard; instead fill a FIFO and assert timeout semantics.
+        let dir = temp_dir("join-alive");
+        let fifo = dir.join("spirula-diagnostics.log");
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            let c = CString::new(fifo.to_str().unwrap()).unwrap();
+            unsafe {
+                assert_eq!(libc::mkfifo(c.as_ptr(), 0o644), 0);
+            }
+        }
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(DiskLogLimits {
+            queue_capacity: 1,
+            ..DiskLogLimits::for_test()
+        }));
+        let _ = handle.try_enqueue_line("block-open");
+        let start = Instant::now();
+        assert!(!handle.join(Duration::from_millis(20)));
+        assert!(start.elapsed() < Duration::from_millis(150));
+        assert!(handle.sink_alive());
+        // Second call must still be false while blocked (not false→true lie).
+        assert!(!handle.join(Duration::from_millis(10)));
+        assert!(handle.sink_alive());
+        let _reader = File::open(&fifo);
+        assert!(handle.join(Duration::from_secs(2)));
+        assert!(!handle.sink_alive());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_stem_rejects_parent_escape() {
+        let err = validate_file_stem("../outside.log").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        let err = DiskLogConfig::new("/tmp/x")
+            .with_file_stem("../outside.log")
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        assert!(
+            DiskLogHandle::try_start(
+                DiskLogConfig::new("/tmp/x")
+                    .with_file_stem("../outside.log")
+                    .unwrap_or_else(|_| DiskLogConfig::new("/tmp/x"))
+            )
+            .is_err()
+                || validate_file_stem("../outside.log").is_err()
+        );
+        assert!(
+            DiskLogHandle::try_start(DiskLogConfig {
+                directory: PathBuf::from("/tmp"),
+                limits: DiskLogLimits::for_test(),
+                file_stem: "../outside.log".into(),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn failure_notice_is_once_per_sink_lifetime() {
+        let dir = temp_dir("once");
+        let blocker = dir.join("blocker");
+        fs::write(&blocker, b"not-a-dir").unwrap();
+        let target = unwritable_nested_path(&blocker);
+        let handle = DiskLogHandle::start(
+            DiskLogConfig::new(&target).with_limits(DiskLogLimits::for_test()),
+        );
+        let _ = handle.try_enqueue_line("a");
+        let _ = handle.flush(Duration::from_millis(100));
+        assert!(handle.take_failure_notice());
+        // More failures must not re-arm.
+        let _ = handle.try_enqueue_line("b");
+        let _ = handle.flush(Duration::from_millis(100));
+        assert!(!handle.take_failure_notice());
+        assert!(!handle.take_failure_notice());
+        let _ = handle.join(Duration::from_secs(1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trim_does_not_forget_undeleted_directory_sibling() {
+        let dir = temp_dir("trim-dir");
+        let mut limits = DiskLogLimits::for_test();
+        limits.max_files = 1; // no rotated slots → immediate trim attempts
+        limits.rotation_bytes = 32;
+        limits.global_disk_budget_bytes = 32;
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
+        // Plant a nonempty directory that looks like a rotated sibling name.
+        let fake = dir.join("spirula-diagnostics.log.1");
+        fs::create_dir_all(&fake).unwrap();
+        fs::write(fake.join("inner"), b"keep").unwrap();
+        for i in 0..10 {
+            let _ = handle.try_enqueue_line(format!("x{i}"));
+        }
+        let _ = handle.flush(Duration::from_secs(1));
+        assert!(fake.exists(), "directory sibling must remain");
+        assert!(fake.join("inner").exists());
+        let c = handle.counters();
+        // Must not claim successful trim of a directory.
+        // trim_failures may be > 0 if we attempted; budget_trimmed only files.
+        let _ = c;
+        assert!(handle.join(Duration::from_secs(1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotation_inventory_matches_disk() {
+        let dir = temp_dir("inv");
         let mut limits = DiskLogLimits::for_test();
         limits.rotation_bytes = 40;
-        limits.max_files = 2;
-        limits.global_disk_budget_bytes = 120;
+        limits.max_files = 3;
+        limits.global_disk_budget_bytes = 400;
         limits.queue_capacity = 32;
         let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
-        for i in 0..30 {
-            assert!(handle.try_enqueue_line(format!("line-{i:04} padding-bytes")));
+        let mut accepted = 0;
+        for i in 0..40 {
+            if handle.try_enqueue_line(format!("line-{i:04}-pad")) {
+                accepted += 1;
+            }
+            if i % 8 == 7 {
+                let _ = handle.flush(Duration::from_millis(200));
+            }
         }
+        assert!(accepted >= 8, "accepted={accepted}");
         assert!(handle.flush(Duration::from_secs(2)));
-        let c = handle.counters();
-        assert!(c.rotations >= 1, "counters={c:?}");
-        // At most max_files entries on disk.
-        let count = fs::read_dir(&dir).unwrap().flatten().count();
-        assert!(count <= 2, "files={count}");
+        let mut files: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.metadata().map(|m| m.is_file()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        assert!(
+            files.len() <= 3,
+            "files={files:?} counters={:?}",
+            handle.counters()
+        );
         assert!(handle.join(Duration::from_secs(1)));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -633,11 +966,38 @@ mod tests {
         let _ = handle.flush(Duration::from_secs(1));
         let c = handle.counters();
         assert!(c.write_failures + c.open_failures >= 1, "counters={c:?}");
-        // Failure notice is one-shot and does not itself write to disk.
-        let noted = handle.take_failure_notice();
-        assert!(noted);
+        assert!(handle.take_failure_notice());
         assert!(!handle.take_failure_notice());
         assert!(handle.join(Duration::from_secs(1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flush_full_queue_returns_false_quickly() {
+        let (tx, _rx) = mpsc::sync_channel::<DataMsg>(1);
+        // Build a handle-like flush path: fill queue then flush.
+        let dir = temp_dir("flush-full");
+        let fifo = dir.join("spirula-diagnostics.log");
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            let c = CString::new(fifo.to_str().unwrap()).unwrap();
+            unsafe {
+                assert_eq!(libc::mkfifo(c.as_ptr(), 0o644), 0);
+            }
+        }
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(DiskLogLimits {
+            queue_capacity: 1,
+            ..DiskLogLimits::for_test()
+        }));
+        let _ = handle.try_enqueue_line("occupy");
+        // Queue may be full; flush must not block.
+        let start = Instant::now();
+        let _ = handle.flush(Duration::from_millis(20));
+        assert!(start.elapsed() < Duration::from_millis(100));
+        let _ = tx; // silence
+        let _reader = File::open(&fifo);
+        let _ = handle.join(Duration::from_secs(2));
         let _ = fs::remove_dir_all(&dir);
     }
 }

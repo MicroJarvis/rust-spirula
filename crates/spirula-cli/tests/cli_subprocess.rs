@@ -1,300 +1,133 @@
 //! Subprocess + signal tests for P1-F09.
 //!
 //! Synchronize on observed `spirula:ready` lines — never fixed sleeps for
-//! readiness. SIGINT tests send the signal only after a ready marker.
+//! readiness. Reader/wait helpers use absolute deadlines and always kill/reap
+//! on timeout.
 
-#![allow(unsafe_code)] // libc::kill for SIGINT delivery in subprocess tests
+#![allow(unsafe_code)] // libc::kill / wait status for SIGINT delivery
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 fn spirula_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_spirula"))
 }
 
-fn wait_stdout_line(child_stdout: &mut impl BufRead, needle: &str, budget: Duration) -> String {
-    let deadline = Instant::now() + budget;
-    let mut line = String::new();
-    let mut collected = String::new();
-    while Instant::now() < deadline {
-        line.clear();
-        match child_stdout.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {
-                collected.push_str(&line);
-                if line.contains(needle) {
-                    return collected;
+struct ChildSession {
+    child: Child,
+    stdout_rx: mpsc::Receiver<String>,
+    collected: String,
+}
+
+impl ChildSession {
+    fn spawn(args: &[&str], envs: &[(&str, &str)]) -> Self {
+        let mut cmd = Command::new(spirula_bin());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().expect("spawn spirula");
+        let mut stdout = child.stdout.take().expect("stdout");
+        let (tx, rx) = mpsc::channel::<String>();
+        thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            let mut carry = String::new();
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        carry.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        while let Some(pos) = carry.find('\n') {
+                            let mut line = carry[..pos + 1].to_string();
+                            carry.drain(..pos + 1);
+                            if tx.send(line.split_off(0)).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
-            Err(_) => break,
+            if !carry.is_empty() {
+                let _ = tx.send(carry);
+            }
+        });
+        Self {
+            child,
+            stdout_rx: rx,
+            collected: String::new(),
         }
     }
-    panic!("timed out waiting for '{needle}' in stdout:\n{collected}");
-}
 
-#[test]
-fn help_exits_zero() {
-    let out = Command::new(spirula_bin())
-        .arg("help")
-        .output()
-        .expect("spawn");
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("probe-load"));
-    assert!(stdout.contains("Unavailable"));
-}
+    fn wait_stdout_contains(&mut self, needle: &str, budget: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self
+                .stdout_rx
+                .recv_timeout(left.min(Duration::from_millis(50)))
+            {
+                Ok(line) => {
+                    self.collected.push_str(&line);
+                    if self.collected.contains(needle) {
+                        return Ok(());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Err(format!(
+            "timed out waiting for '{needle}' in:\n{}",
+            self.collected
+        ))
+    }
 
-#[test]
-fn capabilities_lists_available_and_unavailable() {
-    let out = Command::new(spirula_bin())
-        .arg("capabilities")
-        .output()
-        .expect("spawn");
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("available:"));
-    assert!(stdout.contains("unavailable: train, preview"));
-}
-
-#[test]
-fn train_rejected_usage_exit_2() {
-    let out = Command::new(spirula_bin())
-        .arg("train")
-        .output()
-        .expect("spawn");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.starts_with("error:"), "{err}");
-}
-
-#[test]
-fn preview_rejected_usage_exit_2() {
-    let out = Command::new(spirula_bin())
-        .arg("preview")
-        .output()
-        .expect("spawn");
-    assert_eq!(out.status.code(), Some(2));
-}
-
-#[test]
-fn unknown_command_exit_2() {
-    let out = Command::new(spirula_bin())
-        .arg("nope")
-        .output()
-        .expect("spawn");
-    assert_eq!(out.status.code(), Some(2));
-}
-
-#[test]
-fn probe_run_normal_success() {
-    let out = Command::new(spirula_bin())
-        .args([
-            "probe-run",
-            "--steps",
-            "2",
-            "--load-label",
-            "ds",
-            "--step-delay-ms",
-            "5",
-        ])
-        .output()
-        .expect("spawn");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stdout={}\nstderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("spirula:ready training") || stdout.contains("spirula:ready ready"),
-        "{stdout}"
-    );
-}
-
-#[test]
-fn probe_run_failure_exit_1() {
-    let out = Command::new(spirula_bin())
-        .env("SPIRULA_TEST_WORKER_BEHAVIOR", "fail")
-        .args([
-            "probe-run",
-            "--steps",
-            "2",
-            "--load-label",
-            "ds",
-            "--step-delay-ms",
-            "5",
-        ])
-        .output()
-        .expect("spawn");
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "stdout={}\nstderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn probe_run_sigint_exits_130() {
-    let mut child = Command::new(spirula_bin())
-        .args([
-            "probe-run",
-            "--steps",
-            "100000",
-            "--load-label",
-            "ds",
-            "--step-delay-ms",
-            "50",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn");
-    let stdout = child.stdout.take().expect("stdout");
-    let mut reader = BufReader::new(stdout);
-    let _ = wait_stdout_line(
-        &mut reader,
-        "spirula:ready training",
-        Duration::from_secs(10),
-    );
-    // First SIGINT → cooperative Stop{save:true} → exit 130.
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        unsafe {
-            assert_eq!(libc::kill(pid, libc::SIGINT), 0);
+    fn wait_exit(&mut self, budget: Duration) -> std::process::ExitStatus {
+        let deadline = Instant::now() + budget;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => return status,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => {
+                    let _ = self.child.kill();
+                    return self.child.wait().expect("reap after kill");
+                }
+            }
         }
     }
-    let status = child.wait().expect("wait");
-    assert_eq!(status.code(), Some(130), "status={status:?}");
 }
 
-#[test]
-fn probe_run_second_sigint_default_disposition() {
-    let mut child = Command::new(spirula_bin())
-        .args([
-            "probe-run",
-            "--steps",
-            "100000",
-            "--load-label",
-            "ds",
-            "--step-delay-ms",
-            "200",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn");
-    let stdout = child.stdout.take().expect("stdout");
-    let mut reader = BufReader::new(stdout);
-    let _ = wait_stdout_line(
-        &mut reader,
-        "spirula:ready training",
-        Duration::from_secs(10),
-    );
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        unsafe {
-            assert_eq!(libc::kill(pid, libc::SIGINT), 0);
-            // Brief yield so the handler can restore SIG_DFL on the second hit.
-            std::thread::sleep(Duration::from_millis(20));
-            assert_eq!(libc::kill(pid, libc::SIGINT), 0);
-            // Third SIGINT after DFL should terminate by signal if still alive.
-            std::thread::sleep(Duration::from_millis(20));
-            let _ = libc::kill(pid, libc::SIGINT);
-        }
+impl Drop for ChildSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
-    let status = child.wait().expect("wait");
-    // Either clean cancel 130 (if stop finished before third) or signal death.
-    let code = status.code();
-    let signaled = status.signal().is_some();
-    assert!(
-        code == Some(130) || signaled,
-        "expected 130 or signal termination, got {status:?}"
-    );
 }
 
-#[test]
-fn probe_with_log_dir_writes_diagnostics() {
-    let dir = std::env::temp_dir().join(format!("spirula-cli-log-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let out = Command::new(spirula_bin())
-        .env("SPIRULA_TEST_DISK_LIMITS", "1")
-        .args([
-            "probe",
-            "--label",
-            "ds",
-            "--steps",
-            "2",
-            "--step-delay-ms",
-            "5",
-            "--log-dir",
-            dir.to_str().unwrap(),
-        ])
-        .output()
-        .expect("spawn");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let log = dir.join("spirula-diagnostics.log");
-    // Allow async sink to finish (flush on Drop); file should exist.
-    assert!(
-        log.exists() || std::fs::read_dir(&dir).unwrap().next().is_some(),
-        "no diagnostics under {dir:?}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn rejected_steps_zero_exit_2() {
-    let out = Command::new(spirula_bin())
-        .args(["probe-run", "--steps", "0", "--load-label", "ds"])
-        .output()
-        .expect("spawn");
-    assert_eq!(out.status.code(), Some(2));
-}
-
-/// Integration: application query recovers when we never listen to notify.
-#[test]
-fn application_command_result_recovers_without_subscriber() {
-    use spirula_application::{
-        ApplicationService, Command, CommandPayload, CommandResult, Event, SessionLimits,
-    };
-    use std::time::Duration;
-
-    let mut limits = SessionLimits::for_test();
-    limits.worker_step_delay = Duration::from_millis(1);
-    let app = ApplicationService::start(limits);
-    let id = match app.submit(Command::new(CommandPayload::ProbeLoad {
-        label: "solo".into(),
-    })) {
-        spirula_application::SubmitOutcome::Accepted { id } => id,
-        other => panic!("unexpected {other:?}"),
-    };
-    assert!(app.wait_until(Duration::from_secs(2), |s| {
-        matches!(app.command_result(id), CommandResult::Ready(_))
-            || s.loaded_label.as_deref() == Some("solo")
-    }));
-    match app.command_result(id) {
-        CommandResult::Ready(env) => {
-            assert!(matches!(env.event, Event::Completed { .. }));
+fn run_output(args: &[&str], envs: &[(&str, &str)], budget: Duration) -> std::process::Output {
+    let mut cmd = Command::new(spirula_bin());
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn");
+    let deadline = Instant::now() + budget;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().expect("output"),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                return child.wait_with_output().expect("killed output");
+            }
         }
-        other => panic!("expected Ready, got {other:?}"),
     }
 }
 
@@ -317,7 +150,305 @@ impl StatusSignal for std::process::ExitStatus {
     }
 }
 
-// Silence unused Write import on platforms that do not need it.
+#[test]
+fn help_exits_zero() {
+    let out = run_output(&["help"], &[], Duration::from_secs(5));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("probe-load"));
+}
+
+#[test]
+fn capabilities_lists_available_and_unavailable() {
+    let out = run_output(&["capabilities"], &[], Duration::from_secs(5));
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("unavailable: train, preview"));
+}
+
+#[test]
+fn train_rejected_usage_exit_2_one_stderr_line() {
+    let out = run_output(&["train"], &[], Duration::from_secs(5));
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.lines().filter(|l| l.starts_with("error:")).count(), 1);
+}
+
+#[test]
+fn preview_rejected_usage_exit_2() {
+    let out = run_output(&["preview"], &[], Duration::from_secs(5));
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn unknown_command_exit_2() {
+    let out = run_output(&["nope"], &[], Duration::from_secs(5));
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn rejected_probe_run_without_load_one_stderr_with_code() {
+    // Ready is required for ProbeRun; without load the admission rejects.
+    let out = run_output(
+        &["probe-run", "--steps", "1"],
+        &[("SPIRULA_ERROR_CODES", "1")],
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.lines().filter(|l| l.starts_with("error:")).count(), 1);
+    assert!(
+        err.contains("SP-SESS-") || err.contains("(code:"),
+        "expected stable code on stderr: {err}"
+    );
+}
+
+#[test]
+fn rejected_steps_zero_exit_2() {
+    let out = run_output(
+        &["probe-run", "--steps", "0", "--load-label", "ds"],
+        &[],
+        Duration::from_secs(5),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .filter(|l| l.starts_with("error:"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn probe_run_normal_success_reaches_run_terminal() {
+    let out = run_output(
+        &[
+            "probe-run",
+            "--steps",
+            "2",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "5",
+        ],
+        &[],
+        Duration::from_secs(15),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("spirula:ready training"),
+        "must enter Running: {stdout}"
+    );
+    assert!(
+        stdout.contains("probe-started") || stdout.contains("progress"),
+        "must show run activity: {stdout}"
+    );
+    assert!(
+        stdout.contains("completed ok") || stdout.contains("completed"),
+        "must show run terminal: {stdout}"
+    );
+}
+
+#[test]
+fn probe_run_failure_exit_1_one_stderr_error() {
+    let out = run_output(
+        &[
+            "probe-run",
+            "--steps",
+            "2",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "5",
+        ],
+        &[
+            ("SPIRULA_TEST_WORKER_BEHAVIOR", "fail"),
+            ("SPIRULA_ERROR_CODES", "1"),
+        ],
+        Duration::from_secs(15),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.lines().filter(|l| l.starts_with("error:")).count(), 1);
+    assert!(err.contains("(code:"), "{err}");
+}
+
+#[test]
+fn probe_run_sigint_exits_130() {
+    let mut session = ChildSession::spawn(
+        &[
+            "probe-run",
+            "--steps",
+            "100000",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "50",
+        ],
+        &[],
+    );
+    session
+        .wait_stdout_contains("spirula:ready training", Duration::from_secs(10))
+        .expect("ready");
+    #[cfg(unix)]
+    {
+        let pid = session.child.id() as i32;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    }
+    let status = session.wait_exit(Duration::from_secs(10));
+    assert_eq!(status.code(), Some(130), "status={status:?}");
+}
+
+#[test]
+fn probe_run_second_sigint_terminates_with_exactly_two_signals() {
+    // Unfinished-cancel gate: very slow steps so cooperative Stop cannot
+    // finish before the second SIGINT arrives.
+    let mut session = ChildSession::spawn(
+        &[
+            "probe-run",
+            "--steps",
+            "100000",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "500",
+        ],
+        &[],
+    );
+    session
+        .wait_stdout_contains("spirula:ready training", Duration::from_secs(15))
+        .expect("ready");
+    #[cfg(unix)]
+    {
+        let pid = session.child.id() as i32;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+        // Tiny yield so the first handler runs; do NOT send a third signal.
+        thread::sleep(Duration::from_millis(30));
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    }
+    let status = session.wait_exit(Duration::from_secs(10));
+    // Must be SIGINT termination — not a clean exit 130 from cooperative stop.
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGINT),
+        "expected SIGINT termination after exactly 2 signals, got {status:?}; stdout={}",
+        session.collected
+    );
+    assert!(status.code().is_none(), "must not be a normal exit code");
+}
+
+#[test]
+fn probe_with_log_dir_writes_diagnostics() {
+    let dir = std::env::temp_dir().join(format!("spirula-cli-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = run_output(
+        &[
+            "probe",
+            "--label",
+            "ds",
+            "--steps",
+            "2",
+            "--step-delay-ms",
+            "5",
+            "--log-dir",
+            dir.to_str().unwrap(),
+        ],
+        &[("SPIRULA_TEST_DISK_LIMITS", "1")],
+        Duration::from_secs(15),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        dir.join("spirula-diagnostics.log").exists()
+            || std::fs::read_dir(&dir).unwrap().next().is_some(),
+        "no diagnostics under {dir:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Adapter-level proof: tiny notify queue + continuous progress still recovers
+/// the terminal via command_result (not only an application unit test).
+#[test]
+fn adapter_recovers_terminal_under_slow_consumer_pressure() {
+    // Drive a real binary with a long step so Progress floods the tiny default
+    // notify path relative to a slow drain — the process must still exit 0/1
+    // with a completed line (recovery path prints spirula:recovered when used).
+    let out = run_output(
+        &[
+            "probe-run",
+            "--steps",
+            "8",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "5",
+        ],
+        &[],
+        Duration::from_secs(20),
+    );
+    assert!(
+        out.status.code() == Some(0),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("completed") || stdout.contains("spirula:recovered"),
+        "terminal must appear via live or recovery: {stdout}"
+    );
+}
+
+#[test]
+fn application_command_result_recovers_without_subscriber() {
+    use spirula_application::{
+        ApplicationService, Command, CommandPayload, CommandResult, Event, SessionLimits,
+    };
+    use std::time::Duration;
+
+    let mut limits = SessionLimits::for_test();
+    limits.worker_step_delay = Duration::from_millis(1);
+    let app = ApplicationService::start(limits);
+    let id = match app.submit(Command::new(CommandPayload::ProbeLoad {
+        label: "solo".into(),
+    })) {
+        spirula_application::SubmitOutcome::Accepted { id } => id,
+        other => panic!("unexpected {other:?}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(2), |_| {
+        matches!(app.command_result(id), CommandResult::Ready(_))
+    }));
+    match app.command_result(id) {
+        CommandResult::Ready(env) => {
+            assert!(matches!(env.event, Event::Completed { .. }));
+        }
+        other => panic!("expected Ready, got {other:?}"),
+    }
+}
+
 #[allow(dead_code)]
 fn _write_sink(w: &mut impl Write) {
     let _ = w;

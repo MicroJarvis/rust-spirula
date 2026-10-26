@@ -60,24 +60,49 @@ appends `(code: SP-…)`.
 1. First SIGINT → submit `Stop { save: true }` (or `--no-save` when requested),
    wait for the command terminal (live subscribe **or** `command_result` /
    replay if the subscriber drops), exit 130.
-2. Second SIGINT → restore default disposition (`SIG_DFL`). Further SIGINT
-   uses OS default (may signal-terminate).
+2. Second SIGINT → restore `SIG_DFL` and `raise(SIGINT)` so **this** delivery
+   terminates under the default disposition (C++ `main.cpp` 63–64). Exactly
+   two signals; tests require `WTERMSIG == SIGINT`, not exit 130.
 
 ### Disk diagnostics (application-owned)
 
 Explicit caps on `DiskLogLimits`: `line_max_bytes`, `queue_capacity`,
 `tail_capacity`, `rotation_bytes`, `max_files`, `global_disk_budget_bytes`,
-plus `flush_join_deadline`. Async sink thread; `try_enqueue` only from the
-owner. Full / oversized → drop counters. Write failure → counters + at most
-one in-memory `Warning` with `field=disk_log` (never re-enters the sink).
-`flush` / `join` honor deadlines; Drop of `ApplicationService` joins under
-`teardown_deadline`. Workers and UI/CLI notify paths never block on disk.
+plus `flush_join_deadline`. `normalized()` ensures one admitted line plus the
+trailing newline fits rotation and the global budget. Newlines in the logical
+line are rejected (oversized), not silently rewritten. `file_stem` must be a
+single basename (`SP-INP-001`); `../` escapes are rejected before start.
 
-### Recovery
+Async sink thread; `try_enqueue` only from the owner. Shutdown is out-of-band
+(`AtomicBool`) so a full or stalled data queue cannot block join. `flush` /
+`join` use one absolute deadline from method entry; a timed-out `join` keeps
+the handle and returns `false` (retry must not report success while
+`sink_alive()`). Drop shares the **remaining** teardown budget across
+flush+join.
+
+Full / oversized → drop counters. Write failure → counters + at most one
+in-memory `Warning` per sink lifetime (`field=disk_log`; never re-enters the
+sink). Rotation rebuilds inventory from the real directory (numeric order);
+failed `remove_file` does not subtract bytes or forget the path. Non-file
+siblings (e.g. directories named like `stem.N`) are not treated as successful
+trims.
+
+**Honest limit:** the sink thread itself may block inside kernel open/write
+on a FIFO or hanging filesystem; caller-side `join` still returns by the
+deadline, but the detached-or-still-alive thread may remain until the FS
+unblocks.
+
+### Recovery and stderr
 
 If the live subscriber disconnects or coalesces, the CLI polls
-`command_result(id)` (and treats snapshot `Closed`) so a terminal is still
-observed. That reuses F07 result retention — no parallel business machine.
+`command_result(id)` every loop (not only on recv timeout) so continuous
+replaceable Progress cannot starve the terminal. Snapshot `Closed` ends a
+drain. That reuses F07 result retention — no parallel business machine.
+
+Exactly one stderr `error:` line for a failing process: `main_from_args`
+owns the write for `CliExit::Error` (admission reject / domain failure /
+invalid disk config). Live and recovered failure paths return
+`CliExit::Error` with the stable `DomainError` (use `SPIRULA_ERROR_CODES=1`).
 
 ### Test hooks (non-capability)
 

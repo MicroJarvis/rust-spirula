@@ -1,17 +1,19 @@
 //! Session run loop: submits through ApplicationService only.
+//!
+//! Presentation rule: exactly one stderr `error:` line for a failing process.
+//! This module returns `CliExit::Error` without printing; `main_from_args`
+//! owns the single write. Failure outcomes recovered via `command_result`
+//! present the terminal on stdout and return `CliExit::Error` for stderr.
 
 use crate::args::CliAction;
-use crate::exit_from_outcome;
 use crate::present::{self, capabilities_text, help_text};
 use crate::signals;
 use crate::usage_error;
 use spirula_application::{
     ApplicationService, Command, CommandPayload, CommandResult, DiskLogConfig, DiskLogLimits,
-    Event, FakeWorkerBehavior, RunOutcome, SessionLimits, SessionState, SubmitOutcome,
+    Event, EventEnvelope, FakeWorkerBehavior, RunOutcome, SessionLimits, SubmitOutcome,
 };
-use spirula_core::{
-    DomainError, EXIT_CANCELED, EXIT_FAILURE, EXIT_SUCCESS, ErrorCode, ProcessStage,
-};
+use spirula_core::{DomainError, EXIT_CANCELED, EXIT_SUCCESS, ErrorCode, ProcessStage};
 use std::path::PathBuf;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
@@ -86,11 +88,6 @@ fn run_session(plan: SessionPlan) -> CliExit {
         limits.worker_step_delay = Duration::from_millis(ms.max(1));
         limits.cancel_poll_interval = Duration::from_millis(ms.clamp(1, 50));
     }
-    // Test hook: inject fake worker behavior without a second state machine.
-    if let Ok(raw) = std::env::var("SPIRULA_TEST_WORKER_BEHAVIOR") {
-        // Applied after start.
-        let _ = raw;
-    }
 
     let disk = plan.log_dir.as_ref().map(|dir| {
         let mut cfg = DiskLogConfig::new(dir);
@@ -100,7 +97,15 @@ fn run_session(plan: SessionPlan) -> CliExit {
         cfg
     });
 
-    let app = ApplicationService::start_with(limits, disk);
+    let app = match ApplicationService::start_with(limits, disk) {
+        Ok(app) => app,
+        Err(error) => {
+            return CliExit::Error {
+                error,
+                stage: ProcessStage::BeforeSession,
+            };
+        }
+    };
     apply_test_worker_behavior(&app);
 
     let (sub, _snap) = match app.subscribe() {
@@ -122,7 +127,7 @@ fn run_session(plan: SessionPlan) -> CliExit {
         })) {
             SubmitOutcome::Accepted { id } => id,
             SubmitOutcome::Rejected { error } => {
-                present::write_error(&error);
+                // Single stderr owner is main_from_args.
                 return CliExit::Error {
                     error,
                     stage: ProcessStage::InSession,
@@ -137,12 +142,14 @@ fn run_session(plan: SessionPlan) -> CliExit {
             plan.save_on_stop,
             &mut saw_cancel_exit,
         ) {
-            WaitEnd::Exit(code) => return finalize(&app, code, saw_cancel_exit),
+            WaitEnd::Exit(exit) => {
+                return finalize_wait(&app, WaitEnd::Exit(exit), saw_cancel_exit);
+            }
             WaitEnd::Success if plan.steps.is_some() => {}
             WaitEnd::Success => {
                 let _ = app.submit(Command::new(CommandPayload::Shutdown));
                 drain_until_shutdown(&app, &sub, &mut stop_submitted, plan.save_on_stop);
-                return finalize(&app, EXIT_SUCCESS, saw_cancel_exit);
+                return finalize_code(&app, EXIT_SUCCESS, saw_cancel_exit);
             }
         }
     }
@@ -151,40 +158,39 @@ fn run_session(plan: SessionPlan) -> CliExit {
         let id = match app.submit(Command::new(CommandPayload::ProbeRun { steps })) {
             SubmitOutcome::Accepted { id } => id,
             SubmitOutcome::Rejected { error } => {
-                present::write_error(&error);
                 return CliExit::Error {
                     error,
                     stage: ProcessStage::InSession,
                 };
             }
         };
-        let code = match wait_for_command(
+        let end = wait_for_command(
             &app,
             &sub,
             id,
             &mut stop_submitted,
             plan.save_on_stop,
             &mut saw_cancel_exit,
-        ) {
-            WaitEnd::Success => EXIT_SUCCESS,
-            WaitEnd::Exit(code) => code,
-        };
+        );
         let _ = app.submit(Command::new(CommandPayload::Shutdown));
         drain_until_shutdown(&app, &sub, &mut stop_submitted, plan.save_on_stop);
-        return finalize(&app, code, saw_cancel_exit);
+        return finalize_wait(&app, end, saw_cancel_exit);
     }
 
-    // No load and no steps (should not parse): shut down.
     let _ = app.submit(Command::new(CommandPayload::Shutdown));
     drain_until_shutdown(&app, &sub, &mut stop_submitted, plan.save_on_stop);
-    finalize(&app, EXIT_SUCCESS, saw_cancel_exit)
+    finalize_code(&app, EXIT_SUCCESS, saw_cancel_exit)
 }
 
 enum WaitEnd {
-    /// Mutating command completed successfully; caller may continue.
     Success,
-    /// Process should exit with this code (failure or cancel).
-    Exit(u8),
+    /// Numeric success/cancel, or a domain error that must print once on stderr.
+    Exit(WaitExit),
+}
+
+enum WaitExit {
+    Code(u8),
+    Error(DomainError),
 }
 
 fn apply_test_worker_behavior(app: &ApplicationService) {
@@ -205,13 +211,15 @@ fn classify_outcome(outcome: &RunOutcome, saw_cancel_exit: &mut bool) -> WaitEnd
         RunOutcome::Completed { .. } => WaitEnd::Success,
         RunOutcome::Canceled { .. } => {
             *saw_cancel_exit = true;
-            WaitEnd::Exit(EXIT_CANCELED)
+            WaitEnd::Exit(WaitExit::Code(EXIT_CANCELED))
         }
-        RunOutcome::Failed { error } => {
-            present::write_error(error);
-            WaitEnd::Exit(exit_from_outcome(outcome))
-        }
+        RunOutcome::Failed { error } => WaitEnd::Exit(WaitExit::Error(error.without_source())),
     }
+}
+
+fn present_recovered_terminal(envelope: &EventEnvelope) {
+    present::write_event(envelope);
+    eprintln!("spirula:recovered command terminal via query");
 }
 
 fn wait_for_command(
@@ -225,7 +233,9 @@ fn wait_for_command(
     loop {
         maybe_handle_sigint(app, stop_submitted, save_on_stop);
 
-        match sub.recv_timeout(Duration::from_millis(50)) {
+        // Drain live events briefly, but always consult command_result so a
+        // flood of replaceable Progress/Log cannot starve the terminal.
+        match sub.recv_timeout(Duration::from_millis(20)) {
             Ok(envelope) => {
                 present::write_event(&envelope);
                 if let Event::Completed { outcome } = &envelope.event
@@ -234,45 +244,31 @@ fn wait_for_command(
                     return classify_outcome(outcome, saw_cancel_exit);
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {
-                // Recover terminal via query even if the live subscriber
-                // dropped/coalesced events (slow consumer / disconnect).
-                match app.command_result(id) {
-                    CommandResult::Ready(envelope) => {
-                        if let Event::Completed { outcome } = &envelope.event {
-                            eprintln!("spirula:recovered command terminal via query");
-                            return classify_outcome(outcome, saw_cancel_exit);
-                        }
-                        if matches!(envelope.event, Event::ShutdownComplete) {
-                            return WaitEnd::Success;
-                        }
-                    }
-                    CommandResult::Expired => {
-                        return WaitEnd::Exit(EXIT_FAILURE);
-                    }
-                    CommandResult::Pending | CommandResult::Unknown => {}
+            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {}
+        }
+
+        match app.command_result(id) {
+            CommandResult::Ready(envelope) => {
+                if let Event::Completed { outcome } = &envelope.event {
+                    // Live path returns above; reaching here means query recovery.
+                    present_recovered_terminal(&envelope);
+                    return classify_outcome(outcome, saw_cancel_exit);
                 }
-                if app.snapshot().state == SessionState::Closed {
+                if matches!(envelope.event, Event::ShutdownComplete) {
                     return WaitEnd::Success;
                 }
             }
-            Err(RecvTimeoutError::Disconnected) => {
-                // Subscriber dropped: fall back to command_result / replay.
-                match app.command_result(id) {
-                    CommandResult::Ready(envelope) => {
-                        if let Event::Completed { outcome } = &envelope.event {
-                            eprintln!("spirula:recovered after subscriber disconnect");
-                            return classify_outcome(outcome, saw_cancel_exit);
-                        }
-                        return WaitEnd::Exit(EXIT_FAILURE);
-                    }
-                    CommandResult::Pending => {
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-                    _ => return WaitEnd::Exit(EXIT_FAILURE),
-                }
+            CommandResult::Expired => {
+                return WaitEnd::Exit(WaitExit::Error(usage_error(
+                    ErrorCode::InvalidState,
+                    "command result expired before terminal was observed",
+                )));
             }
+            CommandResult::Pending | CommandResult::Unknown => {}
+        }
+
+        if app.snapshot().state == spirula_application::SessionState::Closed {
+            return WaitEnd::Success;
         }
     }
 }
@@ -294,7 +290,7 @@ fn drain_until_shutdown(
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                if app.snapshot().state == SessionState::Closed {
+                if app.snapshot().state == spirula_application::SessionState::Closed {
                     return;
                 }
             }
@@ -310,9 +306,20 @@ fn maybe_handle_sigint(app: &ApplicationService, stop_submitted: &mut bool, save
     }
 }
 
-fn finalize(app: &ApplicationService, code: u8, saw_cancel: bool) -> CliExit {
+fn finalize_wait(app: &ApplicationService, end: WaitEnd, saw_cancel: bool) -> CliExit {
     let _ = app.flush_disk_log(Duration::from_millis(500));
-    // SIGINT path: contract exit 130 even if outcome mapping already set it.
+    match end {
+        WaitEnd::Success => finalize_code(app, EXIT_SUCCESS, saw_cancel),
+        WaitEnd::Exit(WaitExit::Code(code)) => finalize_code(app, code, saw_cancel),
+        WaitEnd::Exit(WaitExit::Error(error)) => CliExit::Error {
+            error,
+            stage: ProcessStage::InSession,
+        },
+    }
+}
+
+fn finalize_code(app: &ApplicationService, code: u8, saw_cancel: bool) -> CliExit {
+    let _ = app.flush_disk_log(Duration::from_millis(200));
     if (saw_cancel || signals::stop_requested()) && code == EXIT_SUCCESS {
         return CliExit::Code(EXIT_CANCELED);
     }
