@@ -3,7 +3,7 @@
 
 use spirula_core::ErrorCode;
 use spirula_gpu::{
-    AdapterCapabilities, AdapterClass, AdapterIdentity, AdapterLimits, BackendKind,
+    AdapterCapabilities, AdapterClass, AdapterIdentity, AdapterLimits, BackendKind, CapabilityId,
     CapabilityRequest, ContextStatus, FeatureBits, FieldAvailability, GpuContext, LostSource,
     OpenFailureStage,
 };
@@ -137,7 +137,7 @@ fn synthetic_owner_reopen_bumps_generation_old_handle_dead() {
 }
 
 #[test]
-fn synthetic_reopen_failure_leaves_old_handle_dead() {
+fn synthetic_reopen_device_create_failure_syncs_report() {
     let req = CapabilityRequest::diagnose_default();
     let mut ctx = GpuContext::open_synthetic(&req, sample_adapter(), false).unwrap();
     let old = ctx.device_handle().unwrap();
@@ -146,6 +146,48 @@ fn synthetic_reopen_failure_leaves_old_handle_dead() {
         .unwrap_err();
     assert_eq!(err.stage, OpenFailureStage::DeviceCreate);
     assert_eq!(ctx.status(), ContextStatus::CreateFailed);
+    let report = ctx.report().expect("report retained after failed reopen");
+    assert_eq!(report.status, ContextStatus::CreateFailed);
+    assert!(!report.queue_present);
+    assert_eq!(
+        ctx.validate_handle(old).unwrap_err().code(),
+        ErrorCode::DeviceLost
+    );
+    assert!(ctx.device_handle().is_err());
+}
+
+#[test]
+fn synthetic_reopen_select_failure_syncs_report_unlike_stale_live() {
+    // Reproduce review defect: Select Err must not leave report.status=Live
+    // with queue_present=true while context is CreateFailed.
+    let open_req = CapabilityRequest::diagnose_default();
+    let mut weak = sample_adapter();
+    weak.features.subgroup = false;
+    let mut ctx = GpuContext::open_synthetic(&open_req, weak.clone(), false).unwrap();
+    let old = ctx.device_handle().unwrap();
+    assert_eq!(ctx.report().unwrap().status, ContextStatus::Live);
+
+    let mut need_subgroup = CapabilityRequest::diagnose_default();
+    need_subgroup.required_features = vec![CapabilityId::Subgroup];
+    need_subgroup.optional_features.clear();
+
+    let err = ctx
+        .reopen_synthetic(&need_subgroup, weak, false)
+        .expect_err("required Subgroup missing on adapter");
+    assert_eq!(err.stage, OpenFailureStage::Select);
+    assert_eq!(err.error.code(), ErrorCode::NoAdapter);
+    assert_eq!(ctx.status(), ContextStatus::CreateFailed);
+
+    let report = ctx.report().expect("public report kept for observation");
+    assert_eq!(
+        report.status,
+        ContextStatus::CreateFailed,
+        "report.status must match context after Select reopen failure"
+    );
+    assert!(
+        !report.queue_present,
+        "no backend survived failed reopen; queue must be false"
+    );
     assert_eq!(
         ctx.validate_handle(old).unwrap_err().code(),
         ErrorCode::DeviceLost

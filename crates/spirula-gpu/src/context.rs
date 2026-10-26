@@ -6,7 +6,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 
 use spirula_core::{ContextKey, DomainError, ErrorCode, UserAction};
@@ -142,39 +142,42 @@ pub enum OpenFailureStage {
 
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Host device-lost latch. Triggered state and reason share one mutex so a
+/// consumer cannot observe "lost" with an empty reason (the prior flag-then-
+/// message write order could lose the real callback string forever).
 struct LostWatch {
-    flag: Arc<AtomicBool>,
-    message: Arc<Mutex<Option<String>>>,
+    notice: Arc<Mutex<Option<String>>>,
 }
 
 impl LostWatch {
     fn new() -> Self {
         Self {
-            flag: Arc::new(AtomicBool::new(false)),
-            message: Arc::new(Mutex::new(None)),
+            notice: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Record a lost reason once. Presence of `Some(reason)` is the trigger
+    /// (no separate flag). Used by the wgpu callback and unit tests.
+    fn deliver(&self, reason: String) {
+        if let Ok(mut slot) = self.notice.lock()
+            && slot.is_none()
+        {
+            *slot = Some(reason);
         }
     }
 
     fn arm_callback(&self, device: &wgpu::Device) {
-        let flag = Arc::clone(&self.flag);
-        let message = Arc::clone(&self.message);
+        let watch = LostWatch {
+            notice: Arc::clone(&self.notice),
+        };
         device.set_device_lost_callback(move |_reason, msg| {
-            flag.store(true, Ordering::SeqCst);
-            if let Ok(mut slot) = message.lock() {
-                *slot = Some(msg);
-            }
+            watch.deliver(msg);
         });
     }
 
+    /// Take the pending reason exactly once. `None` if not yet lost / already taken.
     fn take_triggered(&self) -> Option<String> {
-        if !self.flag.swap(false, Ordering::SeqCst) {
-            return None;
-        }
-        self.message
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take())
-            .or_else(|| Some("host device lost callback".into()))
+        self.notice.lock().ok().and_then(|mut g| g.take())
     }
 }
 
@@ -687,6 +690,18 @@ impl Drop for GpuContext {
 }
 
 impl GpuContext {
+    /// Align public report with a failed reopen/create: status + no queue.
+    /// Keeps the previous report payload for diagnosis; does not delete it.
+    fn mark_create_failed(&mut self) {
+        self.status = ContextStatus::CreateFailed;
+        self.closed = true;
+        self.backend = None;
+        if let Some(report) = self.report.as_mut() {
+            report.status = ContextStatus::CreateFailed;
+            report.queue_present = false;
+        }
+    }
+
     /// Owner-driven recreate on the same [`ContextId`]: bumps generation on
     /// success. Old handles remain invalid. Never invoked from lost callbacks.
     pub fn reopen(&mut self, request: &CapabilityRequest) -> Result<(), OpenError> {
@@ -703,12 +718,7 @@ impl GpuContext {
                 Ok(())
             }
             Err(failure) => {
-                self.status = ContextStatus::CreateFailed;
-                self.closed = true;
-                if let Some(report) = self.report.as_mut() {
-                    report.status = ContextStatus::CreateFailed;
-                    report.queue_present = false;
-                }
+                self.mark_create_failed();
                 Err(failure)
             }
         }
@@ -725,12 +735,7 @@ impl GpuContext {
         self.backend = None;
         self.closed = false;
         if fail_device_create {
-            self.status = ContextStatus::CreateFailed;
-            self.closed = true;
-            if let Some(report) = self.report.as_mut() {
-                report.status = ContextStatus::CreateFailed;
-                report.queue_present = false;
-            }
+            self.mark_create_failed();
             return Err(open_err(
                 device_create_error("synthetic device recreate failure"),
                 OpenFailureStage::DeviceCreate,
@@ -741,8 +746,7 @@ impl GpuContext {
         let selection = match select_auto(std::slice::from_ref(&adapter), request) {
             Ok(sel) => sel,
             Err(error) => {
-                self.status = ContextStatus::CreateFailed;
-                self.closed = true;
+                self.mark_create_failed();
                 return Err(open_err(
                     error,
                     OpenFailureStage::Select,
@@ -783,5 +787,59 @@ impl GpuContext {
             negotiated: selection.negotiated,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lost_watch_tests {
+    use super::LostWatch;
+
+    #[test]
+    fn take_triggered_returns_real_reason_exactly_once() {
+        let watch = LostWatch::new();
+        watch.deliver("driver reset: unit-test".into());
+        assert_eq!(
+            watch.take_triggered().as_deref(),
+            Some("driver reset: unit-test")
+        );
+        assert_eq!(
+            watch.take_triggered(),
+            None,
+            "second take must not invent a fallback reason"
+        );
+    }
+
+    #[test]
+    fn deliver_under_lock_cannot_lose_reason_to_empty_take() {
+        // Deterministic stand-in for the old flag.store-then-message.lock race:
+        // a single Option under one mutex is both the trigger and the payload.
+        let watch = LostWatch::new();
+        watch.deliver("exact host reason".into());
+        let first = watch.take_triggered();
+        assert_eq!(first.as_deref(), Some("exact host reason"));
+        assert!(watch.take_triggered().is_none());
+    }
+
+    #[test]
+    fn new_watch_unaffected_by_prior_generation_deliver() {
+        let previous = LostWatch::new();
+        let next = LostWatch::new();
+        previous.deliver("lost on generation N".into());
+        assert!(
+            next.take_triggered().is_none(),
+            "reopen installs a fresh LostWatch; old callback state must not leak"
+        );
+        assert_eq!(
+            previous.take_triggered().as_deref(),
+            Some("lost on generation N")
+        );
+    }
+
+    #[test]
+    fn second_deliver_keeps_first_reason() {
+        let watch = LostWatch::new();
+        watch.deliver("first".into());
+        watch.deliver("second".into());
+        assert_eq!(watch.take_triggered().as_deref(), Some("first"));
     }
 }

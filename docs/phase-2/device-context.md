@@ -58,7 +58,10 @@ on the context for diagnose/tests.
 | `GpuContext` | Owns instance/device/queue while open |
 | `open` / `close` / `Drop` | Create and explicit teardown |
 | `reset_scene` | Scene-resource clear; keep device (no-op body until P2-F03) |
-| `reopen` | **Owner-initiated** recreate; same `ContextId`, new generation |
+| `reopen` | **Owner-initiated** recreate; same `ContextId`, new generation.
+  Any failure path (`Select` / `DeviceCreate` / host) sets
+  `CreateFailed`, keeps the prior report, sets `report.status` to match,
+  and forces `queue_present=false`. Old handles stay rejected. |
 | `device_handle` / `validate_handle` | Issue / check handles |
 | `status` / `take_lost_notices` | Observable open/closed/lost; lost notice for owner |
 | `inject_lost` | Synthetic lost only (`LostSource::SyntheticInject`) |
@@ -76,10 +79,13 @@ Device **create** failure → `SP-GPU-004` (`AllocationFailed`) at stage
 
 wgpu `set_device_lost_callback` marks the context `Lost`, drops device/queue
 handles inside `spirula-gpu`, and records a `LostNotice` with
-`LostSource::HostCallback`. It **must not** mutate `spirula-application`
-`SessionState`. Automatic device recreation is **forbidden** inside GPU. The
-future session worker (not wired in this slice) must call `reopen` explicitly
-after observing lost/closed.
+`LostSource::HostCallback`. The lost latch stores reason in a single mutex
+(`Option<String>`) so take cannot observe “triggered” with an empty/missing
+reason; each notice is consumed once. A successful `reopen` installs a fresh
+latch — prior-generation callbacks do not affect the new generation. It
+**must not** mutate `spirula-application` `SessionState`. Automatic device
+recreation is **forbidden** inside GPU. The future session worker (not wired
+in this slice) must call `reopen` explicitly after observing lost/closed.
 
 ### Owner call boundary (this slice)
 
