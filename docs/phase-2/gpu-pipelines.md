@@ -25,12 +25,14 @@ Rust continues session-owned `GpuContext` (no process-global pipeline maps).
 
 ### Shader source contract
 
-- Path: `crates/spirula-gpu/shaders/<name>.wgsl`.
+- Path: `crates/spirula-gpu/shaders/<name>.wgsl` where `<name>` equals the
+  header name (affine proof: `shaders/affine-u32.wgsl`).
 - First line: `// spirula-shader: <name> version: <n>` (kebab name, integer version).
 - Entry + bind layout are declared by the Rust companion (`BindLayoutVersion` +
   typed bind slots), not discovered by scanning WGSL at runtime.
-- Compile failure → `SP-GPU-005` with `path`, `line` (when parseable), and
-  compiler message. No half-valid cache entry; no leftover pending reserve.
+- Compile failure → `SP-GPU-005` with `path` = `shaders/<name>.wgsl` (must exist
+  on disk), `line` (when parseable), and compiler message. No half-valid cache
+  entry; no leftover pending reserve.
 
 ### Pipeline key
 
@@ -50,8 +52,12 @@ handles are rejected (`SP-INP-001` / `SP-GPU-002`).
 
 ### Minimal real compute proof (affine u32)
 
-- Bind layout v1: `@group(0)` uniform `Params` (16 bytes: `scale`, `bias`,
-  `count`, `_pad`) + storage read `input` + storage read_write `output`.
+- Bind layout epochs **v1 and v2** (narrow affine ABI only): identical
+  `@group(0)` uniform `Params` (16 bytes: `scale`, `bias`, `count`, `_pad`) +
+  storage read `input` + storage read_write `output`. v2 exists so a
+  `bind_layout_version` key change is a real cache miss / new pipeline id with
+  CPU-exact dispatch on both epochs; other versions → typed reject. Not a
+  general layout/reflection system.
 - Kernel: `output[i] = input[i] * scale + bias + MODE` for `i < Params.count`.
 - **Count contract**: dispatch `count` is the launch extent (workgroups cover
   `0..count`; buffers must be sized for it). Uniform `Params.count` is the
@@ -89,9 +95,11 @@ pipeline obtain and compute phase timings plus accounted peak/source. Does
    multiple lengths; MODE override changes output; `Params.count` guard matches
    CPU/synthetic/host.
 2. Key: each of name/version/entry/spec/bind_layout_version change → cache miss
-   / new pipeline; repeat same key → hit (observable). Same-key source rebuild
-   yields a new id; old handle is typed-rejected (does not run new body); failed
-   replace keeps the prior entry.
+   / new pipeline; repeat same key → hit (observable). Affine supports layout
+   epochs v1 and v2 (same ABI); obtain(v1) vs obtain(v2) yields distinct ids and
+   both dispatch CPU-exact (host + synthetic). Unsupported layout versions
+   typed-reject. Same-key source rebuild yields a new id; old handle is
+   typed-rejected (does not run new body); failed replace keeps the prior entry.
 3. Illegal alias/bind range/size/alignment/usage/dispatch/binding-limit → typed
    errors (no wgpu panic); accounting unchanged; no half pending on encode fail.
 4. Bad WGSL → `SP-GPU-005` with file/line/message; retry with good source works;

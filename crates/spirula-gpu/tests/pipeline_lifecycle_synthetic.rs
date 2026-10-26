@@ -2,11 +2,11 @@
 
 use spirula_core::ErrorCode;
 use spirula_gpu::{
-    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_ENTRY, AFFINE_U32_WGSL, AdapterCapabilities,
-    AdapterClass, AdapterIdentity, AdapterLimits, AffineU32Params, BackendKind, BufferDesc,
-    BufferUsage, CapabilityRequest, ComputePipelineDesc, FeatureBits, FieldAvailability,
-    GpuContext, PipelineKey, RESOURCE_ACCOUNT_SOURCE, ResourceLabel, SpecConstants, cpu_affine_u32,
-    parse_shader_header,
+    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_BIND_LAYOUT_VERSION_V2, AFFINE_U32_ENTRY,
+    AFFINE_U32_WGSL, AdapterCapabilities, AdapterClass, AdapterIdentity, AdapterLimits,
+    AffineU32Params, BackendKind, BufferDesc, BufferUsage, CapabilityRequest, ComputePipelineDesc,
+    FeatureBits, FieldAvailability, GpuContext, RESOURCE_ACCOUNT_SOURCE, ResourceLabel,
+    SpecConstants, cpu_affine_u32, parse_shader_header,
 };
 use std::time::Duration;
 
@@ -236,23 +236,26 @@ fn synthetic_pipeline_key_fields_and_cache_hit() {
         .unwrap();
     assert_ne!(a.id(), e.id());
 
-    // bind_layout_version unsupported → typed reject (distinct key shape)
+    // bind_layout_version v1 vs v2 → real cache miss / distinct pipeline ids
+    // (same binding ABI; v2 is an explicit supported epoch for key invalidation).
+    let before_v2 = ctx.pipeline_cache_stats();
+    let v2 = ctx
+        .obtain_compute_pipeline(affine_desc(
+            base,
+            AFFINE_U32_ENTRY,
+            0,
+            AFFINE_U32_BIND_LAYOUT_VERSION_V2,
+        ))
+        .unwrap();
+    assert_ne!(a.id(), v2.id());
+    assert_ne!(a.key().bind_layout_version, v2.key().bind_layout_version);
+    let after_v2 = ctx.pipeline_cache_stats();
+    assert!(after_v2.misses > before_v2.misses);
+    // unsupported epoch → typed reject
     let err = ctx
         .obtain_compute_pipeline(affine_desc(base, AFFINE_U32_ENTRY, 0, 99))
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidArgument);
-    let k1 = PipelineKey {
-        shader_name: "affine-u32".into(),
-        shader_version: 1,
-        entry_point: "main".into(),
-        spec: SpecConstants::single("MODE", 0).sorted(),
-        bind_layout_version: 1,
-    };
-    let k2 = PipelineKey {
-        bind_layout_version: 2,
-        ..k1.clone()
-    };
-    assert_ne!(k1, k2);
 
     // same key, different source body → digest miss / rebuild (no quiet reuse)
     let mutated = format!("{base}\n// body-change-marker\n");
@@ -772,4 +775,74 @@ fn synthetic_interleaved_readback_abandons_do_not_drop_compute_holds() {
     drop(inn);
     drop(out);
     assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_bind_layout_v1_v2_both_dispatch_cpu_exact() {
+    let mut ctx = open_ctx();
+    let count = 4u32;
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:layout-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:layout-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:layout-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, count).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+
+    let v1 = ctx
+        .obtain_compute_pipeline(affine_desc(
+            AFFINE_U32_WGSL,
+            AFFINE_U32_ENTRY,
+            0,
+            AFFINE_U32_BIND_LAYOUT_VERSION,
+        ))
+        .unwrap();
+    let v2 = ctx
+        .obtain_compute_pipeline(affine_desc(
+            AFFINE_U32_WGSL,
+            AFFINE_U32_ENTRY,
+            0,
+            AFFINE_U32_BIND_LAYOUT_VERSION_V2,
+        ))
+        .unwrap();
+    assert_ne!(v1.id(), v2.id());
+    assert_eq!(v1.key().bind_layout_version, AFFINE_U32_BIND_LAYOUT_VERSION);
+    assert_eq!(
+        v2.key().bind_layout_version,
+        AFFINE_U32_BIND_LAYOUT_VERSION_V2
+    );
+
+    for pipe in [&v1, &v2] {
+        ctx.dispatch_affine_u32(pipe, &params, &inn, &out, count)
+            .unwrap();
+        let s = ctx.submit().unwrap();
+        ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+        let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+        let s = ctx.submit().unwrap();
+        ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+        assert_eq!(
+            bytes_to_words(&ctx.map_readback(&t).unwrap()),
+            vec![7, 9, 11, 13]
+        );
+    }
 }

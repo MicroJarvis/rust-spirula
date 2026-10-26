@@ -2,9 +2,10 @@
 
 use spirula_core::{ContextKey, ErrorCode};
 use spirula_gpu::{
-    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_ENTRY, AFFINE_U32_WGSL, AffineU32Params, BufferDesc,
-    BufferUsage, CapabilityRequest, ComputePipelineDesc, GpuContext, RESOURCE_ACCOUNT_SOURCE,
-    ResourceLabel, SpecConstants, WGPU_VERSION, cpu_affine_u32,
+    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_BIND_LAYOUT_VERSION_V2, AFFINE_U32_ENTRY,
+    AFFINE_U32_WGSL, AffineU32Params, BufferDesc, BufferUsage, CapabilityRequest,
+    ComputePipelineDesc, GpuContext, RESOURCE_ACCOUNT_SOURCE, ResourceLabel, SpecConstants,
+    WGPU_VERSION, cpu_affine_u32,
 };
 use std::time::{Duration, Instant};
 
@@ -417,6 +418,135 @@ fn host_mixed_compute_readback_abandon_removes_owned_command_only() {
     assert_eq!(
         bytes_to_words(&ctx.map_readback(&t).unwrap()),
         vec![7, 9, 11, 13]
+    );
+
+    drop(params);
+    drop(inn);
+    drop(out);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    ctx.close();
+}
+
+#[test]
+fn host_bind_layout_v1_v2_distinct_ids_both_cpu_exact() {
+    let request = CapabilityRequest::diagnose_default();
+    let Ok(mut ctx) = GpuContext::open(&request) else {
+        eprintln!("host_bind_layout_v1_v2 skipped: device unavailable");
+        return;
+    };
+    let count = 4u32;
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:bl-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:bl-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:bl-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, count).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+
+    let before = ctx.pipeline_cache_stats();
+    let v1 = ctx
+        .obtain_compute_pipeline(ComputePipelineDesc {
+            source: AFFINE_U32_WGSL.to_owned(),
+            entry_point: AFFINE_U32_ENTRY.into(),
+            spec: SpecConstants::single("MODE", 0),
+            bind_layout_version: AFFINE_U32_BIND_LAYOUT_VERSION,
+            label: label("spirula:gpu:pipeline:bl-v1"),
+        })
+        .unwrap();
+    let after_v1 = ctx.pipeline_cache_stats();
+    assert!(after_v1.misses > before.misses);
+    let v2 = ctx
+        .obtain_compute_pipeline(ComputePipelineDesc {
+            source: AFFINE_U32_WGSL.to_owned(),
+            entry_point: AFFINE_U32_ENTRY.into(),
+            spec: SpecConstants::single("MODE", 0),
+            bind_layout_version: AFFINE_U32_BIND_LAYOUT_VERSION_V2,
+            label: label("spirula:gpu:pipeline:bl-v2"),
+        })
+        .unwrap();
+    let after_v2 = ctx.pipeline_cache_stats();
+    assert!(after_v2.misses > after_v1.misses);
+    assert_ne!(v1.id(), v2.id());
+    assert_eq!(v1.key().bind_layout_version, 1);
+    assert_eq!(v2.key().bind_layout_version, 2);
+    eprintln!(
+        "host_bind_layout v1_id={} v2_id={} misses={} device={:?}",
+        v1.id(),
+        v2.id(),
+        after_v2.misses,
+        ctx.report().map(|r| &r.adapter.identity.name)
+    );
+
+    for pipe in [&v1, &v2] {
+        ctx.dispatch_affine_u32(pipe, &params, &inn, &out, count)
+            .unwrap();
+        let s = ctx.submit().unwrap();
+        ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+        let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+        let s = ctx.submit().unwrap();
+        ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+        assert_eq!(
+            bytes_to_words(&ctx.map_readback(&t).unwrap()),
+            vec![7, 9, 11, 13]
+        );
+    }
+
+    assert_eq!(
+        ctx.obtain_compute_pipeline(ComputePipelineDesc {
+            source: AFFINE_U32_WGSL.to_owned(),
+            entry_point: AFFINE_U32_ENTRY.into(),
+            spec: SpecConstants::single("MODE", 0),
+            bind_layout_version: 99,
+            label: label("spirula:gpu:pipeline:bl-bad"),
+        })
+        .unwrap_err()
+        .code(),
+        ErrorCode::InvalidArgument
+    );
+
+    // SP-GPU-005 path must name the real on-disk shader file.
+    let bad = "// spirula-shader: affine-u32 version: 1\nfn broken( {\n";
+    let err = ctx
+        .obtain_compute_pipeline(ComputePipelineDesc {
+            source: bad.into(),
+            entry_point: AFFINE_U32_ENTRY.into(),
+            spec: SpecConstants::empty(),
+            bind_layout_version: AFFINE_U32_BIND_LAYOUT_VERSION,
+            label: label("spirula:gpu:pipeline:path-check"),
+        })
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ShaderFailed);
+    assert_eq!(
+        err.context_value(ContextKey::Path),
+        Some("shaders/affine-u32.wgsl")
+    );
+    assert!(
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shaders/affine-u32.wgsl"
+        ))
+        .is_file(),
+        "on-disk shader must match header/enrich path"
     );
 
     drop(params);

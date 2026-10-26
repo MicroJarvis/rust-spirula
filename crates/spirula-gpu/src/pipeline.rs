@@ -12,15 +12,25 @@ use crate::resource::{
     BufferHandle, COPY_BUFFER_ALIGNMENT, GpuBuffer, check_copy_buffer_align, wgpu_scoped,
 };
 
-/// Embedded affine-u32 WGSL (bind layout v1).
-pub const AFFINE_U32_WGSL: &str = include_str!("../shaders/affine_u32.wgsl");
+/// Embedded affine-u32 WGSL (`shaders/affine-u32.wgsl`; header name matches path).
+pub const AFFINE_U32_WGSL: &str = include_str!("../shaders/affine-u32.wgsl");
 pub const AFFINE_U32_NAME: &str = "affine-u32";
 pub const AFFINE_U32_VERSION: u32 = 1;
 pub const AFFINE_U32_ENTRY: &str = "main";
+/// Default / primary affine bind-layout epoch (same ABI as v2).
 pub const AFFINE_U32_BIND_LAYOUT_VERSION: u32 = 1;
+/// Second supported epoch: identical binding ABI; exists so key-field
+/// `bind_layout_version` changes produce a real cache miss / new pipeline id.
+pub const AFFINE_U32_BIND_LAYOUT_VERSION_V2: u32 = 2;
 pub const AFFINE_U32_WORKGROUP_SIZE: u32 = 64;
 /// Bound size for affine `Params` uniform (narrow range; not entire buffer).
 pub const AFFINE_U32_PARAMS_BYTES: u64 = 16;
+
+/// P2-F04 narrow affine ABI supports exactly these layout epochs (not a
+/// general layout registry). Unsupported versions → typed reject.
+pub fn affine_bind_layout_supported(version: u32) -> bool {
+    version == AFFINE_U32_BIND_LAYOUT_VERSION || version == AFFINE_U32_BIND_LAYOUT_VERSION_V2
+}
 
 static NEXT_PIPELINE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -58,7 +68,7 @@ pub fn cpu_affine_u32(input: &[u32], scale: u32, bias: u32, mode: u32) -> Vec<u3
         .collect()
 }
 
-/// 16-byte uniform params matching `affine_u32.wgsl` `Params`.
+/// 16-byte uniform params matching `shaders/affine-u32.wgsl` `Params`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AffineU32Params {
@@ -344,11 +354,13 @@ impl GpuContext {
     ) -> Result<ComputePipelineHandle, DomainError> {
         self.require_live_for_pipeline()?;
         let header = parse_shader_header(&desc.source)?;
-        if desc.bind_layout_version != AFFINE_U32_BIND_LAYOUT_VERSION {
+        if !affine_bind_layout_supported(desc.bind_layout_version) {
             return Err(inp(
                 format!(
-                    "unsupported bind_layout_version {} (only {} in P2-F04)",
-                    desc.bind_layout_version, AFFINE_U32_BIND_LAYOUT_VERSION
+                    "unsupported bind_layout_version {} (affine supports {} and {})",
+                    desc.bind_layout_version,
+                    AFFINE_U32_BIND_LAYOUT_VERSION,
+                    AFFINE_U32_BIND_LAYOUT_VERSION_V2
                 ),
                 "bind_layout_version",
             ));
@@ -414,9 +426,13 @@ impl GpuContext {
                     Err(e) => return Err(enrich_shader_error(e, &header.name)),
                 };
 
+                // v1 and v2 share the same binding ABI; epoch is a key field only.
+                let layout_label =
+                    format!("spirula:gpu:bgl:affine-u32-v{}", desc.bind_layout_version);
+                let pl_label = format!("spirula:gpu:pl:affine-u32-v{}", desc.bind_layout_version);
                 let bind_layout = match wgpu_scoped(&device, || {
                     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some("spirula:gpu:bgl:affine-u32-v1"),
+                        label: Some(layout_label.as_str()),
                         entries: &[
                             wgpu::BindGroupLayoutEntry {
                                 binding: 0,
@@ -456,7 +472,7 @@ impl GpuContext {
                 };
                 let pipeline_layout = match wgpu_scoped(&device, || {
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("spirula:gpu:pl:affine-u32-v1"),
+                        label: Some(pl_label.as_str()),
                         bind_group_layouts: &[Some(&bind_layout)],
                         immediate_size: 0,
                     })

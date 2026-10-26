@@ -27,10 +27,11 @@ pub use context::{
 };
 pub use enumerate::{WGPU_VERSION, diagnose_exit_code, enumerate_host_adapters};
 pub use pipeline::{
-    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_ENTRY, AFFINE_U32_NAME, AFFINE_U32_PARAMS_BYTES,
-    AFFINE_U32_VERSION, AFFINE_U32_WGSL, AFFINE_U32_WORKGROUP_SIZE, AffineU32Params,
-    ComputePipelineDesc, ComputePipelineHandle, PipelineCacheStats, PipelineKey, ShaderHeader,
-    SpecConstants, cpu_affine_u32, parse_shader_header,
+    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_BIND_LAYOUT_VERSION_V2, AFFINE_U32_ENTRY,
+    AFFINE_U32_NAME, AFFINE_U32_PARAMS_BYTES, AFFINE_U32_VERSION, AFFINE_U32_WGSL,
+    AFFINE_U32_WORKGROUP_SIZE, AffineU32Params, ComputePipelineDesc, ComputePipelineHandle,
+    PipelineCacheStats, PipelineKey, ShaderHeader, SpecConstants, affine_bind_layout_supported,
+    cpu_affine_u32, parse_shader_header,
 };
 pub use resource::{
     BufferDesc, BufferHandle, BufferUsage, COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT,
