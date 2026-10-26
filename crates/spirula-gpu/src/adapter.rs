@@ -196,42 +196,46 @@ impl AdapterLimits {
 
 /// Resolved value for one negotiated limit field.
 ///
-/// `effective` never exceeds the adapter capacity and never claims an unmet
-/// optional desire was satisfied (`desired_met` is the honesty bit).
+/// Invariants after a successful negotiate (required floors already passed):
+/// - `effective <= adapter`
+/// - if `required` was set, `effective >= required`
+/// - `desired_met` is honest about the optional desire only (adapter ≥ desire),
+///   and never implies `effective == desire` when desire sits below required.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedLimit<T: Copy + Ord> {
     /// Optional desire from the request (`None` if not optionally requested).
     pub desired: Option<T>,
-    /// Usable value for callers (≤ adapter).
+    /// Usable value for callers: ≥ required floor (if any) and ≤ adapter.
     pub effective: T,
     /// `true` iff no optional desire, or adapter capacity ≥ desire.
     pub desired_met: bool,
 }
 
 impl<T: Copy + Ord> ResolvedLimit<T> {
-    fn resolve(adapter: T, desired: Option<T>) -> Self {
-        match desired {
-            None => Self {
-                desired: None,
-                effective: adapter,
-                desired_met: true,
-            },
-            Some(want) if adapter >= want => Self {
-                desired: Some(want),
-                effective: want,
-                desired_met: true,
-            },
-            Some(want) => Self {
-                desired: Some(want),
-                effective: adapter,
-                desired_met: false,
-            },
+    /// `adapter` must already satisfy `required` when `required` is `Some`.
+    fn resolve(adapter: T, required: Option<T>, desired: Option<T>) -> Self {
+        debug_assert!(required.is_none_or(|r| adapter >= r));
+        let desired_met = desired.is_none_or(|d| adapter >= d);
+        // Optional desire may raise the usable value up to adapter, but must
+        // never press below the required floor on a successful negotiation.
+        let uncapped = match desired {
+            None => adapter,
+            Some(want) => want.min(adapter),
+        };
+        let effective = match required {
+            None => uncapped,
+            Some(floor) => uncapped.max(floor),
+        };
+        Self {
+            desired,
+            effective,
+            desired_met,
         }
     }
 }
 
 /// Verifiable resolved limits after required floors pass and optional desires
-/// are clamped to the device (same three fields as [`LimitFloor`]).
+/// are applied without violating those floors (same three fields as [`LimitFloor`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedLimits {
     pub max_buffer_size: ResolvedLimit<u64>,
@@ -240,18 +244,21 @@ pub struct ResolvedLimits {
 }
 
 impl ResolvedLimits {
-    fn negotiate(adapter: AdapterLimits, optional: LimitFloor) -> Self {
+    fn negotiate(adapter: AdapterLimits, required: LimitFloor, optional: LimitFloor) -> Self {
         Self {
             max_buffer_size: ResolvedLimit::resolve(
                 adapter.max_buffer_size,
+                required.max_buffer_size,
                 optional.max_buffer_size,
             ),
             max_storage_buffers_per_shader_stage: ResolvedLimit::resolve(
                 adapter.max_storage_buffers_per_shader_stage,
+                required.max_storage_buffers_per_shader_stage,
                 optional.max_storage_buffers_per_shader_stage,
             ),
             max_compute_workgroup_storage_size: ResolvedLimit::resolve(
                 adapter.max_compute_workgroup_storage_size,
+                required.max_compute_workgroup_storage_size,
                 optional.max_compute_workgroup_storage_size,
             ),
         }
@@ -411,7 +418,11 @@ pub fn negotiate(
         shader_f16,
         timestamp,
         float_atomic,
-        limits: ResolvedLimits::negotiate(adapter.limits, request.optional_desired_limits),
+        limits: ResolvedLimits::negotiate(
+            adapter.limits,
+            request.required_min_limits,
+            request.optional_desired_limits,
+        ),
     })
 }
 
@@ -851,5 +862,79 @@ mod tests {
             sel.negotiated.limits.max_buffer_size.effective,
             device.max_buffer_size
         );
+        assert!(sel.negotiated.limits.max_buffer_size.effective >= 4 << 20);
+    }
+
+    #[test]
+    fn eligible_optional_below_required_does_not_lower_effective() {
+        // Independent probe: cap > required > optional desire on all three fields.
+        let device = AdapterLimits {
+            max_buffer_size: 64 << 20,
+            max_storage_buffers_per_shader_stage: 8,
+            max_compute_workgroup_storage_size: 16_384,
+        };
+        let adapters = vec![sample(
+            0,
+            "overlap",
+            AdapterClass::DiscreteGpu,
+            BackendKind::Vulkan,
+            FeatureBits::default(),
+            device,
+            FieldAvailability::Unavailable {
+                reason: "synthetic",
+            },
+        )];
+        let mut req = CapabilityRequest::diagnose_default();
+        req.required_min_limits = LimitFloor {
+            max_buffer_size: Some(32 << 20),
+            max_storage_buffers_per_shader_stage: Some(6),
+            max_compute_workgroup_storage_size: Some(8_192),
+        };
+        req.optional_desired_limits = LimitFloor {
+            max_buffer_size: Some(4 << 20),
+            max_storage_buffers_per_shader_stage: Some(2),
+            max_compute_workgroup_storage_size: Some(4_096),
+        };
+        assert!(is_eligible(&adapters[0], &req));
+        let sel = select_auto(&adapters, &req).unwrap();
+        let lim = sel.negotiated.limits;
+
+        assert!(lim.max_buffer_size.desired_met); // adapter ≥ optional desire
+        assert_eq!(lim.max_buffer_size.desired, Some(4 << 20));
+        assert_eq!(lim.max_buffer_size.effective, 32 << 20); // raised to required
+        assert!(lim.max_buffer_size.effective <= device.max_buffer_size);
+
+        assert!(lim.max_storage_buffers_per_shader_stage.desired_met);
+        assert_eq!(lim.max_storage_buffers_per_shader_stage.desired, Some(2));
+        assert_eq!(lim.max_storage_buffers_per_shader_stage.effective, 6);
+        assert!(lim.max_storage_buffers_per_shader_stage.effective <= 8);
+
+        assert!(lim.max_compute_workgroup_storage_size.desired_met);
+        assert_eq!(lim.max_compute_workgroup_storage_size.desired, Some(4_096));
+        assert_eq!(lim.max_compute_workgroup_storage_size.effective, 8_192);
+        assert!(lim.max_compute_workgroup_storage_size.effective <= 16_384);
+    }
+
+    #[test]
+    fn resolve_equal_required_and_optional_uses_that_value() {
+        let device = basic_limits();
+        let adapters = vec![sample(
+            0,
+            "eq",
+            AdapterClass::DiscreteGpu,
+            BackendKind::Metal,
+            FeatureBits::default(),
+            device,
+            FieldAvailability::Unavailable {
+                reason: "synthetic",
+            },
+        )];
+        let mut req = CapabilityRequest::diagnose_default();
+        req.required_min_limits.max_buffer_size = Some(1 << 20);
+        req.optional_desired_limits.max_buffer_size = Some(1 << 20);
+        let sel = select_auto(&adapters, &req).unwrap();
+        let buf = sel.negotiated.limits.max_buffer_size;
+        assert!(buf.desired_met);
+        assert_eq!(buf.effective, 1 << 20);
     }
 }

@@ -48,10 +48,15 @@ general-purpose wgpu mirror and does not create devices, queues, or resources.
   fallback. Optional absence must not reject an otherwise eligible adapter.
 - **Optional** `optional_desired_limits` over device capacity → keep the
   adapter; `ResolvedLimit` sets `desired_met=false` and `effective` to the
-  adapter capacity. Never claim the requested desire was satisfied. When the
-  desire is met, `effective` equals the desire (≤ adapter).
-- Required floors outrank optional desires: failing a required floor rejects
-  even if an optional desire would have been met.
+  adapter capacity (still ≥ any required floor). Never claim the requested
+  desire was satisfied.
+- Required floors outrank optional desires in **both** eligibility and the
+  returned plan: failing a required floor rejects; on success,
+  `effective >= required` and `effective <= adapter`. An optional desire
+  below the required floor must not lower `effective` (it stays at least the
+  required floor); `desired_met` still reports whether the adapter meets the
+  optional desire alone. When desire ≥ required and the adapter meets desire,
+  `effective` equals the desire.
 - Detecting a wgpu feature bit means **capability declared**, not that a
   Spirula kernel already implements it. Real compute stays later P2/P4 slices.
 
