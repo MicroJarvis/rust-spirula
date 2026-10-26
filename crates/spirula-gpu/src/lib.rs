@@ -26,8 +26,8 @@ pub use context::{
 };
 pub use enumerate::{WGPU_VERSION, diagnose_exit_code, enumerate_host_adapters};
 pub use resource::{
-    BufferDesc, BufferHandle, BufferUsage, COPY_BYTES_PER_ROW_ALIGNMENT, RESOURCE_ACCOUNT_SOURCE,
-    ReadbackTicket, ResourceAccountingSnapshot, ResourceLabel, SubmissionHandle, Texture2dDesc,
-    TextureFormat, TextureHandle, TextureUsage, rgba8_bytes_per_row, rgba8_logical_bytes,
-    rgba8_padded_bytes,
+    BufferDesc, BufferHandle, BufferUsage, COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT,
+    RESOURCE_ACCOUNT_SOURCE, ReadbackTicket, ResourceAccountingSnapshot, ResourceLabel,
+    SubmissionHandle, Texture2dDesc, TextureFormat, TextureHandle, TextureUsage,
+    rgba8_bytes_per_row, rgba8_logical_bytes, rgba8_padded_bytes,
 };

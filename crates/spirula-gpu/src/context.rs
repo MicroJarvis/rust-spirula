@@ -446,6 +446,16 @@ impl GpuContext {
         self.backend = None;
     }
 
+    /// Destroy the live wgpu device **without** polling (test/diagnose hook).
+    ///
+    /// The next `device.poll` (including inside `GpuContext::wait`) delivers the
+    /// host Destroyed callback. Production code must not call this.
+    pub fn destroy_host_device_without_poll(&mut self) {
+        if let Some((device, _)) = self.backend_device_queue() {
+            device.destroy();
+        }
+    }
+
     /// Poll host lost flag into a typed notice (no application SessionState mutation).
     pub fn poll_host_lost(&mut self) {
         let triggered = match &self.backend {

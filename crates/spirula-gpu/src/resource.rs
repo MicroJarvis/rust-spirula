@@ -15,6 +15,10 @@ use crate::context::{ContextGeneration, ContextId, ContextStatus, GpuContext};
 /// wgpu copy row pitch alignment (bytes).
 pub const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 
+/// wgpu `COPY_BUFFER_ALIGNMENT` for buffer↔buffer copy offset/size and
+/// mapped-at-creation staging sizes (bytes).
+pub const COPY_BUFFER_ALIGNMENT: u64 = 4;
+
 /// Counter source for scoped GPU resource accounting (not device-wide VRAM).
 pub const RESOURCE_ACCOUNT_SOURCE: &str = "accounted_scoped:gpu_context_resources";
 
@@ -341,6 +345,20 @@ fn range_err(msg: impl Into<String>) -> DomainError {
     DomainError::try_new(ErrorCode::ValueOutOfRange, msg)
         .expect("non-empty")
         .with_user_action(UserAction::CorrectInput)
+}
+
+fn check_copy_buffer_align(offset: u64, size: u64) -> Result<(), DomainError> {
+    if !offset.is_multiple_of(COPY_BUFFER_ALIGNMENT) {
+        return Err(range_err(format!(
+            "buffer copy offset {offset} is not aligned to COPY_BUFFER_ALIGNMENT ({COPY_BUFFER_ALIGNMENT})"
+        )));
+    }
+    if !size.is_multiple_of(COPY_BUFFER_ALIGNMENT) {
+        return Err(range_err(format!(
+            "buffer copy size {size} is not aligned to COPY_BUFFER_ALIGNMENT ({COPY_BUFFER_ALIGNMENT})"
+        )));
+    }
+    Ok(())
 }
 
 fn gpu_lost(msg: impl Into<String>) -> DomainError {
@@ -743,7 +761,9 @@ impl GpuContext {
         }
     }
 
-    /// Test hook: next `map_readback` hits a deadline after GPU-ready, keeps staging.
+    /// Test hook: next `map_readback` returns deadline **before** `map_async`.
+    /// Does not exercise real already-pending/already-mapped retry; that path
+    /// drains/unmaps on actual map poll timeout instead.
     pub fn inject_next_map_deadline(&mut self) {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.inject_map_deadline = true;
@@ -761,6 +781,30 @@ impl GpuContext {
                 peak_bytes: 0,
                 budget_limit: None,
             })
+    }
+
+    /// Retained submission records (completed waits reap metadata).
+    pub fn retained_submission_count(&self) -> usize {
+        self.resource_ledger
+            .lock()
+            .map(|l| l.submissions.len())
+            .unwrap_or(0)
+    }
+
+    fn device_max_buffer_size(&self) -> u64 {
+        self.report()
+            .map(|r| r.device_limits.max_buffer_size)
+            .unwrap_or(u64::MAX)
+    }
+
+    fn ensure_staging_fits_device(&self, size: u64) -> Result<(), DomainError> {
+        let max = self.device_max_buffer_size();
+        if size > max {
+            return Err(range_err(format!(
+                "staging buffer size {size} exceeds device max_buffer_size {max}"
+            )));
+        }
+        Ok(())
     }
 
     pub fn create_buffer(&mut self, desc: BufferDesc) -> Result<BufferHandle, DomainError> {
@@ -862,16 +906,8 @@ impl GpuContext {
         }
         let accounted = rgba8_padded_bytes(desc.width, desc.height)?;
         let bpr = rgba8_bytes_per_row(desc.width)?;
-        let max_buf = self
-            .report()
-            .map(|r| r.device_limits.max_buffer_size)
-            .unwrap_or(u64::MAX);
-        // Staging for upload/readback is a buffer of padded size.
-        if accounted > max_buf {
-            return Err(range_err(format!(
-                "texture padded staging {accounted} exceeds device max_buffer_size {max_buf}"
-            )));
-        }
+        // Note: max_buffer_size does not limit the texture itself; padded
+        // staging is checked on upload/readback before create_buffer.
 
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.reserve(accounted)?;
@@ -944,6 +980,9 @@ impl GpuContext {
         data: &[u8],
     ) -> Result<(), DomainError> {
         self.require_live()?;
+        let size = data.len() as u64;
+        check_copy_buffer_align(offset, size)?;
+        self.ensure_staging_fits_device(size)?;
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(handle.context_id(), handle.generation())?;
         let entry = led
@@ -954,23 +993,30 @@ impl GpuContext {
             return Err(inp("buffer missing copy_dst for upload", "usage"));
         }
         let end = offset
-            .checked_add(data.len() as u64)
+            .checked_add(size)
             .ok_or_else(|| range_err("upload offset+len overflow"))?;
         if end > entry.size {
             return Err(range_err("upload range exceeds buffer size"));
         }
-        let size = data.len() as u64;
         led.reserve(size)?;
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
         match self.backend_device_queue() {
             Some((device, queue)) => {
-                let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("spirula:gpu:buffer:upload-staging"),
-                    size,
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-                    mapped_at_creation: true,
-                });
+                let staging = match wgpu_scoped(&device, || {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("spirula:gpu:buffer:upload-staging"),
+                        size,
+                        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+                        mapped_at_creation: true,
+                    })
+                }) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = led.tracker.free(size);
+                        return Err(e);
+                    }
+                };
                 {
                     let mut view = staging
                         .slice(..)
@@ -1066,6 +1112,7 @@ impl GpuContext {
         }
         let bpr = rgba8_bytes_per_row(width)?;
         let padded = rgba8_padded_bytes(width, height)?;
+        self.ensure_staging_fits_device(padded)?;
         led.reserve(padded)?;
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
@@ -1081,12 +1128,20 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, _queue)) => {
-                let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("spirula:gpu:buffer:tex-upload-staging"),
-                    size: padded,
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-                    mapped_at_creation: true,
-                });
+                let staging = match wgpu_scoped(&device, || {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("spirula:gpu:buffer:tex-upload-staging"),
+                        size: padded,
+                        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+                        mapped_at_creation: true,
+                    })
+                }) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = led.tracker.free(padded);
+                        return Err(e);
+                    }
+                };
                 {
                     let mut view = staging.slice(..).get_mapped_range_mut().map_err(|e| {
                         submit_err(format!("map texture upload staging failed: {e}"))
@@ -1184,6 +1239,8 @@ impl GpuContext {
         size: u64,
     ) -> Result<ReadbackTicket, DomainError> {
         self.require_live()?;
+        check_copy_buffer_align(offset, size)?;
+        self.ensure_staging_fits_device(size)?;
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(handle.context_id(), handle.generation())?;
         let entry = led
@@ -1204,12 +1261,20 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, _)) => {
-                let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("spirula:gpu:buffer:readback-staging"),
-                    size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
+                let staging = match wgpu_scoped(&device, || {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("spirula:gpu:buffer:readback-staging"),
+                        size,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    })
+                }) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = led.tracker.free(size);
+                        return Err(e);
+                    }
+                };
                 let src = match led.buffers.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuBuffer::Wgpu(b)) => b,
                     _ => {
@@ -1298,17 +1363,26 @@ impl GpuContext {
         let bpr = rgba8_bytes_per_row(width)?;
         let padded = rgba8_padded_bytes(width, height)?;
         let logical = rgba8_logical_bytes(width, height)?;
+        self.ensure_staging_fits_device(padded)?;
         led.reserve(padded)?;
         let staging_id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
 
         match self.backend_device_queue() {
             Some((device, _)) => {
-                let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("spirula:gpu:buffer:tex-readback-staging"),
-                    size: padded,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
+                let staging = match wgpu_scoped(&device, || {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("spirula:gpu:buffer:tex-readback-staging"),
+                        size: padded,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    })
+                }) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = led.tracker.free(padded);
+                        return Err(e);
+                    }
+                };
                 let tex = match led.textures.get(&handle.id()).and_then(|e| e.gpu.as_ref()) {
                     Some(GpuTexture::Wgpu(t)) => t,
                     _ => {
@@ -1459,12 +1533,21 @@ impl GpuContext {
     /// On timeout the submission stays incomplete: staging/resources and their
     /// accounted bytes are retained so a later `wait` (or context teardown)
     /// can finish safely. Timeout is not a free/reclaim signal.
+    ///
+    /// After a successful wait the submission record is **reaped** (ID vectors
+    /// dropped). A later `wait` on the same handle returns `SP-INP-001`
+    /// (unknown submission) — not a retained history Ok. Device loss delivered
+    /// by this wait's own `device.poll` is observed before reporting success
+    /// (`SP-GPU-002`).
     pub fn wait(
         &mut self,
         submission: SubmissionHandle,
         timeout: Option<Duration>,
     ) -> Result<(), DomainError> {
         self.poll_host_lost();
+        if self.status() != ContextStatus::Live {
+            return Err(handle_unavailable(self.status()));
+        }
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.ensure_live(submission.context_id, submission.generation)?;
         if led.inject_wait_timeout {
@@ -1478,6 +1561,8 @@ impl GpuContext {
             .get_mut(&submission.id)
             .ok_or_else(|| inp("unknown submission handle", "submission"))?;
         if entry.completed {
+            // Should not linger after reap; treat as unknown if somehow present.
+            led.submissions.remove(&submission.id);
             return Ok(());
         }
 
@@ -1486,13 +1571,18 @@ impl GpuContext {
                 Some((d, _)) => d,
                 None => return Err(gpu_lost("device missing during wait")),
             };
-            // Drop ledger lock across poll so other observers can read accounting.
+            // Drop ledger lock across poll (lost callback may need the mutex).
             let staging_snapshot_current = led.tracker.current_bytes();
             drop(led);
             let poll = device.poll(wgpu::PollType::Wait {
                 submission_index: Some(index),
                 timeout,
             });
+            // Host Destroyed/lost callbacks fire during poll — observe before Ok.
+            self.poll_host_lost();
+            if self.status() != ContextStatus::Live {
+                return Err(handle_unavailable(self.status()));
+            }
             let mut led = self.resource_ledger.lock().expect("ledger");
             match poll {
                 Ok(_) => {}
@@ -1510,27 +1600,29 @@ impl GpuContext {
                     return Err(submit_err(format!("submission wait failed: {other}")));
                 }
             }
+            // Loss may have invalidated the ledger during poll_host_lost.
+            led.ensure_live(submission.context_id, submission.generation)?;
             let entry = led
                 .submissions
                 .get_mut(&submission.id)
                 .ok_or_else(|| inp("unknown submission handle", "submission"))?;
             if entry.completed {
+                led.submissions.remove(&submission.id);
                 return Ok(());
             }
 
-            // Mark readback stagings ready; free upload stagings only after GPU done.
-            let staging_ids = entry.staging_ids.clone();
-            let buffer_ids = entry.buffer_ids.clone();
-            let texture_ids = entry.texture_ids.clone();
-            entry.completed = true;
+            let staging_ids = std::mem::take(&mut entry.staging_ids);
+            let buffer_ids = std::mem::take(&mut entry.buffer_ids);
+            let texture_ids = std::mem::take(&mut entry.texture_ids);
+            led.submissions.remove(&submission.id);
             return self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids);
         }
 
         // Synthetic / no wgpu index: complete immediately.
-        let staging_ids = entry.staging_ids.clone();
-        let buffer_ids = entry.buffer_ids.clone();
-        let texture_ids = entry.texture_ids.clone();
-        entry.completed = true;
+        let staging_ids = std::mem::take(&mut entry.staging_ids);
+        let buffer_ids = std::mem::take(&mut entry.buffer_ids);
+        let texture_ids = std::mem::take(&mut entry.texture_ids);
+        led.submissions.remove(&submission.id);
         self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids)
     }
 
@@ -1682,7 +1774,8 @@ impl GpuContext {
                         let data = match slice.get_mapped_range() {
                             Ok(view) => view.to_vec(),
                             Err(e) => {
-                                // Mapping callback succeeded but range failed: restore buffer.
+                                // Mapped but range failed: unmap to Idle before restore/retry.
+                                buf.unmap();
                                 let mut led = self.resource_ledger.lock().expect("ledger");
                                 if let Some(st) = led.stagings.get_mut(&staging_id) {
                                     st.gpu = Some(GpuBuffer::Wgpu(buf));
@@ -1698,8 +1791,39 @@ impl GpuContext {
                         ticket.inner.consumed.store(true, Ordering::SeqCst);
                         data
                     }
-                    Err(msg) if msg.contains("timed out") || msg.contains("disconnected") => {
-                        // Deadline / transient: restore ownership, do not free.
+                    Err(msg) if msg.contains("timed out") => {
+                        // Drain the in-flight map_async so a retry cannot hit
+                        // already-pending / already-mapped. Then unmap to Idle.
+                        let drained = loop {
+                            let _ = device.poll(wgpu::PollType::Poll);
+                            match rx.try_recv() {
+                                Ok(Ok(())) => break Ok(()),
+                                Ok(Err(e)) => break Err(format!("map_async failed: {e}")),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                    std::thread::yield_now();
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    break Err("map_async channel disconnected".into());
+                                }
+                            }
+                        };
+                        match drained {
+                            Ok(()) => {
+                                buf.unmap();
+                            }
+                            Err(_) => {
+                                // Failed map_async: buffer was never mapped.
+                            }
+                        }
+                        let mut led = self.resource_ledger.lock().expect("ledger");
+                        if let Some(st) = led.stagings.get_mut(&staging_id) {
+                            st.gpu = Some(GpuBuffer::Wgpu(buf));
+                        }
+                        Err(submit_err(format!(
+                            "{msg} (staging retained idle for retry; GPU copy already complete)"
+                        )))?
+                    }
+                    Err(msg) if msg.contains("disconnected") => {
                         let mut led = self.resource_ledger.lock().expect("ledger");
                         if let Some(st) = led.stagings.get_mut(&staging_id) {
                             st.gpu = Some(GpuBuffer::Wgpu(buf));

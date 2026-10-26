@@ -37,7 +37,12 @@ are owned by the context generation.
 
 Public APIs never return `wgpu::*`. Validation of size/usage/offset/range/
 alignment happens in Rust **before** wgpu calls — bad params → typed
-`SP-INP-001` / `SP-INP-003` / `SP-GPU-004`, not panic.
+`SP-INP-001` / `SP-INP-003` / `SP-GPU-004`, not panic. Buffer copy
+`offset`/`size` and mapped-at-creation staging sizes must respect
+`COPY_BUFFER_ALIGNMENT` (4). Staging buffer creates (upload/readback, including
+padded texture staging) are checked against the enabled
+`max_buffer_size` before reserve/wgpu — a valid 1×1 RGBA8 texture can still
+require a 256-byte staging that exceeds a low buffer limit.
 
 ### Staging, pitch, and accounting
 
@@ -74,17 +79,25 @@ alignment happens in Rust **before** wgpu calls — bad params → typed
 - Ops that encode GPU work leave commands pending; `submit` returns
   `SubmissionHandle` and does **not** imply a device-wide wait.
 - `wait(handle, timeout)` on timeout returns typed `SP-GPU-003` **without**
-  releasing in-flight staging/resources; the same handle may be waited again.
-  Lost / wrong generation → `SP-GPU-002` as appropriate.
+  releasing in-flight staging/resources; the same handle may be waited again
+  while still incomplete. After a **successful** wait the submission record is
+  reaped (no unbounded ID-vector retention). A later wait on that token returns
+  `SP-INP-001` (unknown submission) — not a retained history Ok.
+- Device loss delivered by wait’s own `device.poll` (e.g. Destroyed callback) is
+  observed **after** poll and **before** reporting success → `SP-GPU-002`.
+  Ledger is not held across poll (avoids deadlock with lost invalidate).
 - Readback: `map` only after wait has marked staging ready (GPU copy finished).
-  Map **deadline/transient** failure keeps the ticket and accounted staging for
-  retry; completed map, ticket Drop/abandon, teardown, or definitive post-GPU
-  map failure frees the reserve.
-- Device limits: `create_texture_2d` checks actual
-  `max_texture_dimension_2d` (and padded staging vs `max_buffer_size`) before
-  wgpu; create paths use a minimal validation/OOM error scope so illegal sizes
-  return typed `SP-INP-003` / `SP-GPU-004` with reserve rollback — not process
-  abort. Full diagnostic event fan-out stays P2-F05.
+  Injected map-deadline is a **caller-side** test hook only (before map_async);
+  it does not prove real already-pending / already-mapped retry safety. On a
+  real map_async poll timeout the in-flight map is drained and the buffer is
+  returned to Idle (`unmap`) so a later `map_readback` retry cannot panic on
+  pending/mapped state. Completed map, ticket Drop/abandon, teardown, or
+  definitive post-GPU map failure frees the reserve.
+- Device limits: `create_texture_2d` checks actual `max_texture_dimension_2d`
+  before wgpu; staging paths check `max_buffer_size`. Create/staging paths use
+  a minimal validation/OOM error scope so illegal sizes return typed errors with
+  reserve rollback — not process abort. Full diagnostic event fan-out stays
+  P2-F05.
 
 ### Lifetime vs context generation
 
@@ -106,16 +119,19 @@ accounting reaches zero after completion.
 1. Real host: buffer pattern bytes upload→copy→readback equal; RGBA8 texture
    with width whose `width*4` is **not** multiple of 256 still round-trips
    after pitch strip.
-2. Illegal range/usage/size/budget/overflow / oversize texture dimension →
-   typed errors; no wgpu panic / process abort.
+2. Illegal range/usage/size/alignment/budget/overflow / oversize texture
+   dimension / staging over `max_buffer_size` → typed errors; no wgpu panic /
+   process abort; reserve/current unchanged on rejection.
 3. Cross-context / close / reopen reject old handles and submissions.
 4. Submit then drop resource; wait still succeeds; accounted current → 0;
    drop after encode-before-submit retains accounting until wait; repeated
-   cycles / ticket abandon / early-map Err paths do not leak budget; peak
-   source recorded.
+   cycles / ticket abandon / early-map Err paths do not leak budget; completed
+   submission metadata is reaped (retained count stays bounded); peak source
+   recorded.
 5. Post-submit wait timeout preserves accounted current and allows a later
-   wait to complete; map deadline failure does not free staging while the
-   ticket remains usable after GPU work is known complete.
+   wait to complete; wait that observes host loss during its poll returns
+   `SP-GPU-002` (not Ok); inject map-deadline retains staging for retry but is
+   not the sole claim for real map-pending safety (drain/unmap covers that).
 6. Diagnose prints device/backend, accounted current/peak/budget, phase
    timings for upload/wait/readback; unavailable device → precise reason.
 

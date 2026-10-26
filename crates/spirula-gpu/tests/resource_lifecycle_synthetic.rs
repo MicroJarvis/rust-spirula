@@ -44,6 +44,12 @@ fn open_ctx() -> GpuContext {
     .expect("synthetic open")
 }
 
+fn open_ctx_with_max_buffer(max_buffer_size: u64) -> GpuContext {
+    let mut req = CapabilityRequest::diagnose_default();
+    req.optional_desired_limits.max_buffer_size = Some(max_buffer_size);
+    GpuContext::open_synthetic(&req, sample_adapter(), false).expect("synthetic open")
+}
+
 #[test]
 fn synthetic_buffer_roundtrip_and_budget_zero() {
     let mut ctx = open_ctx();
@@ -449,4 +455,89 @@ fn synthetic_texture_dimension_rejects_before_wgpu() {
     assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
     assert!(err.message().contains("max_texture_dimension_2d"));
     assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_copy_alignment_rejects_without_reserve() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:align").unwrap(),
+            size: 16,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let before = ctx.resource_accounting().current_bytes;
+    let err = ctx.upload_buffer(&buf, 1, &[1, 2, 3, 4]).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert!(err.message().contains("COPY_BUFFER_ALIGNMENT"));
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+
+    let err = ctx.upload_buffer(&buf, 0, &[1, 2, 3]).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+
+    let err = ctx.readback_buffer(&buf, 1, 4).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+
+    let err = ctx.readback_buffer(&buf, 0, 3).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_texture_staging_rejects_over_max_buffer_size() {
+    // 1x1 RGBA8 is a valid texture; padded staging is 256 > max_buffer_size 128.
+    let mut ctx = open_ctx_with_max_buffer(128);
+    assert_eq!(ctx.report().unwrap().device_limits.max_buffer_size, 128);
+    let tex = ctx
+        .create_texture_2d(Texture2dDesc {
+            label: ResourceLabel::parse("spirula:gpu:texture:staging-limit").unwrap(),
+            width: 1,
+            height: 1,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let before = ctx.resource_accounting().current_bytes;
+    let err = ctx.upload_texture_rgba8(&tex, &[1, 2, 3, 4]).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert!(err.message().contains("max_buffer_size"));
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+
+    let err = ctx.readback_texture_rgba8(&tex).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+    drop(tex);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_completed_submissions_are_reaped() {
+    let mut ctx = open_ctx();
+    for _ in 0..1000 {
+        let buf = ctx
+            .create_buffer(BufferDesc {
+                label: ResourceLabel::parse("spirula:gpu:buffer:reap").unwrap(),
+                size: 4,
+                usage: BufferUsage::COPY_SRC_DST,
+            })
+            .unwrap();
+        ctx.upload_buffer(&buf, 0, &[1, 2, 3, 4]).unwrap();
+        let sub = ctx.submit().unwrap();
+        ctx.wait(sub, None).unwrap();
+        // Repeat wait: token was reaped → unknown submission.
+        let err = ctx.wait(sub, None).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        drop(buf);
+    }
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    assert_eq!(
+        ctx.retained_submission_count(),
+        0,
+        "completed submission metadata must be reaped"
+    );
 }

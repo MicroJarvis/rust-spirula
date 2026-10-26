@@ -2,8 +2,9 @@
 
 use spirula_core::ErrorCode;
 use spirula_gpu::{
-    BufferDesc, BufferUsage, CapabilityRequest, GpuContext, OpenFailureStage, ResourceLabel,
-    Texture2dDesc, TextureFormat, TextureUsage, WGPU_VERSION, rgba8_bytes_per_row,
+    BufferDesc, BufferUsage, CapabilityRequest, ContextStatus, GpuContext, LostSource,
+    OpenFailureStage, ResourceLabel, Texture2dDesc, TextureFormat, TextureUsage, WGPU_VERSION,
+    rgba8_bytes_per_row,
 };
 use std::time::{Duration, Instant};
 
@@ -91,6 +92,36 @@ fn host_buffer_and_texture_roundtrip_or_precise_unavailable() {
             );
             assert_eq!(ctx.resource_accounting().current_bytes, 0);
 
+            // Misaligned copy params → typed error (no wgpu panic).
+            let buf2 = ctx
+                .create_buffer(BufferDesc {
+                    label: ResourceLabel::parse("spirula:gpu:buffer:host-align").unwrap(),
+                    size: 16,
+                    usage: BufferUsage::COPY_SRC_DST,
+                })
+                .unwrap();
+            let before = ctx.resource_accounting().current_bytes;
+            assert_eq!(
+                ctx.upload_buffer(&buf2, 1, &[1, 2, 3, 4])
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::ValueOutOfRange
+            );
+            assert_eq!(
+                ctx.upload_buffer(&buf2, 0, &[1, 2, 3]).unwrap_err().code(),
+                ErrorCode::ValueOutOfRange
+            );
+            assert_eq!(
+                ctx.readback_buffer(&buf2, 1, 4).unwrap_err().code(),
+                ErrorCode::ValueOutOfRange
+            );
+            assert_eq!(
+                ctx.readback_buffer(&buf2, 0, 3).unwrap_err().code(),
+                ErrorCode::ValueOutOfRange
+            );
+            assert_eq!(ctx.resource_accounting().current_bytes, before);
+            drop(buf2);
+
             ctx.close();
         }
         Err(failure) => {
@@ -112,6 +143,85 @@ fn host_buffer_and_texture_roundtrip_or_precise_unavailable() {
                 }
                 _ => assert_eq!(failure.error.code().as_str(), "SP-GPU-001"),
             }
+        }
+    }
+}
+
+#[test]
+fn host_texture_staging_respects_max_buffer_size_or_unavailable() {
+    let mut req = CapabilityRequest::diagnose_default();
+    req.optional_desired_limits.max_buffer_size = Some(128);
+    match GpuContext::open(&req) {
+        Ok(mut ctx) => {
+            assert_eq!(ctx.report().unwrap().device_limits.max_buffer_size, 128);
+            let tex = ctx
+                .create_texture_2d(Texture2dDesc {
+                    label: ResourceLabel::parse("spirula:gpu:texture:staging-limit").unwrap(),
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Rgba8Unorm,
+                    usage: TextureUsage::COPY_SRC_DST,
+                })
+                .expect("1x1 texture is valid under max_buffer_size=128");
+            let before = ctx.resource_accounting().current_bytes;
+            let err = ctx
+                .upload_texture_rgba8(&tex, &[1, 2, 3, 4])
+                .expect_err("padded staging 256 must not reach wgpu");
+            assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+            assert!(err.message().contains("max_buffer_size"));
+            assert_eq!(ctx.resource_accounting().current_bytes, before);
+            drop(tex);
+            ctx.close();
+        }
+        Err(failure) => {
+            eprintln!(
+                "host_texture_staging_limit_unavailable stage={:?} {}",
+                failure.stage,
+                failure.error.message()
+            );
+        }
+    }
+}
+
+#[test]
+fn host_wait_observes_loss_delivered_during_poll_or_unavailable() {
+    let request = CapabilityRequest::diagnose_default();
+    match GpuContext::open(&request) {
+        Ok(mut ctx) => {
+            let buf = ctx
+                .create_buffer(BufferDesc {
+                    label: ResourceLabel::parse("spirula:gpu:buffer:loss-wait").unwrap(),
+                    size: 64,
+                    usage: BufferUsage::COPY_SRC_DST,
+                })
+                .unwrap();
+            ctx.upload_buffer(&buf, 0, &[1u8; 64]).unwrap();
+            let sub = ctx.submit().unwrap();
+            ctx.destroy_host_device_without_poll();
+            let result = ctx.wait(sub, None);
+            let status = ctx.status();
+            let notices = ctx.take_lost_notices();
+            eprintln!(
+                "host_wait_loss result={:?} status={status:?} notices={}",
+                result.as_ref().map_err(|e| e.code().as_str()),
+                notices.len()
+            );
+            assert!(
+                result.is_err(),
+                "wait must not Ok when its poll delivered device loss"
+            );
+            assert_eq!(result.unwrap_err().code(), ErrorCode::DeviceLost);
+            assert_eq!(status, ContextStatus::Lost);
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].source, LostSource::HostCallback);
+            drop(buf);
+        }
+        Err(failure) => {
+            eprintln!(
+                "host_wait_loss_unavailable stage={:?} {}",
+                failure.stage,
+                failure.error.message()
+            );
         }
     }
 }
