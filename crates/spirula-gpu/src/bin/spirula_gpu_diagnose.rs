@@ -183,7 +183,7 @@ fn run_resources() -> Result<(), u8> {
     ctx.wait(sub2, Some(Duration::from_secs(5)))
         .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
     let out = ctx
-        .map_readback(ticket)
+        .map_readback(&ticket)
         .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
     let readback_ns = t_rb.elapsed().as_nanos();
     if out != pattern {
@@ -217,7 +217,7 @@ fn run_resources() -> Result<(), u8> {
     ctx.wait(s2, Some(Duration::from_secs(5)))
         .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
     let out = ctx
-        .map_readback(ticket)
+        .map_readback(&ticket)
         .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
     if out != pixels {
         eprintln!("error: texture round-trip mismatch (width=3 non-256 row)");

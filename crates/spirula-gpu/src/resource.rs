@@ -4,7 +4,7 @@
 //! Rust before any wgpu call.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -233,15 +233,64 @@ impl SubmissionHandle {
 }
 
 /// Ticket for mapping a completed readback staging buffer.
-/// `Clone` allows retry after a map deadline without losing the staging id.
-#[derive(Debug, Clone)]
+///
+/// `Clone` shares ownership (Arc). Drop of the **last** clone abandons staging:
+/// frees immediately when GPU-ready or still pending; if submitted but incomplete,
+/// marks abandon-on-complete so wait reaps without requiring `map_readback`.
+/// Successful `map_readback` consumes the staging; further Drops are no-ops.
+/// `map_readback` borrows the ticket so a not-ready / deadline `Err` never
+/// destroys the only reclaim path.
+#[derive(Clone)]
 pub struct ReadbackTicket {
+    inner: Arc<ReadbackTicketInner>,
+}
+
+struct ReadbackTicketInner {
     context_id: ContextId,
     generation: ContextGeneration,
     staging_id: u64,
     logical_len: u64,
     /// Texture strip: bytes_per_row and height; None = raw buffer.
     texture_pitch: Option<(u32, u32)>,
+    ledger: Arc<Mutex<ResourceLedger>>,
+    /// Set after a successful map frees staging (or explicit consume).
+    consumed: AtomicBool,
+}
+
+impl std::fmt::Debug for ReadbackTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadbackTicket")
+            .field("context_id", &self.inner.context_id)
+            .field("generation", &self.inner.generation)
+            .field("staging_id", &self.inner.staging_id)
+            .field("logical_len", &self.inner.logical_len)
+            .field("texture_pitch", &self.inner.texture_pitch)
+            .field("consumed", &self.inner.consumed.load(Ordering::SeqCst))
+            .finish()
+    }
+}
+
+impl ReadbackTicket {
+    pub fn context_id(&self) -> ContextId {
+        self.inner.context_id
+    }
+    pub fn generation(&self) -> ContextGeneration {
+        self.inner.generation
+    }
+    pub fn staging_id(&self) -> u64 {
+        self.inner.staging_id
+    }
+}
+
+impl Drop for ReadbackTicketInner {
+    fn drop(&mut self) {
+        if self.consumed.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Ok(mut led) = self.ledger.lock() {
+            led.on_readback_ticket_dropped(self.staging_id);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +379,8 @@ struct BufferEntry {
     usage: BufferUsage,
     accounted: u64,
     handle_refs: u32,
+    /// Encoded but not yet submitted; GPU may still reference the resource.
+    pending_hold: u32,
     inflight: u32,
     destroy_pending: bool,
     gpu: Option<GpuBuffer>,
@@ -345,9 +396,16 @@ struct TextureEntry {
     usage: TextureUsage,
     accounted: u64,
     handle_refs: u32,
+    /// Encoded but not yet submitted; GPU may still reference the resource.
+    pending_hold: u32,
     inflight: u32,
     destroy_pending: bool,
     gpu: Option<GpuTexture>,
+}
+
+enum PendingHoldTarget {
+    Buffer(u64),
+    Texture(u64),
 }
 
 struct StagingEntry {
@@ -356,6 +414,10 @@ struct StagingEntry {
     gpu: Option<GpuBuffer>,
     /// Set after wait completes; map consumes.
     mapped_ready: bool,
+    /// Last ticket dropped while submission still incomplete; free on wait.
+    abandon_when_complete: bool,
+    /// Resource that received a pending_hold for this encode (cleared on submit).
+    pending_hold_on: Option<PendingHoldTarget>,
 }
 
 enum StagingKind {
@@ -500,7 +562,7 @@ impl ResourceLedger {
         entry.handle_refs = entry.handle_refs.saturating_sub(1);
         if entry.handle_refs == 0 {
             entry.destroy_pending = true;
-            if entry.inflight == 0 {
+            if entry.inflight == 0 && entry.pending_hold == 0 {
                 self.reclaim_buffer(id);
             }
         }
@@ -513,7 +575,7 @@ impl ResourceLedger {
         entry.handle_refs = entry.handle_refs.saturating_sub(1);
         if entry.handle_refs == 0 {
             entry.destroy_pending = true;
-            if entry.inflight == 0 {
+            if entry.inflight == 0 && entry.pending_hold == 0 {
                 self.reclaim_texture(id);
             }
         }
@@ -532,6 +594,134 @@ impl ResourceLedger {
             let _ = self.tracker.free(entry.accounted);
         }
     }
+
+    fn maybe_reclaim_buffer(&mut self, id: u64) {
+        if self.buffers.get(&id).is_some_and(|b| {
+            b.destroy_pending && b.handle_refs == 0 && b.inflight == 0 && b.pending_hold == 0
+        }) {
+            self.reclaim_buffer(id);
+        }
+    }
+
+    fn maybe_reclaim_texture(&mut self, id: u64) {
+        if self.textures.get(&id).is_some_and(|t| {
+            t.destroy_pending && t.handle_refs == 0 && t.inflight == 0 && t.pending_hold == 0
+        }) {
+            self.reclaim_texture(id);
+        }
+    }
+
+    fn free_staging(&mut self, staging_id: u64) {
+        if let Some(mut st) = self.stagings.remove(&staging_id) {
+            st.gpu = None;
+            let _ = self.tracker.free(st.accounted);
+        }
+    }
+
+    /// Last `ReadbackTicket` dropped without a successful map.
+    fn on_readback_ticket_dropped(&mut self, staging_id: u64) {
+        let Some(st) = self.stagings.get(&staging_id) else {
+            return;
+        };
+        if !matches!(st.kind, StagingKind::Readback { .. }) {
+            return;
+        }
+        if st.mapped_ready {
+            self.free_staging(staging_id);
+            return;
+        }
+        // Still encoded pending (not submitted): drop command + holds + staging.
+        if let Some(idx) = self.pending_staging.iter().position(|&id| id == staging_id) {
+            let n_staging = self.pending_staging.len();
+            let n_cmd = self.pending_commands.len();
+            self.pending_staging.remove(idx);
+            if n_cmd == n_staging && idx < self.pending_commands.len() {
+                self.pending_commands.remove(idx);
+            }
+            let hold = self
+                .stagings
+                .get(&staging_id)
+                .and_then(|s| match &s.pending_hold_on {
+                    Some(PendingHoldTarget::Buffer(id)) => Some(PendingHoldTarget::Buffer(*id)),
+                    Some(PendingHoldTarget::Texture(id)) => Some(PendingHoldTarget::Texture(*id)),
+                    None => None,
+                });
+            match hold {
+                Some(PendingHoldTarget::Buffer(bid)) => {
+                    if let Some(i) = self.pending_buffers.iter().rposition(|&id| id == bid) {
+                        self.pending_buffers.remove(i);
+                    }
+                    if let Some(b) = self.buffers.get_mut(&bid) {
+                        b.pending_hold = b.pending_hold.saturating_sub(1);
+                    }
+                    self.free_staging(staging_id);
+                    self.maybe_reclaim_buffer(bid);
+                }
+                Some(PendingHoldTarget::Texture(tid)) => {
+                    if let Some(i) = self.pending_textures.iter().rposition(|&id| id == tid) {
+                        self.pending_textures.remove(i);
+                    }
+                    if let Some(t) = self.textures.get_mut(&tid) {
+                        t.pending_hold = t.pending_hold.saturating_sub(1);
+                    }
+                    self.free_staging(staging_id);
+                    self.maybe_reclaim_texture(tid);
+                }
+                None => {
+                    self.free_staging(staging_id);
+                }
+            }
+            return;
+        }
+        // Submitted, GPU not finished: wait will reap.
+        if let Some(st) = self.stagings.get_mut(&staging_id) {
+            st.abandon_when_complete = true;
+        }
+    }
+
+    fn note_pending_buffer(&mut self, id: u64) {
+        if let Some(b) = self.buffers.get_mut(&id) {
+            b.pending_hold = b.pending_hold.saturating_add(1);
+        }
+        self.pending_buffers.push(id);
+    }
+
+    fn note_pending_texture(&mut self, id: u64) {
+        if let Some(t) = self.textures.get_mut(&id) {
+            t.pending_hold = t.pending_hold.saturating_add(1);
+        }
+        self.pending_textures.push(id);
+    }
+}
+
+/// Capture wgpu validation / OOM for one device call; typed error instead of panic.
+fn wgpu_scoped<T>(device: &wgpu::Device, op: impl FnOnce() -> T) -> Result<T, DomainError> {
+    let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let value = op();
+    let validation = pollster::block_on(validation_scope.pop());
+    let oom = pollster::block_on(oom_scope.pop());
+    fn map_wgpu_err(err: wgpu::Error) -> DomainError {
+        match err {
+            wgpu::Error::Validation { description, .. }
+            | wgpu::Error::Internal { description, .. } => {
+                range_err(format!("wgpu validation: {description}"))
+            }
+            wgpu::Error::OutOfMemory { .. } => DomainError::try_new(
+                ErrorCode::AllocationFailed,
+                "wgpu out of memory during GPU resource op",
+            )
+            .expect("non-empty")
+            .with_user_action(UserAction::Retry),
+        }
+    }
+    if let Some(err) = validation {
+        return Err(map_wgpu_err(err));
+    }
+    if let Some(err) = oom {
+        return Err(map_wgpu_err(err));
+    }
+    Ok(value)
 }
 
 impl GpuContext {
@@ -600,13 +790,20 @@ impl GpuContext {
         let id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
         let gpu = match self.backend_device_queue() {
             Some((device, _)) => {
-                let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(desc.label.as_str()),
-                    size: desc.size,
-                    usage: desc.usage.to_wgpu(),
-                    mapped_at_creation: false,
-                });
-                GpuBuffer::Wgpu(buf)
+                match wgpu_scoped(&device, || {
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(desc.label.as_str()),
+                        size: desc.size,
+                        usage: desc.usage.to_wgpu(),
+                        mapped_at_creation: false,
+                    })
+                }) {
+                    Ok(buf) => GpuBuffer::Wgpu(buf),
+                    Err(e) => {
+                        let _ = led.tracker.free(desc.size);
+                        return Err(e);
+                    }
+                }
             }
             None => GpuBuffer::Synthetic(vec![0u8; desc.size as usize]),
         };
@@ -618,6 +815,7 @@ impl GpuContext {
                 usage: desc.usage,
                 accounted: desc.size,
                 handle_refs: 1,
+                pending_hold: 0,
                 inflight: 0,
                 destroy_pending: false,
                 gpu: Some(gpu),
@@ -652,29 +850,56 @@ impl GpuContext {
                 "usage",
             ));
         }
+        let max_dim = self
+            .report()
+            .map(|r| r.device_limits.max_texture_dimension_2d)
+            .unwrap_or(8192);
+        if desc.width > max_dim || desc.height > max_dim {
+            return Err(range_err(format!(
+                "texture dimension {}x{} exceeds device max_texture_dimension_2d {max_dim}",
+                desc.width, desc.height
+            )));
+        }
         let accounted = rgba8_padded_bytes(desc.width, desc.height)?;
         let bpr = rgba8_bytes_per_row(desc.width)?;
+        let max_buf = self
+            .report()
+            .map(|r| r.device_limits.max_buffer_size)
+            .unwrap_or(u64::MAX);
+        // Staging for upload/readback is a buffer of padded size.
+        if accounted > max_buf {
+            return Err(range_err(format!(
+                "texture padded staging {accounted} exceeds device max_buffer_size {max_buf}"
+            )));
+        }
 
         let mut led = self.resource_ledger.lock().expect("ledger");
         led.reserve(accounted)?;
         let id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
         let gpu = match self.backend_device_queue() {
             Some((device, _)) => {
-                let tex = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(desc.label.as_str()),
-                    size: wgpu::Extent3d {
-                        width: desc.width,
-                        height: desc.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: desc.usage.to_wgpu(),
-                    view_formats: &[],
-                });
-                GpuTexture::Wgpu(tex)
+                match wgpu_scoped(&device, || {
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some(desc.label.as_str()),
+                        size: wgpu::Extent3d {
+                            width: desc.width,
+                            height: desc.height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: desc.usage.to_wgpu(),
+                        view_formats: &[],
+                    })
+                }) {
+                    Ok(tex) => GpuTexture::Wgpu(tex),
+                    Err(e) => {
+                        let _ = led.tracker.free(accounted);
+                        return Err(e);
+                    }
+                }
             }
             None => GpuTexture::Synthetic {
                 width: desc.width,
@@ -693,6 +918,7 @@ impl GpuContext {
                 usage: desc.usage,
                 accounted,
                 handle_refs: 1,
+                pending_hold: 0,
                 inflight: 0,
                 destroy_pending: false,
                 gpu: Some(gpu),
@@ -774,6 +1000,8 @@ impl GpuContext {
                         kind: StagingKind::Upload,
                         gpu: Some(GpuBuffer::Wgpu(staging)),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Buffer(handle.id())),
                     },
                 );
                 let _ = queue; // copies submitted later
@@ -798,12 +1026,14 @@ impl GpuContext {
                         kind: StagingKind::Upload,
                         gpu: Some(GpuBuffer::Synthetic(vec![])),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Buffer(handle.id())),
                     },
                 );
             }
         }
         led.pending_staging.push(staging_id);
-        led.pending_buffers.push(handle.id());
+        led.note_pending_buffer(handle.id());
         Ok(())
     }
 
@@ -904,6 +1134,8 @@ impl GpuContext {
                         kind: StagingKind::Upload,
                         gpu: Some(GpuBuffer::Wgpu(staging)),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Texture(handle.id())),
                     },
                 );
             }
@@ -933,12 +1165,14 @@ impl GpuContext {
                         kind: StagingKind::Upload,
                         gpu: Some(GpuBuffer::Synthetic(vec![])),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Texture(handle.id())),
                     },
                 );
             }
         }
         led.pending_staging.push(staging_id);
-        led.pending_textures.push(handle.id());
+        led.note_pending_texture(handle.id());
         Ok(())
     }
 
@@ -998,6 +1232,8 @@ impl GpuContext {
                         },
                         gpu: Some(GpuBuffer::Wgpu(staging)),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Buffer(handle.id())),
                     },
                 );
             }
@@ -1021,18 +1257,24 @@ impl GpuContext {
                         },
                         gpu: Some(GpuBuffer::Synthetic(data)),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Buffer(handle.id())),
                     },
                 );
             }
         }
         led.pending_staging.push(staging_id);
-        led.pending_buffers.push(handle.id());
+        led.note_pending_buffer(handle.id());
         Ok(ReadbackTicket {
-            context_id: self.id(),
-            generation: self.generation(),
-            staging_id,
-            logical_len: size,
-            texture_pitch: None,
+            inner: Arc::new(ReadbackTicketInner {
+                context_id: self.id(),
+                generation: self.generation(),
+                staging_id,
+                logical_len: size,
+                texture_pitch: None,
+                ledger: self.ledger_arc(),
+                consumed: AtomicBool::new(false),
+            }),
         })
     }
 
@@ -1109,6 +1351,8 @@ impl GpuContext {
                         },
                         gpu: Some(GpuBuffer::Wgpu(staging)),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Texture(handle.id())),
                     },
                 );
             }
@@ -1130,18 +1374,24 @@ impl GpuContext {
                         },
                         gpu: Some(GpuBuffer::Synthetic(data)),
                         mapped_ready: false,
+                        abandon_when_complete: false,
+                        pending_hold_on: Some(PendingHoldTarget::Texture(handle.id())),
                     },
                 );
             }
         }
         led.pending_staging.push(staging_id);
-        led.pending_textures.push(handle.id());
+        led.note_pending_texture(handle.id());
         Ok(ReadbackTicket {
-            context_id: self.id(),
-            generation: self.generation(),
-            staging_id,
-            logical_len: logical,
-            texture_pitch: Some((bpr, height)),
+            inner: Arc::new(ReadbackTicketInner {
+                context_id: self.id(),
+                generation: self.generation(),
+                staging_id,
+                logical_len: logical,
+                texture_pitch: Some((bpr, height)),
+                ledger: self.ledger_arc(),
+                consumed: AtomicBool::new(false),
+            }),
         })
     }
 
@@ -1153,13 +1403,21 @@ impl GpuContext {
         let staging_ids = std::mem::take(&mut led.pending_staging);
         let buffer_ids = std::mem::take(&mut led.pending_buffers);
         let texture_ids = std::mem::take(&mut led.pending_textures);
+        for sid in &staging_ids {
+            if let Some(st) = led.stagings.get_mut(sid) {
+                st.pending_hold_on = None;
+            }
+        }
+        // Encoded → submitted: release pending_hold, take inflight.
         for id in &buffer_ids {
             if let Some(b) = led.buffers.get_mut(id) {
+                b.pending_hold = b.pending_hold.saturating_sub(1);
                 b.inflight = b.inflight.saturating_add(1);
             }
         }
         for id in &texture_ids {
             if let Some(t) = led.textures.get_mut(id) {
+                t.pending_hold = t.pending_hold.saturating_sub(1);
                 t.inflight = t.inflight.saturating_add(1);
             }
         }
@@ -1294,7 +1552,14 @@ impl GpuContext {
                         led.stagings.remove(&sid);
                     }
                     StagingKind::Readback { .. } => {
-                        st.mapped_ready = true;
+                        if st.abandon_when_complete {
+                            let accounted = st.accounted;
+                            st.gpu = None;
+                            let _ = led.tracker.free(accounted);
+                            led.stagings.remove(&sid);
+                        } else {
+                            st.mapped_ready = true;
+                        }
                     }
                 }
             }
@@ -1312,9 +1577,12 @@ impl GpuContext {
         let reclaim_b: Vec<u64> = buffer_ids
             .into_iter()
             .filter(|id| {
-                led.buffers
-                    .get(id)
-                    .is_some_and(|b| b.destroy_pending && b.inflight == 0 && b.handle_refs == 0)
+                led.buffers.get(id).is_some_and(|b| {
+                    b.destroy_pending
+                        && b.inflight == 0
+                        && b.pending_hold == 0
+                        && b.handle_refs == 0
+                })
             })
             .collect();
         for id in reclaim_b {
@@ -1323,9 +1591,12 @@ impl GpuContext {
         let reclaim_t: Vec<u64> = texture_ids
             .into_iter()
             .filter(|id| {
-                led.textures
-                    .get(id)
-                    .is_some_and(|t| t.destroy_pending && t.inflight == 0 && t.handle_refs == 0)
+                led.textures.get(id).is_some_and(|t| {
+                    t.destroy_pending
+                        && t.inflight == 0
+                        && t.pending_hold == 0
+                        && t.handle_refs == 0
+                })
             })
             .collect();
         for id in reclaim_t {
@@ -1336,17 +1607,27 @@ impl GpuContext {
 
     /// Map a completed readback ticket into tightly packed host bytes.
     ///
-    /// Requires a prior successful `wait` (`mapped_ready`). A map **deadline**
-    /// keeps the ticket and accounted staging for retry. Staging is freed only
-    /// after a successful map, definitive post-GPU map failure that retires the
-    /// staging, or context teardown.
-    pub fn map_readback(&mut self, ticket: ReadbackTicket) -> Result<Vec<u8>, DomainError> {
+    /// Borrows the ticket: not-ready / deadline `Err` keeps ownership so Drop or
+    /// a later map can still reclaim. Requires a prior successful `wait`
+    /// (`mapped_ready`). Staging is freed only after a successful map, ticket
+    /// abandon (Drop), definitive post-GPU map failure that retires the staging,
+    /// or context teardown.
+    pub fn map_readback(&mut self, ticket: &ReadbackTicket) -> Result<Vec<u8>, DomainError> {
         self.require_live()?;
+        if ticket.inner.consumed.load(Ordering::SeqCst) {
+            return Err(inp(
+                "readback ticket already consumed by a successful map",
+                "readback",
+            ));
+        }
+        let staging_id = ticket.inner.staging_id;
+        let logical_len = ticket.inner.logical_len;
+        let texture_pitch = ticket.inner.texture_pitch;
         let mut led = self.resource_ledger.lock().expect("ledger");
-        led.ensure_live(ticket.context_id, ticket.generation)?;
+        led.ensure_live(ticket.inner.context_id, ticket.inner.generation)?;
         let ready = led
             .stagings
-            .get(&ticket.staging_id)
+            .get(&staging_id)
             .map(|s| s.mapped_ready)
             .ok_or_else(|| inp("unknown readback ticket", "readback"))?;
         if !ready {
@@ -1365,7 +1646,7 @@ impl GpuContext {
 
         let st = led
             .stagings
-            .get_mut(&ticket.staging_id)
+            .get_mut(&staging_id)
             .ok_or_else(|| inp("unknown readback ticket", "readback"))?;
         let padded = match st.gpu.take() {
             Some(GpuBuffer::Wgpu(buf)) => {
@@ -1403,7 +1684,7 @@ impl GpuContext {
                             Err(e) => {
                                 // Mapping callback succeeded but range failed: restore buffer.
                                 let mut led = self.resource_ledger.lock().expect("ledger");
-                                if let Some(st) = led.stagings.get_mut(&ticket.staging_id) {
+                                if let Some(st) = led.stagings.get_mut(&staging_id) {
                                     st.gpu = Some(GpuBuffer::Wgpu(buf));
                                 }
                                 return Err(submit_err(format!("get_mapped_range failed: {e}")));
@@ -1411,15 +1692,16 @@ impl GpuContext {
                         };
                         buf.unmap();
                         let mut led = self.resource_ledger.lock().expect("ledger");
-                        if let Some(st) = led.stagings.remove(&ticket.staging_id) {
+                        if let Some(st) = led.stagings.remove(&staging_id) {
                             let _ = led.tracker.free(st.accounted);
                         }
+                        ticket.inner.consumed.store(true, Ordering::SeqCst);
                         data
                     }
                     Err(msg) if msg.contains("timed out") || msg.contains("disconnected") => {
                         // Deadline / transient: restore ownership, do not free.
                         let mut led = self.resource_ledger.lock().expect("ledger");
-                        if let Some(st) = led.stagings.get_mut(&ticket.staging_id) {
+                        if let Some(st) = led.stagings.get_mut(&staging_id) {
                             st.gpu = Some(GpuBuffer::Wgpu(buf));
                         }
                         Err(submit_err(format!(
@@ -1429,9 +1711,10 @@ impl GpuContext {
                     Err(msg) => {
                         // Definitive map failure after GPU copy complete: retire staging.
                         let mut led = self.resource_ledger.lock().expect("ledger");
-                        if let Some(st) = led.stagings.remove(&ticket.staging_id) {
+                        if let Some(st) = led.stagings.remove(&staging_id) {
                             let _ = led.tracker.free(st.accounted);
                         }
+                        ticket.inner.consumed.store(true, Ordering::SeqCst);
                         // buf drops without unmap if never mapped — ok for failed map_async
                         drop(buf);
                         return Err(submit_err(msg));
@@ -1440,16 +1723,17 @@ impl GpuContext {
             }
             Some(GpuBuffer::Synthetic(data)) => {
                 let accounted = st.accounted;
-                led.stagings.remove(&ticket.staging_id);
+                led.stagings.remove(&staging_id);
                 let _ = led.tracker.free(accounted);
+                ticket.inner.consumed.store(true, Ordering::SeqCst);
                 data
             }
             None => return Err(gpu_lost("readback staging missing")),
         };
 
-        if let Some((bpr, height)) = ticket.texture_pitch {
-            let row_logical = (ticket.logical_len / u64::from(height)) as usize;
-            let mut out = Vec::with_capacity(ticket.logical_len as usize);
+        if let Some((bpr, height)) = texture_pitch {
+            let row_logical = (logical_len / u64::from(height)) as usize;
+            let mut out = Vec::with_capacity(logical_len as usize);
             let pitch = bpr as usize;
             for y in 0..height as usize {
                 let start = y * pitch;

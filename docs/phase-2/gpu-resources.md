@@ -53,12 +53,21 @@ alignment happens in Rust **before** wgpu calls — bad params → typed
 - **Preflight** before allocate. **Unsubmitted** failure (create/encode before
   `submit`, or abandoning pending work on context teardown) may roll back the
   reserve. Clone does not `allocate` again.
+- **Encoded pending (before `submit`)**: upload/readback that has been encoded
+  but not submitted still holds real GPU resources. Dropping the last buffer/
+  texture handle must **not** free accounted bytes while `pending_hold > 0`.
+  Ownership runs encode → submit → complete (same for textures).
 - **After `submit`**, staging and resource bytes stay accounted while GPU may
-  still reference them. A `wait` **timeout** is only the caller’s deadline: it
-  must **not** free staging, drop tickets, or decrement budget. Ownership and
-  accounting remain until a later successful wait/reap, or until safe device
-  teardown (`close` / lost / reopen invalidate). Destroy of a resource with
-  in-flight work likewise waits for completion (or teardown) before free.
+  still reference them (`inflight`). A `wait` **timeout** is only the caller’s
+  deadline: it must **not** free staging, drop tickets, or decrement budget.
+  Ownership and accounting remain until a later successful wait/reap, or until
+  safe device teardown (`close` / lost / reopen invalidate). Destroy of a
+  resource with pending or in-flight work waits for completion (or teardown)
+  before free.
+- **`ReadbackTicket`**: Arc + RAII. `map_readback(&ticket)` borrows so not-ready
+  / deadline `Err` never consumes the only reclaim path. Drop of the last clone
+  abandons staging (free if pending or GPU-ready; if submitted incomplete, mark
+  abandon-on-complete so wait reaps). Successful map marks consumed.
 
 ### Submit / wait / map
 
@@ -69,10 +78,13 @@ alignment happens in Rust **before** wgpu calls — bad params → typed
   Lost / wrong generation → `SP-GPU-002` as appropriate.
 - Readback: `map` only after wait has marked staging ready (GPU copy finished).
   Map **deadline/transient** failure keeps the ticket and accounted staging for
-  retry; only a completed map (or teardown / definitive post-GPU map failure
-  that retires the staging) frees the reserve.
-- Minimal error-scope around submit/map only to avoid panic; event fan-out is
-  P2-F05.
+  retry; completed map, ticket Drop/abandon, teardown, or definitive post-GPU
+  map failure frees the reserve.
+- Device limits: `create_texture_2d` checks actual
+  `max_texture_dimension_2d` (and padded staging vs `max_buffer_size`) before
+  wgpu; create paths use a minimal validation/OOM error scope so illegal sizes
+  return typed `SP-INP-003` / `SP-GPU-004` with reserve rollback — not process
+  abort. Full diagnostic event fan-out stays P2-F05.
 
 ### Lifetime vs context generation
 
@@ -94,10 +106,13 @@ accounting reaches zero after completion.
 1. Real host: buffer pattern bytes upload→copy→readback equal; RGBA8 texture
    with width whose `width*4` is **not** multiple of 256 still round-trips
    after pitch strip.
-2. Illegal range/usage/size/budget/overflow → typed errors; no wgpu panic.
+2. Illegal range/usage/size/budget/overflow / oversize texture dimension →
+   typed errors; no wgpu panic / process abort.
 3. Cross-context / close / reopen reject old handles and submissions.
 4. Submit then drop resource; wait still succeeds; accounted current → 0;
-   repeated cycles do not leak budget; peak source recorded.
+   drop after encode-before-submit retains accounting until wait; repeated
+   cycles / ticket abandon / early-map Err paths do not leak budget; peak
+   source recorded.
 5. Post-submit wait timeout preserves accounted current and allows a later
    wait to complete; map deadline failure does not free staging while the
    ticket remains usable after GPU work is known complete.

@@ -1,5 +1,6 @@
 //! Host headless buffer + non-256-aligned-width texture round-trip (P2-F03).
 
+use spirula_core::ErrorCode;
 use spirula_gpu::{
     BufferDesc, BufferUsage, CapabilityRequest, GpuContext, OpenFailureStage, ResourceLabel,
     Texture2dDesc, TextureFormat, TextureUsage, WGPU_VERSION, rgba8_bytes_per_row,
@@ -26,7 +27,7 @@ fn host_buffer_and_texture_roundtrip_or_precise_unavailable() {
             let ticket = ctx.readback_buffer(&buf, 0, 64).unwrap();
             let sub2 = ctx.submit().unwrap();
             ctx.wait(sub2, Some(Duration::from_secs(5))).unwrap();
-            let out = ctx.map_readback(ticket).unwrap();
+            let out = ctx.map_readback(&ticket).unwrap();
             assert_eq!(out, pattern);
             let upload_ns = t0.elapsed().as_nanos();
 
@@ -49,7 +50,7 @@ fn host_buffer_and_texture_roundtrip_or_precise_unavailable() {
             let ticket = ctx.readback_texture_rgba8(&tex).unwrap();
             let s2 = ctx.submit().unwrap();
             ctx.wait(s2, Some(Duration::from_secs(5))).unwrap();
-            let out = ctx.map_readback(ticket).unwrap();
+            let out = ctx.map_readback(&ticket).unwrap();
             assert_eq!(out, pixels);
 
             let acc = ctx.resource_accounting();
@@ -65,6 +66,31 @@ fn host_buffer_and_texture_roundtrip_or_precise_unavailable() {
             drop(buf);
             drop(tex);
             assert_eq!(ctx.resource_accounting().current_bytes, 0);
+
+            // Host: illegal 2D size must be typed error (not wgpu panic/exit 101).
+            let max_dim = ctx
+                .report()
+                .expect("live report")
+                .device_limits
+                .max_texture_dimension_2d;
+            let over = max_dim.saturating_add(1).max(1_000_000);
+            let Err(err) = ctx.create_texture_2d(Texture2dDesc {
+                label: ResourceLabel::parse("spirula:gpu:texture:oversize").unwrap(),
+                width: over,
+                height: 1,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsage::COPY_SRC_DST,
+            }) else {
+                panic!("expected oversize texture to fail on host");
+            };
+            assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+            assert!(
+                err.message().contains("max_texture_dimension_2d"),
+                "msg={}",
+                err.message()
+            );
+            assert_eq!(ctx.resource_accounting().current_bytes, 0);
+
             ctx.close();
         }
         Err(failure) => {

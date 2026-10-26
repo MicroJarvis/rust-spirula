@@ -62,7 +62,7 @@ fn synthetic_buffer_roundtrip_and_budget_zero() {
     let ticket = ctx.readback_buffer(&buf, 0, 16).unwrap();
     let sub2 = ctx.submit().unwrap();
     ctx.wait(sub2, Some(Duration::from_secs(1))).unwrap();
-    let out = ctx.map_readback(ticket).unwrap();
+    let out = ctx.map_readback(&ticket).unwrap();
     assert_eq!(out, pattern);
     drop(buf);
     let acc = ctx.resource_accounting();
@@ -92,7 +92,7 @@ fn synthetic_texture_non_256_row_pitch_roundtrip() {
     let ticket = ctx.readback_texture_rgba8(&tex).unwrap();
     let sub2 = ctx.submit().unwrap();
     ctx.wait(sub2, None).unwrap();
-    let out = ctx.map_readback(ticket).unwrap();
+    let out = ctx.map_readback(&ticket).unwrap();
     assert_eq!(out, pixels);
     drop(tex);
     assert_eq!(ctx.resource_accounting().current_bytes, 0);
@@ -240,7 +240,7 @@ fn synthetic_map_deadline_retains_staging_for_retry() {
     let before = ctx.resource_accounting().current_bytes;
 
     ctx.inject_next_map_deadline();
-    let err = ctx.map_readback(ticket.clone()).unwrap_err();
+    let err = ctx.map_readback(&ticket).unwrap_err();
     assert_eq!(err.code(), ErrorCode::SubmitFailed);
     assert_eq!(
         ctx.resource_accounting().current_bytes,
@@ -249,7 +249,7 @@ fn synthetic_map_deadline_retains_staging_for_retry() {
     );
 
     // Same ticket retries after deadline; GPU work was already confirmed complete.
-    let out = ctx.map_readback(ticket).unwrap();
+    let out = ctx.map_readback(&ticket).unwrap();
     assert_eq!(out, vec![2u8; 8]);
     drop(buf);
     assert_eq!(ctx.resource_accounting().current_bytes, 0);
@@ -273,8 +273,180 @@ fn synthetic_repeat_cycles_no_budget_leak() {
         let t = ctx.readback_buffer(&buf, 0, 64).unwrap();
         let s2 = ctx.submit().unwrap();
         ctx.wait(s2, None).unwrap();
-        let _ = ctx.map_readback(t).unwrap();
+        let _ = ctx.map_readback(&t).unwrap();
         drop(buf);
         assert_eq!(ctx.resource_accounting().current_bytes, 0);
     }
+}
+
+#[test]
+fn synthetic_pending_encode_drop_retains_accounting() {
+    // Probe: create64 + upload64 then drop handle before submit must keep 128.
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:pending-drop").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[1u8; 64]).unwrap();
+    let encoded = ctx.resource_accounting().current_bytes;
+    assert_eq!(encoded, 128, "buffer+staging accounted after encode");
+    drop(buf);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        128,
+        "encoded work still retains resource accounting until submit/wait"
+    );
+    let sub = ctx.submit().unwrap();
+    ctx.wait(sub, None).unwrap();
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        0,
+        "pending destroy reclaims after wait"
+    );
+}
+
+#[test]
+fn synthetic_pending_texture_encode_drop_retains_accounting() {
+    let mut ctx = open_ctx();
+    let tex = ctx
+        .create_texture_2d(Texture2dDesc {
+            label: ResourceLabel::parse("spirula:gpu:texture:pending-drop").unwrap(),
+            width: 1,
+            height: 1,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    // padded staging = 256 for 1x1 rgba8
+    let padded = 256u64;
+    let device_bytes = padded; // texture accounted as padded
+    ctx.upload_texture_rgba8(&tex, &[1, 2, 3, 4]).unwrap();
+    let encoded = ctx.resource_accounting().current_bytes;
+    assert_eq!(encoded, device_bytes + padded);
+    drop(tex);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        encoded,
+        "texture pending encode retains accounting"
+    );
+    let sub = ctx.submit().unwrap();
+    ctx.wait(sub, None).unwrap();
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_abandon_completed_ticket_releases_staging() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:ticket-drop").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[3u8; 64]).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, None).unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 64).unwrap();
+    let s2 = ctx.submit().unwrap();
+    ctx.wait(s2, None).unwrap();
+    drop(ticket); // abandon after GPU-ready, without map
+    drop(buf);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        0,
+        "abandoned completed ticket must release staging budget"
+    );
+}
+
+#[test]
+fn synthetic_early_map_keeps_ticket_reclaim_path() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:early-map").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[4u8; 64]).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, None).unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 64).unwrap();
+    let err = ctx.map_readback(&ticket).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    // Ticket still usable after not-ready Err.
+    let s2 = ctx.submit().unwrap();
+    ctx.wait(s2, None).unwrap();
+    let out = ctx.map_readback(&ticket).unwrap();
+    assert_eq!(out, vec![4u8; 64]);
+    drop(ticket);
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_early_map_then_drop_ticket_after_wait_zeros() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:early-map-drop").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 64).unwrap();
+    let _ = ctx.map_readback(&ticket).unwrap_err();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, None).unwrap();
+    drop(ticket);
+    drop(buf);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        0,
+        "consumed ticket has recovery via Drop after completion"
+    );
+}
+
+#[test]
+fn synthetic_drop_ticket_before_submit_releases_staging() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:pre-submit-ticket").unwrap(),
+            size: 32,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 32).unwrap();
+    assert!(ctx.resource_accounting().current_bytes >= 64);
+    drop(ticket);
+    assert_eq!(
+        ctx.resource_accounting().current_bytes,
+        32,
+        "pre-submit ticket Drop frees staging only"
+    );
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_texture_dimension_rejects_before_wgpu() {
+    let mut ctx = open_ctx();
+    // Synthetic device_limits.max_texture_dimension_2d = 8192.
+    let Err(err) = ctx.create_texture_2d(Texture2dDesc {
+        label: ResourceLabel::parse("spirula:gpu:texture:oversize").unwrap(),
+        width: 1_000_000,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        usage: TextureUsage::COPY_SRC_DST,
+    }) else {
+        panic!("expected oversize texture to fail");
+    };
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert!(err.message().contains("max_texture_dimension_2d"));
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
 }

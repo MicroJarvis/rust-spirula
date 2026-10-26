@@ -104,6 +104,8 @@ pub struct DeviceLimitsSnapshot {
     pub max_buffer_size: u64,
     pub max_storage_buffers_per_shader_stage: u32,
     pub max_compute_workgroup_storage_size: u32,
+    /// From wgpu `Limits::max_texture_dimension_2d` (synthetic default when no device).
+    pub max_texture_dimension_2d: u32,
 }
 
 /// Failure detail when open does not reach Live.
@@ -301,6 +303,7 @@ impl GpuContext {
                     .limits
                     .max_compute_workgroup_storage_size
                     .effective,
+                max_texture_dimension_2d: 8192,
             },
             queue_present: true,
             adapter: selection.adapter,
@@ -565,6 +568,7 @@ fn create_live_backend(
             max_storage_buffers_per_shader_stage: device_limits
                 .max_storage_buffers_per_shader_stage,
             max_compute_workgroup_storage_size: device_limits.max_compute_workgroup_storage_size,
+            max_texture_dimension_2d: device_limits.max_texture_dimension_2d,
         },
         queue_present: true,
         adapter: adapter_caps,
@@ -693,10 +697,11 @@ pub fn format_device_report(report: &DeviceOpenReport) -> String {
     );
     let _ = writeln!(
         out,
-        "  device_limits: max_buffer_size={} max_storage_buffers_per_shader_stage={} max_compute_workgroup_storage_size={}",
+        "  device_limits: max_buffer_size={} max_storage_buffers_per_shader_stage={} max_compute_workgroup_storage_size={} max_texture_dimension_2d={}",
         report.device_limits.max_buffer_size,
         report.device_limits.max_storage_buffers_per_shader_stage,
-        report.device_limits.max_compute_workgroup_storage_size
+        report.device_limits.max_compute_workgroup_storage_size,
+        report.device_limits.max_texture_dimension_2d
     );
     let _ = writeln!(out, "  queue_present={}", report.queue_present);
     let _ = writeln!(
@@ -823,6 +828,7 @@ impl GpuContext {
                     .limits
                     .max_compute_workgroup_storage_size
                     .effective,
+                max_texture_dimension_2d: 8192,
             },
             queue_present: true,
             adapter: selection.adapter,
