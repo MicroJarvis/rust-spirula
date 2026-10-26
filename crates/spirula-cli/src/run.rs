@@ -150,6 +150,12 @@ fn run_session(plan: SessionPlan) -> CliExit {
         limits.worker_step_delay = Duration::from_millis(ms.max(1));
         limits.cancel_poll_interval = Duration::from_millis(ms.clamp(1, 50));
     }
+    // Test-only: force notify/progress backpressure so live terminals can drop
+    // and the CLI must recover via command_result / replay.
+    if std::env::var_os("SPIRULA_TEST_TINY_NOTIFY").is_some() {
+        limits.notification_queue_capacity = 1;
+        limits.worker_progress_queue_capacity = 1;
+    }
 
     let disk = plan.log_dir.as_ref().map(|dir| {
         let mut cfg = DiskLogConfig::new(dir);
@@ -348,32 +354,62 @@ fn wait_for_command(
     cancel: &mut CancelGate,
     saw_cancel_exit: &mut bool,
 ) -> WaitEnd {
+    // Test-only: starve live notify so Progress fills the tiny queue and the
+    // terminal must be restored via command_result (see SPIRULA_TEST_TINY_NOTIFY).
+    let pressure = std::env::var_os("SPIRULA_TEST_TINY_NOTIFY").is_some();
     loop {
         // Control first: never wait on presentation before observing SIGINT.
         cancel.try_admit_stop(app, out);
 
-        match sub.recv_timeout(Duration::from_millis(20)) {
-            Ok(envelope) => {
-                let _ = out.try_write_event(&envelope);
+        if pressure {
+            // Brief stall so the worker can overflow notify capacity=1.
+            std::thread::sleep(Duration::from_millis(5));
+            // Drain at most one non-terminal event; ignore live Completed so
+            // the recovery path below is what finishes the wait.
+            if let Some(envelope) = sub.try_recv() {
                 if let Event::CommandRejected { command, .. } = &envelope.event
                     && matches!(command, CommandPayload::Stop { .. })
                 {
-                    // Published rejection: keep intent, suppress until active.
                     cancel.stop_admitted = false;
                     cancel.suppress_retry = true;
                 }
-                if let Event::Completed { outcome } = &envelope.event
-                    && envelope.command_id == Some(id)
+                if !(matches!(envelope.event, Event::Completed { .. })
+                    && envelope.command_id == Some(id))
                 {
-                    return classify_outcome(outcome, saw_cancel_exit);
+                    let _ = out.try_write_event(&envelope);
                 }
             }
-            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {}
+        } else {
+            match sub.recv_timeout(Duration::from_millis(20)) {
+                Ok(envelope) => {
+                    let _ = out.try_write_event(&envelope);
+                    if let Event::CommandRejected { command, .. } = &envelope.event
+                        && matches!(command, CommandPayload::Stop { .. })
+                    {
+                        cancel.stop_admitted = false;
+                        cancel.suppress_retry = true;
+                    }
+                    if let Event::Completed { outcome } = &envelope.event
+                        && envelope.command_id == Some(id)
+                    {
+                        return classify_outcome(outcome, saw_cancel_exit);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {}
+            }
         }
 
         match app.command_result(id) {
             CommandResult::Ready(envelope) => {
                 if let Event::Completed { outcome } = &envelope.event {
+                    if pressure {
+                        let drops = app.snapshot().drops.notification;
+                        let _ = out.try_write_line(format!("spirula:test notify-drops={drops}\n"));
+                        // Require real notify loss under the pressure harness.
+                        if drops == 0 {
+                            continue;
+                        }
+                    }
                     present_recovered_terminal(out, &envelope);
                     return classify_outcome(outcome, saw_cancel_exit);
                 }

@@ -213,6 +213,7 @@ fn worker_loop(
                     )
                     .is_err()
                     {
+                        hold_after_cancel_for_test(&progress_tx, &limits, run_id, command_id);
                         finish_canceled(
                             &result_tx, &limits, run_id, command_id, 0, &cancel, None, false, None,
                         );
@@ -389,6 +390,7 @@ fn run_probe(
         )
         .is_err()
         {
+            hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
             let want_save = save_on_cancel.load(Ordering::Acquire);
             let save_failed =
                 want_save && matches!(*lock(behavior), FakeWorkerBehavior::CancelSaveFail);
@@ -480,6 +482,34 @@ fn run_probe(
 
 fn note_panic_progress(slot: &Arc<Mutex<Option<ProgressSnapshot>>>, snapshot: ProgressSnapshot) {
     *lock(slot) = Some(snapshot);
+}
+
+/// Test-only unfinished-cancel gate (`SPIRULA_TEST_HOLD_AFTER_CANCEL`).
+///
+/// After cancel is observed, publish an observed barrier log and block before
+/// emitting the canceled terminal so a second SIGINT can force `SIG_DFL`
+/// death. Independent of `worker_step_delay` / `wait_sliced` poll timing.
+fn hold_after_cancel_for_test(
+    progress_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
+    run_id: RunId,
+    command_id: CommandId,
+) {
+    if std::env::var_os("SPIRULA_TEST_HOLD_AFTER_CANCEL").is_none() {
+        return;
+    }
+    let _ = try_progress(
+        progress_tx,
+        limits,
+        WorkerEvent::Log {
+            run_id,
+            command_id,
+            message: "spirula:test cancel-held".into(),
+        },
+    );
+    loop {
+        thread::sleep(Duration::from_secs(60));
+    }
 }
 
 /// Sleep for one step delay (or until cancel), while paused/stalled, honoring

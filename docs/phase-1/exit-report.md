@@ -166,24 +166,14 @@ parent tip `26da464` (P1-F08 on main).
 
 ## Scope and result
 
-P1-F09 is complete after HOLD-MERGE review fixes: `spirula-cli` is a
-core+application adapter with help, capabilities, explicit fake
-`probe-load` / `probe-run` / `probe` entry, unavailable `train`/`preview`
-(exit 2), stable exits 0/1/2/130, sticky cancel intent across phase
-boundaries (SIGINT → admit `Stop{save:true}` when valid; Rejected Stop at
-Ready load→run gap keeps intent, skips the next stage, retries Stop once
-active), second SIGINT → `SIG_DFL` + `raise` (exactly two signals terminate
-with SIGINT). Bounded async stdout sink so a full pipe cannot block
-control/SIGINT admission (overflow drops + counter; deadline flush/join).
-Terminal recovery via `command_result` every loop; exactly one stderr
-`error:` line with stable codes. Application owns optional rotated disk
-diagnostics (basename-validated stem; bounded line/queue/tail/rotation/
-files/global budget including newline; out-of-band shutdown; absolute join
-deadline that keeps ownership on timeout; disk inventory rebuild; failed
-delete accounting; once-per-lifetime failure warning). Real train/preview
-remain later. Phase 1 feature table (P1-F01–P1-F09) is complete after this
-evidence; next feature is P2-F01. Branch remains unmerged until explicitly
-approved.
+P1-F09 is **in progress** (HOLD-MERGE; not complete; not merged). Tip
+implements: CLI adapter; sticky cancel across load→run; bounded async
+stdout; disk Warning via F07 `bound_error`; join deadline includes mutex
+acquisition with truthful `sink_alive` / handle retain; Drop always signals
+disk shutdown; `SPIRULA_TEST_HOLD_AFTER_CANCEL` exact-2 SIGINT gate;
+`SPIRULA_TEST_TINY_NOTIFY` forced notify drops + `command_result`
+restoration (success and failure). Phase 1 exit / P1-F09 `已完成` stay
+blocked until outstanding review is closed. No merge/push until approval.
 
 ## Evidence
 
@@ -191,10 +181,10 @@ approved.
 |---|---|
 | Binding decisions | [cli.md](cli.md), [application.md](application.md) diagnostics |
 | CLI crate | `crates/spirula-cli` (deps: `spirula-core`, `spirula-application`) |
-| Disk sink | `crates/spirula-application/src/disk_log.rs` |
-| Subprocess / SIGINT / cancel-gap | `crates/spirula-cli/tests/cli_subprocess.rs` (`sigint_at_load_run_gap_*`, `sigint_while_stdout_blocked_*`) |
-| Session disk / bounded Warning | `crates/spirula-application/tests/disk_diagnostics.rs`; `disk_log` join/mutex unit tests |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8**; tip recorded in commit) |
+| Disk sink / concurrent join | `crates/spirula-application/src/disk_log.rs` (`concurrent_join_deadline_includes_mutex_wait`) |
+| Subprocess / SIGINT / cancel-gap / notify pressure | `crates/spirula-cli/tests/cli_subprocess.rs` |
+| Session disk / bounded Warning | `crates/spirula-application/tests/disk_diagnostics.rs` |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (tip recorded in commit; F09 still 进行中) |
 
 ## Non-claims
 

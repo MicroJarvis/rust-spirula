@@ -126,6 +126,8 @@ invalid disk config). Live and recovered failure paths return
 | `SPIRULA_TEST_WORKER_BEHAVIOR=fail\|panic\|cancel_save_fail` | Inject fake worker outcome |
 | `SPIRULA_TEST_DISK_LIMITS=1` | Use `DiskLogLimits::for_test` |
 | `SPIRULA_TEST_GAP_AFTER_LOAD_MS=<n>` | Hold at the load→run phase boundary while still polling cancel/SIGINT (reproduces Ready-gap Stop reject) |
+| `SPIRULA_TEST_HOLD_AFTER_CANCEL=1` | After cancel is observed, emit `spirula:test cancel-held` and block before the canceled terminal (second-SIGINT death gate) |
+| `SPIRULA_TEST_TINY_NOTIFY=1` | Cap notify/progress queues at 1 and starve live drain so terminals drop; CLI must restore via `command_result` (`spirula:recovered`, `notify-drops`) |
 
 These are test-only; they are not advertised as product capabilities.
 

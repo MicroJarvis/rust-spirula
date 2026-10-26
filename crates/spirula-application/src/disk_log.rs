@@ -847,6 +847,9 @@ mod tests {
 
     #[test]
     fn concurrent_join_deadline_includes_mutex_wait() {
+        // Matches /tmp/spirula-f09-concurrent-join-probe: join1 holds the mutex
+        // on a stalled FIFO; join2 budget 10ms must not block ~200ms nor return
+        // true while the handle is still owned by join1.
         let dir = temp_dir("conc-join");
         let fifo = dir.join("spirula-diagnostics.log");
         #[cfg(unix)]
@@ -863,23 +866,28 @@ mod tests {
         }));
         let clone = handle.clone();
         let _ = handle.try_enqueue_line("block-open");
-        let (ready_tx, ready_rx) = mpsc::channel::<()>();
         let long = thread::spawn(move || {
-            let _ = ready_tx.send(());
-            // Holds the join mutex while the sink is stalled on FIFO open.
-            let _ = clone.join(Duration::from_millis(400));
+            let _ = clone.join(Duration::from_millis(500));
         });
-        ready_rx.recv().unwrap();
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(30));
+        let fifo_open = fifo.clone();
+        let unblock = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            let _ = File::open(fifo_open);
+        });
         let start = Instant::now();
-        let ok = handle.join(Duration::from_millis(40));
+        let ok = handle.join(Duration::from_millis(10));
         let elapsed = start.elapsed();
-        assert!(!ok, "must not claim success while contended/alive");
+        assert!(!ok, "join2 must not claim success while join1 holds handle");
         assert!(
-            elapsed < Duration::from_millis(200),
-            "absolute deadline must include lock wait: {elapsed:?}"
+            elapsed < Duration::from_millis(50),
+            "absolute deadline must include lock wait (probe: 10ms not ~200ms): {elapsed:?}"
         );
-        let _reader = File::open(&fifo);
+        assert!(
+            handle.sink_alive(),
+            "truthful status: sink still alive under contended join"
+        );
+        let _ = unblock.join();
         let _ = handle.join(Duration::from_secs(2));
         let _ = long.join();
         let _ = fs::remove_dir_all(&dir);

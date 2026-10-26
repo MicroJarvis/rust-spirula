@@ -501,8 +501,10 @@ fn probe_run_sigint_exits_130() {
 
 #[test]
 fn probe_run_second_sigint_terminates_with_exactly_two_signals() {
-    // Unfinished-cancel gate: very slow steps so cooperative Stop cannot
-    // finish before the second SIGINT arrives.
+    // Deterministic unfinished-cancel gate: worker holds after cancel is
+    // observed (SPIRULA_TEST_HOLD_AFTER_CANCEL) and emits an observed barrier
+    // before any canceled terminal. wait_sliced's 50ms poll must not race a
+    // cooperative exit 130 before the second SIGINT.
     let mut session = ChildSession::spawn(
         &[
             "probe-run",
@@ -511,9 +513,9 @@ fn probe_run_second_sigint_terminates_with_exactly_two_signals() {
             "--load-label",
             "ds",
             "--step-delay-ms",
-            "500",
+            "20",
         ],
-        &[],
+        &[("SPIRULA_TEST_HOLD_AFTER_CANCEL", "1")],
     );
     session
         .wait_stdout_contains("spirula:ready training", Duration::from_secs(15))
@@ -522,8 +524,9 @@ fn probe_run_second_sigint_terminates_with_exactly_two_signals() {
     {
         let pid = session.child.id() as i32;
         assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
-        // Tiny yield so the first handler runs; do NOT send a third signal.
-        thread::sleep(Duration::from_millis(30));
+        session
+            .wait_stdout_contains("spirula:test cancel-held", Duration::from_secs(10))
+            .expect("cancel-held barrier");
         assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
     }
     let status = session.wait_exit(Duration::from_secs(10));
@@ -571,36 +574,87 @@ fn probe_with_log_dir_writes_diagnostics() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Adapter-level proof: tiny notify queue + continuous progress still recovers
-/// the terminal via command_result (not only an application unit test).
+/// Adapter-level proof: tiny notify/progress queues + Progress flood force
+/// dropped live terminals; CLI must restore via command_result (success).
 #[test]
 fn adapter_recovers_terminal_under_slow_consumer_pressure() {
-    // Drive a real binary with a long step so Progress floods the tiny default
-    // notify path relative to a slow drain — the process must still exit 0/1
-    // with a completed line (recovery path prints spirula:recovered when used).
     let out = run_output(
         &[
             "probe-run",
             "--steps",
-            "8",
+            "120",
             "--load-label",
             "ds",
             "--step-delay-ms",
-            "5",
+            "1",
         ],
-        &[],
-        Duration::from_secs(20),
+        &[("SPIRULA_TEST_TINY_NOTIFY", "1")],
+        Duration::from_secs(30),
     );
-    assert!(
-        out.status.code() == Some(0),
+    assert_eq!(
+        out.status.code(),
+        Some(0),
         "stdout={}\nstderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("completed") || stdout.contains("spirula:recovered"),
-        "terminal must appear via live or recovery: {stdout}"
+        stdout.contains("spirula:test notify-drops=")
+            && !stdout.contains("spirula:test notify-drops=0"),
+        "must deliberately force notify drops: {stdout}"
+    );
+    assert!(
+        stdout.contains("spirula:recovered"),
+        "must prove query/replay restoration under notify pressure: {stdout}"
+    );
+    assert!(
+        stdout.contains("completed"),
+        "recovered terminal must still present completed: {stdout}"
+    );
+}
+
+/// Same pressure as success recovery, but with an injected run failure.
+#[test]
+fn adapter_recovers_failure_under_slow_consumer_pressure() {
+    let out = run_output(
+        &[
+            "probe-run",
+            "--steps",
+            "120",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "1",
+        ],
+        &[
+            ("SPIRULA_TEST_TINY_NOTIFY", "1"),
+            ("SPIRULA_TEST_WORKER_BEHAVIOR", "fail"),
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("spirula:test notify-drops=")
+            && !stdout.contains("spirula:test notify-drops=0"),
+        "must deliberately force notify drops: {stdout}"
+    );
+    assert!(
+        stdout.contains("spirula:recovered"),
+        "failure terminal must restore via query under pressure: {stdout}"
+    );
+    assert_eq!(
+        stderr.lines().filter(|l| l.starts_with("error:")).count(),
+        1,
+        "stderr={stderr}"
     );
 }
 

@@ -81,20 +81,20 @@ Phase 0 退出条件：P0-F01 至 P0-F06 均有记录，工作区可构建，架
 | P1-F06 | workspace 基础检查 | workspace | P0-F06 | 固定 fmt/check/test/clippy 命令；固定 lint 与 feature 组合；检查 CLI 仅作入口适配 | 固化 lint、格式化、测试和本地检查命令；CLI 不含隐藏业务逻辑 | 已完成 |
 | P1-F07 | 最小 headless application/session | `spirula-application`（新增） | P1-F03, P1-F06 | 唯一应用 owner；有界命令和可恢复控制事件历史；快照/游标、取消控制通道和 fake worker；区分 run identity 与迟到事件 | 无训练/GPU 依赖的状态机测试；满队列与慢订阅不阻塞 worker；每个接受命令恰有一个终态 | 已完成 |
 | P1-F08 | 资源与性能记录基础设施 | workspace | P1-F06 | 定义版本化测量结果、fixture/配置 hash 和环境字段；记录分配字节、阶段耗时、采样来源和预算；后续 GPU 指标声明不可用原因 | CPU 微型样本可生成和回读结果；已核算字节与系统峰值分开；形成后续逐功能基线模板 | 已完成 |
-| P1-F09 | 最小 CLI 会话入口 | `spirula-cli`/application | P1-F07 | help/能力与已接入命令；共享 command/event 映射；SIGINT 与退出码；fake worker 验证，真实预览/训练分别由 P4-F06/P5-F07 接入 | 子进程测试命令拒绝、取消、终态和错误码；未接入命令显式不可用；入口无业务编排 | 已完成 |
+| P1-F09 | 最小 CLI 会话入口 | `spirula-cli`/application | P1-F07 | help/能力与已接入命令；共享 command/event 映射；SIGINT 与退出码；fake worker 验证，真实预览/训练分别由 P4-F06/P5-F07 接入 | 子进程测试命令拒绝、取消、终态和错误码；未接入命令显式不可用；入口无业务编排 | 当前 |
 
 Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU 的
 共享会话/CLI 骨架和测量入口；真实渲染、训练和完整 UI 仍由后续功能接入。
 P1-F06/P1-F09 记录见 [`docs/phase-1/workspace-checks.md`](phase-1/workspace-checks.md)、
 [`docs/phase-1/cli.md`](phase-1/cli.md) 与
-[`docs/phase-1/exit-report.md`](phase-1/exit-report.md)。Phase 1 功能表已齐；
-后续阶段从 Phase 2 起。
+[`docs/phase-1/exit-report.md`](phase-1/exit-report.md)。P1-F09 仍在 HOLD-MERGE
+审查修复中；Phase 1 退出条件尚未关闭。
 
 ### Phase 2：wgpu 基础层
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter/backend；区分 required/optional feature/limit；声明 subgroup、f16、timestamp 与梯度累加能力和回退 | 记录真实设备/driver/limits；缺少必需能力有稳定错误；可选能力回退有测试 | 当前 |
+| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter/backend；区分 required/optional feature/limit；声明 subgroup、f16、timestamp 与梯度累加能力和回退 | 记录真实设备/driver/limits；缺少必需能力有稳定错误；可选能力回退有测试 | 未开始 |
 | P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01, P1-F07 | 创建 instance/adapter/device/queue；资源所有权、context identity/generation；由应用 owner 决定 device lost 后重建 | 创建/关闭/失败可观察；旧 generation handle 拒绝复用；应用状态只由同一 owner 更新 | 未开始 |
 | P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 未开始 |
 | P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F03 | WGSL 版本和 bind/uniform layout；pipeline key/错误；以真实 compute 验证窄资源封装与 shader 接口 | layout/对齐及缓存失效可测；编译失败带位置；与 P2-F03 共同证明 GPU 边界可执行 | 未开始 |
@@ -218,11 +218,11 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 
 ## 4. 首批功能顺序
 
-已完成 P0-F01–P0-F06 和 P1-F01–P1-F09。Phase 1 退出条件已满足；当前下一步为
-P2-F01。后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行
-顺序，不会把组内多个编号合并成一个已完成功能：
+已完成 P0-F01–P0-F06 和 P1-F01–P1-F08；P1-F09 为当前功能（HOLD-MERGE 审查未收口）。
+Phase 1 退出条件未满足。后续按依赖推进，每个编号独立 worktree、实现和验收；
+下列分组只是执行顺序，不会把组内多个编号合并成一个已完成功能：
 
-1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
+1. P1-F06–P1-F08（已完成）与 P1-F09（当前）：基础检查、唯一会话、测量和最小 CLI。
 2. P2-F01–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
@@ -296,9 +296,11 @@ GPU）。P1-F08（资源与性能记录基础设施）已在
 `spirula-core`/`spirula-io` 落地，契约见 `docs/phase-1/performance.md`
 （版本化报告、fixture/config hash、已核算字节与不可用 OS/GPU/时间戳字段、
 CPU 微型样本生成与回读；无训练/GPU/UI 运行时）。P1-F09（最小 CLI 会话入口）
-已在 `spirula-cli` + application disk diagnostics 落地，契约见
+在 `spirula-cli` + application disk diagnostics 落地中，契约见
 `docs/phase-1/cli.md`（help/capabilities、fake probe、SIGINT 0/1/2/130、
-rotated disk sink；真实 train/preview 仍不可用）。Phase 1 功能表已齐；下一步
+rotated disk sink；真实 train/preview 仍不可用）。状态为进行中：HOLD-MERGE
+审查项（cancel gap、disk Warning 边界、并发 join、第二 SIGINT 门闩、慢订阅
+恢复）未全部收口前不得标为已完成，也不得合并。下一步在 P1-F09 收口后为
 P2-F01。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。GPU、训练、UI 实现状态没有
 因本次规划调整而提前完成。
