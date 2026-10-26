@@ -383,10 +383,9 @@ fn poll_stdout_writable(fd: i32, timeout: Duration) -> bool {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // fcntl / pipe / dup2 probes for flags and stalled stdout
+#[allow(unsafe_code)] // fcntl flags probe; pipe/subprocess isolation for shutdown
 mod tests {
     use super::*;
-    use std::sync::Barrier;
 
     #[test]
     #[cfg(unix)]
@@ -409,24 +408,11 @@ mod tests {
         assert_eq!(after & libc::O_NONBLOCK, before & libc::O_NONBLOCK);
     }
 
-    #[test]
+    /// Isolated child body (public-API probe). Parent wires stdout to a pipe
+    /// with no reader so `write(2)` blocks; never `dup2` the test harness.
     #[cfg(unix)]
-    fn concurrent_shutdown_deadline_includes_mutex_wait() {
-        // Matches /tmp/spirula-f09-review/final-output-shutdown-probe: long
-        // shutdown holds the join mutex while writer blocks in write(2) on a
-        // full pipe; short shutdown's absolute deadline must include lock wait.
-        let mut fds = [0; 2];
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        let (read_fd, write_fd) = (fds[0], fds[1]);
-        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
-        assert!(saved >= 0);
-        assert_eq!(
-            unsafe { libc::dup2(write_fd, libc::STDOUT_FILENO) },
-            libc::STDOUT_FILENO
-        );
-        unsafe {
-            libc::close(write_fd);
-        }
+    fn output_shutdown_contention_child() {
+        use std::sync::Barrier;
 
         let out = Arc::new(OutputSink::start(4));
         assert!(out.try_write_line(format!("{}\n", "x".repeat(8 * 1024 * 1024))));
@@ -445,6 +431,11 @@ mod tests {
         let start = Instant::now();
         let ok = out.shutdown(Duration::from_millis(10));
         let elapsed = start.elapsed();
+        // Evidence line for the parent (stderr; stdout is the stalled pipe).
+        eprintln!(
+            "short_shutdown deadline_ms=10 elapsed_ms={} result={ok}",
+            elapsed.as_millis()
+        );
         assert!(
             !ok,
             "short shutdown must not claim success under contention"
@@ -453,16 +444,92 @@ mod tests {
             elapsed < Duration::from_millis(50),
             "absolute deadline must include lock wait (probe: 10ms not ~470ms): {elapsed:?}"
         );
-
         let _ = long.join();
-        // Restore real stdout first: replacing fd 1 closes the pipe write end,
-        // so the blocked writer wakes (EPIPE) without a drain-thread EOF wait.
+        // Skip Drop join on the still-blocked writer; process exit closes stdout.
+        std::process::exit(0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn concurrent_shutdown_deadline_includes_mutex_wait() {
+        // Subprocess isolation (same shape as final-output-shutdown-probe):
+        // parent owns the pipe + deadline/kill-reap; child runs OutputSink only.
+        // Do not dup2 this harness's stdout — that races parallel libtests.
+        const CHILD_ENV: &str = "SPIRULA_TEST_OUTPUT_SHUTDOWN_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            output_shutdown_contention_child();
+            return;
+        }
+
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc;
+
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        let mut cmd = Command::new(std::env::current_exe().expect("test exe"));
+        cmd.env(CHILD_ENV, "1")
+            .args([
+                "--exact",
+                "present::tests::concurrent_shutdown_deadline_includes_mutex_wait",
+                "--nocapture",
+            ])
+            .stdout(unsafe { Stdio::from_raw_fd(write_fd) })
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn shutdown child");
+        // Release any parent-owned write end still held by `Command`.
+        drop(cmd);
+
+        let mut stderr = child.stderr.take().expect("child stderr");
+        let (err_tx, err_rx) = mpsc::channel::<String>();
+        thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf);
+            let _ = err_tx.send(buf);
+        });
+
+        // Hold read_fd open without draining so the child's stdout write blocks.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break st,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => {
+                    let _ = child.kill();
+                    break child.wait().expect("reap killed child");
+                }
+            }
+        };
         unsafe {
-            assert_eq!(libc::dup2(saved, libc::STDOUT_FILENO), libc::STDOUT_FILENO);
-            libc::close(saved);
             libc::close(read_fd);
         }
-        let _ = out.shutdown(Duration::from_secs(2));
-        drop(out);
+        let err = err_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_default();
+        assert!(
+            status.success(),
+            "shutdown child failed: {status:?}; stderr={err}"
+        );
+        let line = err
+            .lines()
+            .find(|l| l.starts_with("short_shutdown "))
+            .unwrap_or("");
+        assert!(
+            line.contains("result=false"),
+            "expected short shutdown false under contention; stderr={err}"
+        );
+        let elapsed_ms = line
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix("elapsed_ms=")?.parse::<u64>().ok())
+            .expect("elapsed_ms in evidence line");
+        assert!(
+            elapsed_ms < 50,
+            "short shutdown must not block on join lock (~10ms, not ~470ms): {line}"
+        );
     }
 }
