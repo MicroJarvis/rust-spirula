@@ -107,9 +107,12 @@ device open does not imply compute/train/UI readiness. Bindings:
 [phase-2/device-context.md](phase-2/device-context.md),
 [phase-2/gpu-resources.md](phase-2/gpu-resources.md). P2-F03 adds narrow
 buffer/RGBA8 texture staging upload/readback with explicit submit/wait/map and
-scoped accounted-byte budgets — not a general wgpu mirror. P2-F04 (当前)
-pipelines/WGSL compute and P2-F06 smoke remain later. Application does not own
-GPU resources yet; diagnose `--resources` is not train/preview/UI readiness.
+scoped accounted-byte budgets — not a general wgpu mirror. P2-F04 (进行中)
+adds session-owned WGSL compute pipeline key/cache and a minimal affine-u32
+proof on top of P2-F03 staging; full GPU diagnostic events stay P2-F05 and
+surface smoke P2-F06. Application does not own GPU resources yet; diagnose
+`--resources` / `--compute` are not train/preview/UI readiness.
+Bindings: [phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md).
 Each GPU feature has a CPU reference or deterministic fixture where practical,
 followed by a GPU tolerance test.
 

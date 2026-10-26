@@ -1,10 +1,12 @@
-//! Headless GPU diagnose: enumerate (P2-F01), device (P2-F02), resources (P2-F03).
+//! Headless GPU diagnose: enumerate (P2-F01), device (P2-F02), resources (P2-F03),
+//! compute (P2-F04).
 
 use spirula_core::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 use spirula_gpu::{
-    BufferDesc, BufferUsage, CapabilityRequest, FieldAvailability, GpuContext, OpenFailureStage,
-    ResourceLabel, Texture2dDesc, TextureFormat, TextureUsage, WGPU_VERSION, diagnose_device_open,
-    diagnose_exit_code, enumerate_host_adapters, format_device_report, select_auto,
+    AffineU32Params, BufferDesc, BufferUsage, CapabilityRequest, FieldAvailability, GpuContext,
+    OpenFailureStage, ResourceLabel, Texture2dDesc, TextureFormat, TextureUsage, WGPU_VERSION,
+    cpu_affine_u32, diagnose_device_open, diagnose_exit_code, enumerate_host_adapters,
+    format_device_report, select_auto,
 };
 use std::env;
 use std::process::ExitCode;
@@ -19,16 +21,22 @@ fn main() -> ExitCode {
 
     let device = args.iter().any(|a| a == "--device");
     let resources = args.iter().any(|a| a == "--resources");
+    let compute = args.iter().any(|a| a == "--compute");
     let unknown: Vec<&String> = args
         .iter()
-        .filter(|a| a.as_str() != "--device" && a.as_str() != "--resources")
+        .filter(|a| !matches!(a.as_str(), "--device" | "--resources" | "--compute"))
         .collect();
-    if !unknown.is_empty() || (device && resources) {
-        eprintln!("error: usage: spirula-gpu-diagnose [--device | --resources] [--help]");
+    let mode_count = usize::from(device) + usize::from(resources) + usize::from(compute);
+    if !unknown.is_empty() || mode_count > 1 {
+        eprintln!(
+            "error: usage: spirula-gpu-diagnose [--device | --resources | --compute] [--help]"
+        );
         return ExitCode::from(EXIT_USAGE);
     }
 
-    let result = if resources {
+    let result = if compute {
+        run_compute()
+    } else if resources {
         run_resources()
     } else if device {
         run_device()
@@ -43,17 +51,18 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "spirula-gpu-diagnose — enumerate / device / resource round-trip (P2-F01–F03)\n\
+        "spirula-gpu-diagnose — enumerate / device / resource / compute (P2-F01–F04)\n\
          \n\
          Usage:\n\
            spirula-gpu-diagnose\n\
            spirula-gpu-diagnose --device\n\
            spirula-gpu-diagnose --resources\n\
+           spirula-gpu-diagnose --compute\n\
            spirula-gpu-diagnose --help\n\
          \n\
          Exit codes: 0 success, 1 adapter/device unavailable, 2 usage.\n\
          wgpu pin: {WGPU_VERSION}\n\
-         Not a session CLI command. Does not claim compute/train/UI readiness."
+         Not a session CLI command. Does not claim application/train/UI readiness."
     );
 }
 
@@ -238,6 +247,168 @@ fn run_resources() -> Result<(), u8> {
     );
     ctx.close();
     println!("note: resource round-trip ok; not compute/train/UI readiness");
+    Ok(())
+}
+
+fn run_compute() -> Result<(), u8> {
+    println!("spirula-gpu-diagnose --compute");
+    println!("wgpu_version={WGPU_VERSION}");
+    let request = CapabilityRequest::diagnose_default();
+    let mut ctx = match GpuContext::open(&request) {
+        Ok(c) => c,
+        Err(failure) => return print_open_failure(failure),
+    };
+    let report = ctx.report().cloned();
+    let backend = report
+        .as_ref()
+        .map(|r| r.backend.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".into());
+    let name = report
+        .as_ref()
+        .map(|r| r.adapter.identity.name.clone())
+        .unwrap_or_default();
+    let class = report
+        .as_ref()
+        .map(|r| r.adapter.identity.class.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".into());
+    let limits = report.as_ref().map(|r| &r.device_limits);
+    println!("device name={name:?} backend={backend} class={class}");
+    if let Some(lim) = limits {
+        println!(
+            "device_limits max_buffer_size={} max_storage_buffers_per_shader_stage={} \
+             max_compute_workgroup_storage_size={} max_compute_workgroups_per_dimension={} \
+             max_texture_dimension_2d={}",
+            lim.max_buffer_size,
+            lim.max_storage_buffers_per_shader_stage,
+            lim.max_compute_workgroup_storage_size,
+            lim.max_compute_workgroups_per_dimension,
+            lim.max_texture_dimension_2d
+        );
+    }
+
+    let count = 100u32;
+    let input: Vec<u32> = (0..count)
+        .map(|i| i.wrapping_mul(3).wrapping_add(1))
+        .collect();
+    let scale = 7u32;
+    let bias = 11u32;
+    let mode = 2u32;
+
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:compute-params").unwrap(),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let in_buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:compute-in").unwrap(),
+            size: u64::from(count) * 4,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let out_buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:compute-out").unwrap(),
+            size: u64::from(count) * 4,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+
+    let mut in_bytes = Vec::with_capacity(input.len() * 4);
+    for w in &input {
+        in_bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    ctx.upload_buffer(
+        &params,
+        0,
+        &AffineU32Params::new(scale, bias, count).as_bytes(),
+    )
+    .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.upload_buffer(&in_buf, 0, &in_bytes)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let s = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(s, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+
+    let t_cold = Instant::now();
+    let pipe = ctx
+        .obtain_affine_u32_pipeline(mode)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let cold_ns = t_cold.elapsed().as_nanos();
+    let t_warm = Instant::now();
+    let pipe2 = ctx
+        .obtain_affine_u32_pipeline(mode)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let warm_ns = t_warm.elapsed().as_nanos();
+    if pipe.id() != pipe2.id() {
+        eprintln!("error: warm pipeline obtain missed cache");
+        return Err(EXIT_FAILURE);
+    }
+    let cache = ctx.pipeline_cache_stats();
+    println!(
+        "pipeline_cache hits={} misses={} entries={}",
+        cache.hits, cache.misses, cache.entries
+    );
+
+    let t_compute = Instant::now();
+    ctx.dispatch_affine_u32(&pipe, &params, &in_buf, &out_buf, count)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let s = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(s, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let ticket = ctx
+        .readback_buffer(&out_buf, 0, u64::from(count) * 4)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let s = ctx
+        .submit()
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    ctx.wait(s, Some(Duration::from_secs(5)))
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let out = ctx
+        .map_readback(&ticket)
+        .map_err(|e| diagnose_exit_code(&e).max(EXIT_FAILURE))?;
+    let compute_ns = t_compute.elapsed().as_nanos();
+    let got: Vec<u32> = out
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
+    let expect = cpu_affine_u32(&input, scale, bias, mode);
+    if got != expect {
+        eprintln!("error: affine compute mismatch vs CPU reference");
+        return Err(EXIT_FAILURE);
+    }
+
+    let acc = ctx.resource_accounting();
+    println!(
+        "accounted source={} allocated={} current={} peak={} budget={:?}",
+        acc.source, acc.allocated_bytes, acc.current_bytes, acc.peak_bytes, acc.budget_limit
+    );
+    println!(
+        "phase cold_pipeline_ns={cold_ns} warm_pipeline_ns={warm_ns} compute_dispatch_readback_ns={compute_ns}"
+    );
+    println!(
+        "proof count={count} (non-workgroup-multiple) mode={mode} scale={scale} bias={bias} match=cpu_exact"
+    );
+    drop(params);
+    drop(in_buf);
+    drop(out_buf);
+    println!(
+        "after_drop current={}",
+        ctx.resource_accounting().current_bytes
+    );
+    ctx.close();
+    println!(
+        "note: affine compute round-trip ok; not application/train/UI readiness; \
+         full GPU events=P2-F05 surface smoke=P2-F06 cache perf opt=P9-F03"
+    );
     Ok(())
 }
 

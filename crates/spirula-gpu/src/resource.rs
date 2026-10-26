@@ -64,25 +64,47 @@ impl std::fmt::Display for ResourceLabel {
     }
 }
 
-/// Narrow buffer usage for this slice (copy paths only).
+/// Narrow buffer usage (copy + P2-F04 storage/uniform as needed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferUsage {
     pub copy_src: bool,
     pub copy_dst: bool,
+    pub storage: bool,
+    pub uniform: bool,
 }
 
 impl BufferUsage {
     pub const COPY_SRC: Self = Self {
         copy_src: true,
         copy_dst: false,
+        storage: false,
+        uniform: false,
     };
     pub const COPY_DST: Self = Self {
         copy_src: false,
         copy_dst: true,
+        storage: false,
+        uniform: false,
     };
     pub const COPY_SRC_DST: Self = Self {
         copy_src: true,
         copy_dst: true,
+        storage: false,
+        uniform: false,
+    };
+    /// Storage + copy for compute round-trip buffers.
+    pub const STORAGE_COPY: Self = Self {
+        copy_src: true,
+        copy_dst: true,
+        storage: true,
+        uniform: false,
+    };
+    /// Uniform + copy_dst for host upload of params.
+    pub const UNIFORM_UPLOAD: Self = Self {
+        copy_src: false,
+        copy_dst: true,
+        storage: false,
+        uniform: true,
     };
 
     fn to_wgpu(self) -> wgpu::BufferUsages {
@@ -92,6 +114,12 @@ impl BufferUsage {
         }
         if self.copy_dst {
             u |= wgpu::BufferUsages::COPY_DST;
+        }
+        if self.storage {
+            u |= wgpu::BufferUsages::STORAGE;
+        }
+        if self.uniform {
+            u |= wgpu::BufferUsages::UNIFORM;
         }
         u
     }
@@ -347,7 +375,7 @@ fn range_err(msg: impl Into<String>) -> DomainError {
         .with_user_action(UserAction::CorrectInput)
 }
 
-fn check_copy_buffer_align(offset: u64, size: u64) -> Result<(), DomainError> {
+pub(crate) fn check_copy_buffer_align(offset: u64, size: u64) -> Result<(), DomainError> {
     if !offset.is_multiple_of(COPY_BUFFER_ALIGNMENT) {
         return Err(range_err(format!(
             "buffer copy offset {offset} is not aligned to COPY_BUFFER_ALIGNMENT ({COPY_BUFFER_ALIGNMENT})"
@@ -373,7 +401,7 @@ fn submit_err(msg: impl Into<String>) -> DomainError {
         .with_user_action(UserAction::Retry)
 }
 
-enum GpuBuffer {
+pub(crate) enum GpuBuffer {
     Wgpu(wgpu::Buffer),
     Synthetic(Vec<u8>),
 }
@@ -390,18 +418,18 @@ enum GpuTexture {
     },
 }
 
-struct BufferEntry {
+pub(crate) struct BufferEntry {
     #[allow(dead_code)]
     label: ResourceLabel,
-    size: u64,
-    usage: BufferUsage,
+    pub(crate) size: u64,
+    pub(crate) usage: BufferUsage,
     accounted: u64,
     handle_refs: u32,
     /// Encoded but not yet submitted; GPU may still reference the resource.
     pending_hold: u32,
     inflight: u32,
     destroy_pending: bool,
-    gpu: Option<GpuBuffer>,
+    pub(crate) gpu: Option<GpuBuffer>,
 }
 
 struct TextureEntry {
@@ -462,12 +490,12 @@ pub(crate) struct ResourceLedger {
     context_id: ContextId,
     generation: ContextGeneration,
     invalidated: bool,
-    buffers: HashMap<u64, BufferEntry>,
+    pub(crate) buffers: HashMap<u64, BufferEntry>,
     textures: HashMap<u64, TextureEntry>,
     stagings: HashMap<u64, StagingEntry>,
     submissions: HashMap<u64, SubmissionEntry>,
     /// Pending encoder command buffers waiting for submit (wgpu path).
-    pending_commands: Vec<wgpu::CommandBuffer>,
+    pub(crate) pending_commands: Vec<wgpu::CommandBuffer>,
     pending_staging: Vec<u64>,
     pending_buffers: Vec<u64>,
     pending_textures: Vec<u64>,
@@ -534,7 +562,7 @@ impl ResourceLedger {
         self.submissions.clear();
     }
 
-    fn ensure_live(
+    pub(crate) fn ensure_live(
         &self,
         ctx_id: ContextId,
         generation: ContextGeneration,
@@ -697,11 +725,18 @@ impl ResourceLedger {
         }
     }
 
-    fn note_pending_buffer(&mut self, id: u64) {
+    pub(crate) fn note_pending_buffer(&mut self, id: u64) {
         if let Some(b) = self.buffers.get_mut(&id) {
             b.pending_hold = b.pending_hold.saturating_add(1);
         }
         self.pending_buffers.push(id);
+    }
+
+    pub(crate) fn wgpu_buffer(&self, id: &u64) -> Option<wgpu::Buffer> {
+        match self.buffers.get(id).and_then(|e| e.gpu.as_ref()) {
+            Some(GpuBuffer::Wgpu(b)) => Some(b.clone()),
+            _ => None,
+        }
     }
 
     fn note_pending_texture(&mut self, id: u64) {
@@ -713,7 +748,10 @@ impl ResourceLedger {
 }
 
 /// Capture wgpu validation / OOM for one device call; typed error instead of panic.
-fn wgpu_scoped<T>(device: &wgpu::Device, op: impl FnOnce() -> T) -> Result<T, DomainError> {
+pub(crate) fn wgpu_scoped<T>(
+    device: &wgpu::Device,
+    op: impl FnOnce() -> T,
+) -> Result<T, DomainError> {
     let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let value = op();
@@ -812,9 +850,13 @@ impl GpuContext {
         if desc.size == 0 {
             return Err(range_err("buffer size must be > 0"));
         }
-        if !desc.usage.copy_src && !desc.usage.copy_dst {
+        if !desc.usage.copy_src
+            && !desc.usage.copy_dst
+            && !desc.usage.storage
+            && !desc.usage.uniform
+        {
             return Err(inp(
-                "buffer usage must include copy_src and/or copy_dst",
+                "buffer usage must include copy_src, copy_dst, storage, and/or uniform",
                 "usage",
             ));
         }

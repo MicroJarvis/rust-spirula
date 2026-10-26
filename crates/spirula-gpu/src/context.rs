@@ -106,6 +106,7 @@ pub struct DeviceLimitsSnapshot {
     pub max_compute_workgroup_storage_size: u32,
     /// From wgpu `Limits::max_texture_dimension_2d` (synthetic default when no device).
     pub max_texture_dimension_2d: u32,
+    pub max_compute_workgroups_per_dimension: u32,
 }
 
 /// Failure detail when open does not reach Live.
@@ -204,6 +205,7 @@ pub struct GpuContext {
     lost_notices: Vec<LostNotice>,
     closed: bool,
     pub(crate) resource_ledger: std::sync::Arc<std::sync::Mutex<crate::resource::ResourceLedger>>,
+    pub(crate) pipeline_cache: std::sync::Arc<std::sync::Mutex<crate::pipeline::PipelineCache>>,
 }
 
 impl GpuContext {
@@ -224,11 +226,24 @@ impl GpuContext {
         )))
     }
 
+    fn fresh_pipeline_cache(
+        id: ContextId,
+        generation: ContextGeneration,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::pipeline::PipelineCache>> {
+        std::sync::Arc::new(std::sync::Mutex::new(crate::pipeline::PipelineCache::new(
+            id, generation,
+        )))
+    }
+
     fn reset_resources_for_generation(&mut self) {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.invalidate_all();
         }
+        if let Ok(mut cache) = self.pipeline_cache.lock() {
+            cache.invalidate_all();
+        }
         self.resource_ledger = Self::fresh_ledger(self.id, self.generation);
+        self.pipeline_cache = Self::fresh_pipeline_cache(self.id, self.generation);
     }
 }
 
@@ -247,6 +262,7 @@ impl GpuContext {
                 lost_notices: Vec::new(),
                 closed: false,
                 resource_ledger: Self::fresh_ledger(id, ContextGeneration(1)),
+                pipeline_cache: Self::fresh_pipeline_cache(id, ContextGeneration(1)),
             }),
             Err(failure) => Err(failure),
         }
@@ -304,6 +320,7 @@ impl GpuContext {
                     .max_compute_workgroup_storage_size
                     .effective,
                 max_texture_dimension_2d: 8192,
+                max_compute_workgroups_per_dimension: 65535,
             },
             queue_present: true,
             adapter: selection.adapter,
@@ -319,6 +336,7 @@ impl GpuContext {
             lost_notices: Vec::new(),
             closed: false,
             resource_ledger: Self::fresh_ledger(id, generation),
+            pipeline_cache: Self::fresh_pipeline_cache(id, generation),
         })
     }
 
@@ -399,6 +417,12 @@ impl GpuContext {
         }
     }
 
+    fn invalidate_pipelines(&mut self) {
+        if let Ok(mut cache) = self.pipeline_cache.lock() {
+            cache.invalidate_all();
+        }
+    }
+
     /// Explicit close. Idempotent. Drops device/queue; does not reopen.
     pub fn close(&mut self) {
         if self.closed && self.backend.is_none() {
@@ -411,6 +435,7 @@ impl GpuContext {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.invalidate_all();
         }
+        self.invalidate_pipelines();
         self.backend = None;
         if let Some(report) = self.report.as_mut() {
             report.status = self.status;
@@ -443,6 +468,7 @@ impl GpuContext {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.invalidate_all();
         }
+        self.invalidate_pipelines();
         self.backend = None;
     }
 
@@ -479,6 +505,7 @@ impl GpuContext {
             if let Ok(mut led) = self.resource_ledger.lock() {
                 led.invalidate_all();
             }
+            self.invalidate_pipelines();
             self.backend = None;
         }
     }
@@ -579,6 +606,8 @@ fn create_live_backend(
                 .max_storage_buffers_per_shader_stage,
             max_compute_workgroup_storage_size: device_limits.max_compute_workgroup_storage_size,
             max_texture_dimension_2d: device_limits.max_texture_dimension_2d,
+            max_compute_workgroups_per_dimension: device_limits
+                .max_compute_workgroups_per_dimension,
         },
         queue_present: true,
         adapter: adapter_caps,
@@ -752,6 +781,7 @@ impl GpuContext {
         if let Ok(mut led) = self.resource_ledger.lock() {
             led.invalidate_all();
         }
+        self.invalidate_pipelines();
         if let Some(report) = self.report.as_mut() {
             report.status = ContextStatus::CreateFailed;
             report.queue_present = false;
@@ -839,6 +869,7 @@ impl GpuContext {
                     .max_compute_workgroup_storage_size
                     .effective,
                 max_texture_dimension_2d: 8192,
+                max_compute_workgroups_per_dimension: 65535,
             },
             queue_present: true,
             adapter: selection.adapter,

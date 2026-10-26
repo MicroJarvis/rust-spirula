@@ -3,7 +3,7 @@
 //! P2-F01: adapter enumeration and capability negotiation ([`adapter`]).
 //! P2-F02: session-owned device/queue context lifecycle ([`context`]).
 //! P2-F03: buffer/texture staging upload/readback ([`resource`]).
-//! Pipelines/compute remain P2-F04.
+//! P2-F04: compute shader/pipeline key/cache ([`pipeline`]).
 //! Public `wgpu` types do not leave this crate's implementation modules.
 
 #![forbid(unsafe_code)]
@@ -11,6 +11,7 @@
 pub mod adapter;
 pub mod context;
 mod enumerate;
+pub mod pipeline;
 pub mod resource;
 
 pub use adapter::{
@@ -25,6 +26,12 @@ pub use context::{
     OpenFailureStage, diagnose_device_open, format_device_report,
 };
 pub use enumerate::{WGPU_VERSION, diagnose_exit_code, enumerate_host_adapters};
+pub use pipeline::{
+    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_ENTRY, AFFINE_U32_NAME, AFFINE_U32_VERSION,
+    AFFINE_U32_WGSL, AFFINE_U32_WORKGROUP_SIZE, AffineU32Params, ComputePipelineDesc,
+    ComputePipelineHandle, PipelineCacheStats, PipelineKey, ShaderHeader, SpecConstants,
+    cpu_affine_u32, parse_shader_header,
+};
 pub use resource::{
     BufferDesc, BufferHandle, BufferUsage, COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT,
     RESOURCE_ACCOUNT_SOURCE, ReadbackTicket, ResourceAccountingSnapshot, ResourceLabel,

@@ -219,12 +219,12 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 ## 4. 首批功能顺序
 
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F03；Phase 1 退出条件已满足，
-Phase 2 退出条件尚未满足。P2-F04 为当前功能。后续按依赖推进，每个编号独立
+Phase 2 退出条件尚未满足。P2-F04 为当前功能（实现进行中）。后续按依赖推进，每个编号独立
 worktree、实现和验收；下列分组只是执行顺序，不会把组内多个编号合并成一个
 已完成功能：
 
 1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
-2. P2-F01–P2-F03（已完成）与 P2-F04（当前）–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
+2. P2-F01–P2-F03（已完成）与 P2-F04（当前/进行中）–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
@@ -320,7 +320,11 @@ owner/callback 证据见该契约。**诚实边界**：API owner 尚未接入
 `e2157c1e0578edd3d65014a5ad220400a14de65e`；parent full verify 8/8 与
 M5 Max/Metal host 4/4、`after_drop` current 0 见该契约。**诚实边界**：仍无
 pipeline/WGSL compute；完整诊断事件仍 P2-F05；application/train/UI 未接入。
-P2-F04（shader/pipeline 契约）为**当前**。Phase 2 退出条件仍未满足。
+P2-F04（shader/pipeline 契约）为**当前**（实现进行中，HOLD-MERGE）：契约见
+`docs/phase-2/gpu-pipelines.md`；窄 WGSL/key/cache 与 affine-u32
+upload→compute→readback 证明路径在本分支落地，独立审查前不合并。**诚实边界**：
+完整诊断事件仍 P2-F05；surface smoke 仍 P2-F06；application/train/UI 未接入；
+不声称 P9-F03 缓存性能优化。Phase 2 退出条件仍未满足。
 2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。
