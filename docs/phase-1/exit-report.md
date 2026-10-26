@@ -190,7 +190,7 @@ approved.
 | Disk sink | `crates/spirula-application/src/disk_log.rs` |
 | Subprocess / SIGINT | `crates/spirula-cli/tests/cli_subprocess.rs` |
 | Session disk | `crates/spirula-application/tests/disk_diagnostics.rs` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `81eaabd`) |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `2124b0eca7bc24ed2ffdfb5a8ec6c9da0b201af9`) |
 
 ## Non-claims
 
