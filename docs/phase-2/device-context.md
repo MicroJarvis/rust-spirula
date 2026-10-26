@@ -19,12 +19,20 @@ event fan-out stay P2-F05. Phase 2 exit remains open.
 
 ## Binding decisions
 
-### Live select → device (same instance)
+### Live select → device (same enumerate snapshot)
 
-`GpuContext::open` creates a **new** wgpu `Instance`, enumerates adapters on
-that instance, runs P2-F01 `select_auto`, then matches the selected identity
-to a **live** `wgpu::Adapter` on the same instance (name/backend/vendor/device).
-Stale enumerate indices from a previous instance are never reused.
+`GpuContext::open` creates a **new** wgpu `Instance`, calls
+`enumerate_on_instance` once, and keeps **paired** report + live adapter
+vectors from that snapshot. P2-F01 `select_auto` runs on the reports; the
+chosen adapter is retrieved by the **snapshot-local index** into the paired
+live vector (validated against the report at that slot, including
+features/limits).
+
+- Same instance + same enumerate call: index is the pairing key.
+- Name/backend/vendor/device alone are **not** unique (two identical cards can
+  collide); never re-resolve by scanning those fields for “first match”.
+- Indices from a previous instance, a previous enumerate, or any external
+  caller are rejected — no global UUID registry.
 
 ### Negotiation applied to `DeviceDescriptor`
 
@@ -91,6 +99,10 @@ wgpu edges. No new workspace path edges.
 - **Synthetic** (`tests/context_lifecycle_synthetic.rs`): create failure,
   inject lost, close idempotence, cross-context and stale-generation rejection,
   owner `reopen_synthetic` bumps generation and old handles stay dead.
+- **Snapshot pairing** (`enumerate` unit tests): two adapters with identical
+  name/backend/vendor/device but different required features — `select_auto`
+  picks the second; resolve returns snapshot index 1 (not first name match).
+  External/stale indices rejected.
 - **Host** (`tests/host_device_context.rs`): always run open→status/features/
   limits→close (or precise `SP-GPU-001` / `SP-GPU-004`). Distinguish real lost
   (`HostCallback`) from synthetic inject in test names/API. Enumeration/device

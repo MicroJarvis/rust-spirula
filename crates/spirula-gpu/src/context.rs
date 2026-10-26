@@ -16,7 +16,7 @@ use crate::adapter::{
     ResolvedLimits, SubgroupPlan, TimestampPlan, select_auto,
 };
 use crate::enumerate::{
-    WGPU_VERSION, enumerate_on_instance, find_live_adapter, map_adapter, new_instance,
+    WGPU_VERSION, enumerate_on_instance, map_adapter, new_instance, paired_live_adapter,
 };
 
 /// Opaque context identity; unique per [`GpuContext`] value.
@@ -455,13 +455,13 @@ fn create_live_backend(
         }
     };
 
-    let live_adapter = match find_live_adapter(&live, &selection.adapter) {
+    let live_adapter = match paired_live_adapter(&reports, &live, &selection.adapter) {
         Some(a) => a,
         None => {
             return Err(open_err(
                 DomainError::try_new(
                     ErrorCode::NoAdapter,
-                    "selected adapter identity not found on the same instance (stale index rejected)",
+                    "selected adapter not paired in this enumerate snapshot (external/stale index rejected)",
                 )
                 .expect("non-empty")
                 .with_user_action(UserAction::CorrectInput),

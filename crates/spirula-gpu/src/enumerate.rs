@@ -71,18 +71,47 @@ pub(crate) fn map_adapter(index: usize, adapter: &wgpu::Adapter) -> AdapterCapab
     }
 }
 
-/// Match a P2-F01 selection identity to a live adapter on the **same** instance.
-pub(crate) fn find_live_adapter<'a>(
+/// Resolve the snapshot-local slot for a selection made against `reports` from
+/// the **same** [`enumerate_on_instance`] call.
+///
+/// Uses `selected.identity.index` as the pairing key into that snapshot only.
+/// Name/backend/vendor/device are **not** unique (two identical cards can share
+/// them); matching by those fields can rebind the second selected adapter to
+/// the first. External or previous-snapshot indices are rejected because the
+/// slot must still equal `selected` (including features/limits).
+pub(crate) fn resolve_snapshot_slot(
+    reports: &[AdapterCapabilities],
+    selected: &AdapterCapabilities,
+) -> Option<usize> {
+    let index = selected.identity.index;
+    let report = reports.get(index)?;
+    if !same_snapshot_entry(report, selected) {
+        return None;
+    }
+    Some(index)
+}
+
+fn same_snapshot_entry(report: &AdapterCapabilities, selected: &AdapterCapabilities) -> bool {
+    report.identity.index == selected.identity.index
+        && report.identity.name == selected.identity.name
+        && report.identity.backend == selected.identity.backend
+        && report.identity.vendor == selected.identity.vendor
+        && report.identity.device == selected.identity.device
+        && report.features == selected.features
+        && report.limits == selected.limits
+}
+
+/// Live adapter paired with `selected` in the same enumerate snapshot.
+pub(crate) fn paired_live_adapter<'a>(
+    reports: &[AdapterCapabilities],
     live: &'a [wgpu::Adapter],
     selected: &AdapterCapabilities,
 ) -> Option<&'a wgpu::Adapter> {
-    live.iter().find(|adapter| {
-        let info = adapter.get_info();
-        info.name == selected.identity.name
-            && map_backend(info.backend) == selected.identity.backend
-            && info.vendor == selected.identity.vendor
-            && info.device == selected.identity.device
-    })
+    if reports.len() != live.len() {
+        return None;
+    }
+    let index = resolve_snapshot_slot(reports, selected)?;
+    live.get(index)
 }
 
 fn map_backend(backend: wgpu::Backend) -> BackendKind {
@@ -112,5 +141,105 @@ pub fn diagnose_exit_code(err: &DomainError) -> u8 {
             2
         }
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::{
+        AdapterClass, CapabilityId, CapabilityRequest, FeatureBits, LimitFloor, select_auto,
+    };
+
+    fn twin(index: usize, features: FeatureBits, limits: AdapterLimits) -> AdapterCapabilities {
+        AdapterCapabilities {
+            identity: AdapterIdentity {
+                index,
+                name: "Twin GPU".into(),
+                backend: BackendKind::Vulkan,
+                class: AdapterClass::DiscreteGpu,
+                vendor: 0x1002,
+                device: 0x73bf,
+                driver: "test".into(),
+                driver_info: String::new(),
+                dedicated_vram_bytes: FieldAvailability::Unavailable {
+                    reason: "synthetic",
+                },
+                uuid: FieldAvailability::Unavailable {
+                    reason: "synthetic",
+                },
+            },
+            features,
+            limits,
+        }
+    }
+
+    fn limits() -> AdapterLimits {
+        AdapterLimits {
+            max_buffer_size: 1 << 30,
+            max_storage_buffers_per_shader_stage: 8,
+            max_compute_workgroup_storage_size: 16_384,
+        }
+    }
+
+    #[test]
+    fn snapshot_index_pairs_second_twin_not_first_by_name() {
+        // Identical name/backend/vendor/device; only index 1 meets required subgroup.
+        let weak = FeatureBits {
+            subgroup: false,
+            shader_f16: false,
+            timestamp_query: false,
+            float32_atomic_add: false,
+        };
+        let strong = FeatureBits {
+            subgroup: true,
+            shader_f16: false,
+            timestamp_query: false,
+            float32_atomic_add: false,
+        };
+        let reports = vec![twin(0, weak, limits()), twin(1, strong, limits())];
+        let mut request = CapabilityRequest::diagnose_default();
+        request.required_features = vec![CapabilityId::Subgroup];
+        request.optional_features.clear();
+        request.required_min_limits = LimitFloor::default();
+
+        let selected = select_auto(&reports, &request).expect("second twin eligible");
+        assert_eq!(selected.adapter.identity.index, 1);
+        assert_eq!(
+            resolve_snapshot_slot(&reports, &selected.adapter),
+            Some(1),
+            "must pair by snapshot index, not first name match"
+        );
+    }
+
+    #[test]
+    fn external_or_stale_index_rejected_even_with_matching_name_fields() {
+        let features = FeatureBits {
+            subgroup: true,
+            shader_f16: false,
+            timestamp_query: false,
+            float32_atomic_add: false,
+        };
+        let reports = vec![twin(0, features, limits()), twin(1, features, limits())];
+        // Forged selection: claims index 0 but carries index-1 features would still
+        // match slot 0 features here; instead claim index 9 (outside snapshot).
+        let mut forged = twin(9, features, limits());
+        forged.identity.name = "Twin GPU".into();
+        assert_eq!(resolve_snapshot_slot(&reports, &forged), None);
+
+        // Wrong slot: index points at 0 but payload equals report[1] (features same);
+        // change features so same_snapshot_entry fails when index is lied about.
+        let mut mismatched = reports[1].clone();
+        mismatched.identity.index = 0; // pretend to be slot 0 while keeping slot-1 identity payload
+        // name/vendor/device still match slot 0, but index field on selected is 0 while
+        // we compare to reports[0] — features equal so this would pass features check.
+        // Make features differ from reports[0] to prove we do not accept a rebinding.
+        mismatched.features.shader_f16 = true;
+        assert_ne!(mismatched.features, reports[0].features);
+        assert_eq!(
+            resolve_snapshot_slot(&reports, &mismatched),
+            None,
+            "index 0 slot must equal selected payload; no silent rebind"
+        );
     }
 }
