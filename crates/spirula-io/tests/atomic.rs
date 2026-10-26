@@ -604,9 +604,11 @@ fn publish_bytes_if_absent_lease_blocks_recovery_and_no_clobbers() {
     let writer = thread::spawn(move || {
         let lease = acquire_publish_lease(&writer_path).unwrap();
         paused_gate.wait();
-        let result = lease.publish_bytes_if_absent(b"created", PublishOptions::default());
+        // Wait for the parent to finish lease/absent checks before publish.
+        // Publishing immediately after paused_gate races the parent's
+        // `!path.exists()` assertion (pre-existing TEST barrier ordering bug).
         resume_gate.wait();
-        result
+        lease.publish_bytes_if_absent(b"created", PublishOptions::default())
     });
 
     paused.wait();
