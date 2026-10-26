@@ -186,7 +186,7 @@ Branch remains unmerged until explicitly approved.
 | Disk sink | `crates/spirula-application/src/disk_log.rs` |
 | Subprocess / SIGINT | `crates/spirula-cli/tests/cli_subprocess.rs` |
 | Session disk | `crates/spirula-application/tests/disk_diagnostics.rs` |
-| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on this tip) |
+| Reproducible gate | `cargo run -p spirula-xtask -- verify` (**8/8** on tip `81eaabd`) |
 
 ## Non-claims
 
