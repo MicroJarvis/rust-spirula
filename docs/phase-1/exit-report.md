@@ -220,3 +220,38 @@ P1-F01 through P1-F09 are `已完成`. Phase 1 exit conditions are satisfied:
 workspace gate green on this host; headless session + CLI adapter +
 performance sample infrastructure exist without claiming real render, train,
 or UI capability. Current plan pointer: **P2-F01**.
+
+---
+
+# P2-F01 verification record (in progress / pending review)
+
+Recorded on worktree `.worktrees/p2-f01` / branch `codex/p2-f01`, parent
+`036177d` (P1-F09 on main). Binding: [../phase-2/gpu-adapter.md](../phase-2/gpu-adapter.md).
+
+## Scope
+
+Adapter enumerate/select/negotiate + `spirula-gpu-diagnose` only. No
+device/queue (P2-F02), no CLI/session GPU command, no fabricated VRAM/uuid.
+
+## Host diagnose (this machine)
+
+Command: `cargo run -p spirula-gpu --bin spirula-gpu-diagnose`
+
+Observed on this host (not a cross-platform claim):
+
+```text
+wgpu_version=30.0.1
+adapter_count=1
+adapter[0] name="Apple M5 Max" backend=metal class=integrated-gpu
+vram=unavailable(...) uuid=unavailable(...)
+features={subgroup=true,f16=true,timestamp=true,f32_atomic=true}
+selected index=0 … negotiated all AvailableDeclared
+```
+
+Empty-adapter hosts must surface `SP-GPU-001` rather than a skipped
+“measured GPU” success.
+
+## Gate
+
+`cargo run -p spirula-xtask -- verify` on the tip under review (host-only).
+Status remains **当前 / 待审** until independent approval; no merge/push.

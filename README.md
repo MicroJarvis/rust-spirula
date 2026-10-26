@@ -49,8 +49,10 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview/GPU/UI stay later features. The next feature is P2-F01 in
-[docs/project-plan.md](docs/project-plan.md).
+real train/preview stay later features. Phase 2 current work is P2-F01
+(adapter enumerate/select/negotiate; pending review) in
+[docs/phase-2/gpu-adapter.md](docs/phase-2/gpu-adapter.md) /
+[docs/project-plan.md](docs/project-plan.md). Device lifecycle remains P2-F02.
 
 The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
 planned early session/CLI delivery, differentiable rendering, resource budgets,

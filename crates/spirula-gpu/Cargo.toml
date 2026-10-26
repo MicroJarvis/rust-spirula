@@ -3,10 +3,20 @@ name = "spirula-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "spirula-gpu-diagnose"
+path = "src/bin/spirula_gpu_diagnose.rs"
+
+[dependencies]
+spirula-core = { path = "../spirula-core" }
+# Pinned for P2-F01; MSRV 1.87 ≤ workspace rust-version 1.99.
+wgpu = "30.0.1"
+pollster = "0.4.0"
 
 [lints]
 workspace = true
