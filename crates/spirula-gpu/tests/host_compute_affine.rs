@@ -2,9 +2,9 @@
 
 use spirula_core::{ContextKey, ErrorCode};
 use spirula_gpu::{
-    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_ENTRY, AffineU32Params, BufferDesc, BufferUsage,
-    CapabilityRequest, ComputePipelineDesc, GpuContext, RESOURCE_ACCOUNT_SOURCE, ResourceLabel,
-    SpecConstants, WGPU_VERSION, cpu_affine_u32,
+    AFFINE_U32_BIND_LAYOUT_VERSION, AFFINE_U32_ENTRY, AFFINE_U32_WGSL, AffineU32Params, BufferDesc,
+    BufferUsage, CapabilityRequest, ComputePipelineDesc, GpuContext, RESOURCE_ACCOUNT_SOURCE,
+    ResourceLabel, SpecConstants, WGPU_VERSION, cpu_affine_u32,
 };
 use std::time::{Duration, Instant};
 
@@ -172,6 +172,93 @@ fn broken( { this is not wgsl
             );
             assert_eq!(ctx.resource_accounting().current_bytes, before);
 
+            // Alias input==output → typed (no wgpu panic).
+            assert_eq!(
+                ctx.dispatch_affine_u32(&pipe0, &params, &in_buf, &in_buf, count)
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidArgument
+            );
+            assert_eq!(ctx.resource_accounting().current_bytes, before);
+
+            // params.count guard: only first element written.
+            ctx.upload_buffer(&params, 0, &AffineU32Params::new(scale, bias, 1).as_bytes())
+                .unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+            // Clear output then dispatch launch=4 with Params.count=1.
+            let zeros = vec![0u8; (count as usize) * 4];
+            ctx.upload_buffer(&out_buf, 0, &zeros).unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+            ctx.dispatch_affine_u32(&pipe0, &params, &in_buf, &out_buf, count)
+                .unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+            let ticket = ctx
+                .readback_buffer(&out_buf, 0, u64::from(count) * 4)
+                .unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+            let guarded = bytes_to_words(&ctx.map_readback(&ticket).unwrap());
+            assert_eq!(guarded[0], cpu_affine_u32(&[input[0]], scale, bias, 0)[0]);
+            assert!(guarded[1..].iter().all(|&w| w == 0));
+
+            // Stale handle after same-key source rebuild → typed reject.
+            let changed = AFFINE_U32_WGSL.replace("+ MODE;", "+ MODE + 100u;");
+            let new_pipe = ctx
+                .obtain_compute_pipeline(ComputePipelineDesc {
+                    source: changed,
+                    entry_point: AFFINE_U32_ENTRY.into(),
+                    spec: SpecConstants::single("MODE", 0),
+                    bind_layout_version: AFFINE_U32_BIND_LAYOUT_VERSION,
+                    label: label("spirula:gpu:pipeline:changed"),
+                })
+                .unwrap();
+            assert_ne!(pipe0.id(), new_pipe.id());
+            assert_eq!(
+                ctx.dispatch_affine_u32(&pipe0, &params, &in_buf, &out_buf, 4)
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidArgument
+            );
+            // Failed bad replace must not drop the live new pipeline.
+            let bad = "// spirula-shader: affine-u32 version: 1\nfn broken( {\n";
+            assert_eq!(
+                ctx.obtain_compute_pipeline(ComputePipelineDesc {
+                    source: bad.into(),
+                    entry_point: AFFINE_U32_ENTRY.into(),
+                    spec: SpecConstants::single("MODE", 0),
+                    bind_layout_version: AFFINE_U32_BIND_LAYOUT_VERSION,
+                    label: label("spirula:gpu:pipeline:bad-replace"),
+                })
+                .unwrap_err()
+                .code(),
+                ErrorCode::ShaderFailed
+            );
+            ctx.dispatch_affine_u32(&new_pipe, &params, &in_buf, &out_buf, 4)
+                .unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+
+            // Oversized params buffer still binds narrow 16B (no entire-buffer panic).
+            let big_params = ctx
+                .create_buffer(BufferDesc {
+                    label: label("spirula:gpu:buffer:big-params"),
+                    size: 65540,
+                    usage: BufferUsage::UNIFORM_UPLOAD,
+                })
+                .unwrap();
+            let mut big_bytes = vec![0u8; 65540];
+            big_bytes[..16].copy_from_slice(&AffineU32Params::new(2, 5, 4).as_bytes());
+            ctx.upload_buffer(&big_params, 0, &big_bytes).unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+            ctx.dispatch_affine_u32(&new_pipe, &big_params, &in_buf, &out_buf, 4)
+                .unwrap();
+            let s = ctx.submit().unwrap();
+            ctx.wait(s, Some(Duration::from_secs(5))).unwrap();
+
             let acc = ctx.resource_accounting();
             eprintln!(
                 "host_compute wgpu={} device={:?} backend={:?} limits={:?} \
@@ -194,6 +281,7 @@ fn broken( { this is not wgsl
             drop(in_buf);
             drop(out_buf);
             drop(wrong);
+            drop(big_params);
             assert_eq!(ctx.resource_accounting().current_bytes, 0);
             ctx.close();
         }

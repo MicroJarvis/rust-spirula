@@ -52,15 +52,25 @@ handles are rejected (`SP-INP-001` / `SP-GPU-002`).
 
 - Bind layout v1: `@group(0)` uniform `Params` (16 bytes: `scale`, `bias`,
   `count`, `_pad`) + storage read `input` + storage read_write `output`.
-- Kernel: `output[i] = input[i] * scale + bias + MODE` for `i < count`.
+- Kernel: `output[i] = input[i] * scale + bias + MODE` for `i < Params.count`.
+- **Count contract**: dispatch `count` is the launch extent (workgroups cover
+  `0..count`; buffers must be sized for it). Uniform `Params.count` is the
+  shader write guard. CPU / synthetic / host write only `i < Params.count`;
+  other launched indices stay unchanged.
 - `MODE` is a WGSL `override` (specialization) in the pipeline key; changing
   MODE must change host-visible results with the same buffers/params.
 - Workgroup size 64; inputs whose length is **not** a multiple of 64 must still
-  round-trip exactly (CPU reference = GPU).
+  round-trip exactly (CPU reference = GPU) for the guarded range.
 - Buffer usages extended only as needed: `STORAGE` / `UNIFORM` (+ existing copy).
 - Dispatch encodes like P2-F03 copies: pending → submit → wait; drop/budget
-  rules unchanged. Ranges, sizes, alignments, and device dispatch limits are
-  validated in Rust before wgpu (typed error, not panic).
+  rules unchanged. Alias (input==output, params∩storage), bind sizes vs enabled
+  `max_*_buffer_binding_size`, alignments, and dispatch limits are validated in
+  Rust before wgpu (typed error, not panic). Params bind as a narrow 16-byte
+  range; storage as `count*4` — not entire-buffer binds. Bind/encode/finish run
+  under error scope; failures leave no pending command/reserve.
+- Pipeline resolve is by **handle id**. Same-key source rebuild replaces the
+  cache entry only after successful create; old handles are typed-rejected and
+  must not execute the new body. Failed same-key replace keeps the prior entry.
 
 ### Diagnose
 
@@ -71,11 +81,14 @@ pipeline obtain and compute phase timings plus accounted peak/source. Does
 ## Acceptance
 
 1. Host: affine upload→dispatch→readback matches CPU reference for non-WG
-   multiple lengths; MODE override changes output.
+   multiple lengths; MODE override changes output; `Params.count` guard matches
+   CPU/synthetic/host.
 2. Key: each of name/version/entry/spec/bind_layout_version change → cache miss
-   / new pipeline; repeat same key → hit (observable).
-3. Illegal bind range/size/alignment/usage/dispatch → typed errors; accounting
-   unchanged on failure.
+   / new pipeline; repeat same key → hit (observable). Same-key source rebuild
+   yields a new id; old handle is typed-rejected (does not run new body); failed
+   replace keeps the prior entry.
+3. Illegal alias/bind range/size/alignment/usage/dispatch/binding-limit → typed
+   errors (no wgpu panic); accounting unchanged; no half pending on encode fail.
 4. Bad WGSL → `SP-GPU-005` with file/line/message; retry with good source works;
    no poisoned half-cache.
 5. Close/lost/reopen / cross-context reject old pipeline handles; dispatch after

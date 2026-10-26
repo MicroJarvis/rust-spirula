@@ -107,6 +107,10 @@ pub struct DeviceLimitsSnapshot {
     /// From wgpu `Limits::max_texture_dimension_2d` (synthetic default when no device).
     pub max_texture_dimension_2d: u32,
     pub max_compute_workgroups_per_dimension: u32,
+    /// Enabled device limit (P2-F04 bind-size precheck).
+    pub max_uniform_buffer_binding_size: u64,
+    /// Enabled device limit (P2-F04 bind-size precheck).
+    pub max_storage_buffer_binding_size: u64,
 }
 
 /// Failure detail when open does not reach Live.
@@ -321,6 +325,8 @@ impl GpuContext {
                     .effective,
                 max_texture_dimension_2d: 8192,
                 max_compute_workgroups_per_dimension: 65535,
+                max_uniform_buffer_binding_size: 64 << 10,
+                max_storage_buffer_binding_size: 128 << 20,
             },
             queue_present: true,
             adapter: selection.adapter,
@@ -608,6 +614,8 @@ fn create_live_backend(
             max_texture_dimension_2d: device_limits.max_texture_dimension_2d,
             max_compute_workgroups_per_dimension: device_limits
                 .max_compute_workgroups_per_dimension,
+            max_uniform_buffer_binding_size: device_limits.max_uniform_buffer_binding_size,
+            max_storage_buffer_binding_size: device_limits.max_storage_buffer_binding_size,
         },
         queue_present: true,
         adapter: adapter_caps,
@@ -870,6 +878,8 @@ impl GpuContext {
                     .effective,
                 max_texture_dimension_2d: 8192,
                 max_compute_workgroups_per_dimension: 65535,
+                max_uniform_buffer_binding_size: 64 << 10,
+                max_storage_buffer_binding_size: 128 << 20,
             },
             queue_present: true,
             adapter: selection.adapter,

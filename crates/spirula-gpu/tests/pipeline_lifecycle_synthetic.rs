@@ -271,6 +271,145 @@ fn synthetic_pipeline_key_fields_and_cache_hit() {
 }
 
 #[test]
+fn synthetic_stale_handle_rejected_after_same_key_rebuild() {
+    let mut ctx = open_ctx();
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:stale-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:stale-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:stale-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, 4).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+
+    let old = ctx.obtain_affine_u32_pipeline(0).unwrap();
+    let changed = AFFINE_U32_WGSL.replace("+ MODE;", "+ MODE + 100u;");
+    assert_ne!(changed, AFFINE_U32_WGSL);
+    let new = ctx
+        .obtain_compute_pipeline(affine_desc(
+            &changed,
+            AFFINE_U32_ENTRY,
+            0,
+            AFFINE_U32_BIND_LAYOUT_VERSION,
+        ))
+        .unwrap();
+    assert_ne!(old.id(), new.id());
+    assert_eq!(old.key(), new.key());
+
+    // Old handle must not dispatch after same-key replace (id lookup).
+    assert_eq!(
+        ctx.dispatch_affine_u32(&old, &params, &inn, &out, 4)
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+
+    // New handle remains live. Synthetic does not interpret WGSL body deltas
+    // (host covers +100 body output); MODE/spec path still produces CPU ref.
+    ctx.dispatch_affine_u32(&new, &params, &inn, &out, 4)
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    assert_eq!(
+        bytes_to_words(&ctx.map_readback(&t).unwrap()),
+        vec![7, 9, 11, 13]
+    );
+
+    // Failed obtain must not drop the live entry (header fail before cache write;
+    // host also covers same-key WGSL compile fail without dropping).
+    assert_eq!(
+        ctx.obtain_compute_pipeline(affine_desc(
+            "totally broken\n",
+            AFFINE_U32_ENTRY,
+            0,
+            AFFINE_U32_BIND_LAYOUT_VERSION,
+        ))
+        .unwrap_err()
+        .code(),
+        ErrorCode::ShaderFailed
+    );
+    // New handle (still cached) remains dispatchable.
+    ctx.dispatch_affine_u32(&new, &params, &inn, &out, 4)
+        .unwrap();
+}
+
+#[test]
+fn synthetic_alias_and_params_count_guard() {
+    let mut ctx = open_ctx();
+    let pipe = ctx.obtain_affine_u32_pipeline(0).unwrap();
+    let params = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:alias-p"),
+            size: 16,
+            usage: BufferUsage::UNIFORM_UPLOAD,
+        })
+        .unwrap();
+    let inn = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:alias-i"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    let before = ctx.resource_accounting().current_bytes;
+    assert_eq!(
+        ctx.dispatch_affine_u32(&pipe, &params, &inn, &inn, 4)
+            .unwrap_err()
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(ctx.resource_accounting().current_bytes, before);
+
+    // params.count=1, dispatch.count=4 → only index 0 written (shader guard).
+    let out = ctx
+        .create_buffer(BufferDesc {
+            label: label("spirula:gpu:buffer:alias-o"),
+            size: 16,
+            usage: BufferUsage::STORAGE_COPY,
+        })
+        .unwrap();
+    ctx.upload_buffer(&params, 0, &AffineU32Params::new(2, 5, 1).as_bytes())
+        .unwrap();
+    ctx.upload_buffer(&inn, 0, &words_to_bytes(&[1, 2, 3, 4]))
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    ctx.dispatch_affine_u32(&pipe, &params, &inn, &out, 4)
+        .unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    let t = ctx.readback_buffer(&out, 0, 16).unwrap();
+    let s = ctx.submit().unwrap();
+    ctx.wait(s, Some(Duration::from_secs(1))).unwrap();
+    assert_eq!(
+        bytes_to_words(&ctx.map_readback(&t).unwrap()),
+        vec![7, 0, 0, 0]
+    );
+}
+
+#[test]
 fn synthetic_illegal_usage_range_and_header_retry() {
     let mut ctx = open_ctx();
     let pipe = ctx.obtain_affine_u32_pipeline(0).unwrap();

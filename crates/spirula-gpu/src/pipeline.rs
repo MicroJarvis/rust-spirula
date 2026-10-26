@@ -19,6 +19,8 @@ pub const AFFINE_U32_VERSION: u32 = 1;
 pub const AFFINE_U32_ENTRY: &str = "main";
 pub const AFFINE_U32_BIND_LAYOUT_VERSION: u32 = 1;
 pub const AFFINE_U32_WORKGROUP_SIZE: u32 = 64;
+/// Bound size for affine `Params` uniform (narrow range; not entire buffer).
+pub const AFFINE_U32_PARAMS_BYTES: u64 = 16;
 
 static NEXT_PIPELINE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -275,6 +277,36 @@ impl PipelineCache {
         }
         Ok(())
     }
+
+    fn entry_id(entry: &CachedPipeline) -> u64 {
+        match entry {
+            CachedPipeline::Wgpu { id, .. } | CachedPipeline::Synthetic { id, .. } => *id,
+        }
+    }
+
+    /// Resolve by pipeline **id** (not key). Same-key source rebuild must not
+    /// let an old handle dispatch the new body.
+    fn lookup_by_handle(
+        &self,
+        handle: &ComputePipelineHandle,
+    ) -> Result<&CachedPipeline, DomainError> {
+        self.ensure_live(handle.context_id(), handle.generation())?;
+        for (key, entry) in &self.entries {
+            if Self::entry_id(entry) == handle.id() {
+                if key != handle.key() {
+                    return Err(inp(
+                        "pipeline handle key does not match cached entry",
+                        "pipeline",
+                    ));
+                }
+                return Ok(entry);
+            }
+        }
+        Err(inp(
+            "pipeline handle is stale or unknown (replaced source or never cached)",
+            "pipeline",
+        ))
+    }
 }
 
 /// Observable cache counters for tests/diagnose.
@@ -342,9 +374,7 @@ impl GpuContext {
                     id, source_digest, ..
                 } => (*id, *source_digest),
             };
-            if cached_digest != digest {
-                cache.entries.remove(&key);
-            } else {
+            if cached_digest == digest {
                 cache.hits = cache.hits.saturating_add(1);
                 drop(cache);
                 return Ok(ComputePipelineHandle {
@@ -357,6 +387,9 @@ impl GpuContext {
                     }),
                 });
             }
+            // Digest differs: rebuild below. Keep the old entry until the new
+            // pipeline is fully created so a failed replace cannot drop the
+            // prior body, and old handles stay id-addressable until replace.
         }
 
         cache.misses = cache.misses.saturating_add(1);
@@ -505,6 +538,11 @@ impl GpuContext {
     }
 
     /// Encode affine-u32 dispatch (pending until submit).
+    ///
+    /// `count` is the launch extent (workgroups cover `0..count`). The uniform
+    /// `Params.count` is the shader write guard: only indices `i < Params.count`
+    /// are written (CPU / synthetic / host agree). Buffers must be sized for the
+    /// launch extent; elements beyond `Params.count` are left unchanged.
     pub fn dispatch_affine_u32(
         &mut self,
         pipeline: &ComputePipelineHandle,
@@ -523,20 +561,36 @@ impl GpuContext {
         check_copy_buffer_align(0, bytes)?;
         let _ = COPY_BUFFER_ALIGNMENT;
 
-        let max_wg = self
-            .report()
-            .map(|r| r.device_limits.max_compute_workgroups_per_dimension)
+        validate_affine_aliases(params_buf, input, output)?;
+
+        let limits = self.report().map(|r| r.device_limits);
+        let max_wg = limits
+            .map(|l| l.max_compute_workgroups_per_dimension)
             .unwrap_or(65535);
+        let max_uniform = limits
+            .map(|l| l.max_uniform_buffer_binding_size)
+            .unwrap_or(64 << 10);
+        let max_storage = limits
+            .map(|l| l.max_storage_buffer_binding_size)
+            .unwrap_or(128 << 20);
         let groups = count.div_ceil(AFFINE_U32_WORKGROUP_SIZE);
         if groups == 0 || groups > max_wg {
             return Err(range_err(format!(
                 "dispatch workgroups {groups} exceeds device max_compute_workgroups_per_dimension {max_wg}"
             )));
         }
+        if AFFINE_U32_PARAMS_BYTES > max_uniform {
+            return Err(range_err(format!(
+                "affine params bind size {AFFINE_U32_PARAMS_BYTES} exceeds max_uniform_buffer_binding_size {max_uniform}"
+            )));
+        }
+        if bytes > max_storage {
+            return Err(range_err(format!(
+                "affine storage bind size {bytes} exceeds max_storage_buffer_binding_size {max_storage}"
+            )));
+        }
 
-        // Snapshot whether we are synthetic before locking.
         let is_synthetic = self.backend_device_queue().is_none();
-
         if is_synthetic {
             return self.dispatch_affine_synthetic(pipeline, params_buf, input, output, count);
         }
@@ -546,14 +600,15 @@ impl GpuContext {
             .ok_or_else(|| gpu_lost("device missing during dispatch"))?;
 
         let cache = self.pipeline_cache.lock().expect("pipeline cache");
-        cache.ensure_live(pipeline.context_id(), pipeline.generation())?;
-        let (gpu_pipe, bind_layout) = match cache.entries.get(pipeline.key()) {
-            Some(CachedPipeline::Wgpu {
+        let (gpu_pipe, bind_layout) = match cache.lookup_by_handle(pipeline)? {
+            CachedPipeline::Wgpu {
                 pipeline: p,
                 bind_layout,
                 ..
-            }) => (p.clone(), bind_layout.clone()),
-            _ => return Err(inp("pipeline not in wgpu cache", "pipeline")),
+            } => (p.clone(), bind_layout.clone()),
+            CachedPipeline::Synthetic { .. } => {
+                return Err(inp("pipeline not in wgpu cache", "pipeline"));
+            }
         };
         drop(cache);
 
@@ -575,38 +630,68 @@ impl GpuContext {
             .wgpu_buffer(&output.id())
             .ok_or_else(|| gpu_lost("output gpu missing"))?;
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("spirula:gpu:bg:affine-u32"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: params_b.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: in_b.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: out_b.as_entire_binding(),
-                },
-            ],
-        });
+        let params_size = std::num::NonZeroU64::new(AFFINE_U32_PARAMS_BYTES).expect("16");
+        let storage_size = std::num::NonZeroU64::new(bytes).expect("count*4");
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("spirula:gpu:encoder:affine-u32"),
-        });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("spirula:gpu:compute:affine-u32"),
-                timestamp_writes: None,
+        // Narrow ranges: bind Params as 16B and storage as count*4 so a larger
+        // buffer allocation cannot exceed enabled max_*_buffer_binding_size.
+        // Error-scope bind/encode/finish so validation cannot panic exit 101.
+        let finished = match wgpu_scoped(&device, || {
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("spirula:gpu:bg:affine-u32"),
+                layout: &bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &params_b,
+                            offset: 0,
+                            size: Some(params_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &in_b,
+                            offset: 0,
+                            size: Some(storage_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &out_b,
+                            offset: 0,
+                            size: Some(storage_size),
+                        }),
+                    },
+                ],
             });
-            pass.set_pipeline(&gpu_pipe);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(groups, 1, 1);
-        }
-        led.pending_commands.push(encoder.finish());
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("spirula:gpu:encoder:affine-u32"),
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("spirula:gpu:compute:affine-u32"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&gpu_pipe);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(groups, 1, 1);
+            }
+            encoder.finish()
+        }) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                // No pending_commands / note_pending on failure.
+                return Err(range_err(format!(
+                    "affine bind/encode failed: {}",
+                    e.message()
+                )));
+            }
+        };
+
+        led.pending_commands.push(finished);
         led.note_pending_buffer(params_buf.id());
         led.note_pending_buffer(input.id());
         led.note_pending_buffer(output.id());
@@ -623,10 +708,11 @@ impl GpuContext {
     ) -> Result<(), DomainError> {
         let bytes = u64::from(count) * 4;
         let cache = self.pipeline_cache.lock().expect("pipeline cache");
-        cache.ensure_live(pipeline.context_id(), pipeline.generation())?;
-        let mode = match cache.entries.get(pipeline.key()) {
-            Some(CachedPipeline::Synthetic { mode, .. }) => *mode,
-            _ => return Err(inp("pipeline not in synthetic cache", "pipeline")),
+        let mode = match cache.lookup_by_handle(pipeline)? {
+            CachedPipeline::Synthetic { mode, .. } => *mode,
+            CachedPipeline::Wgpu { .. } => {
+                return Err(inp("pipeline not in synthetic cache", "pipeline"));
+            }
         };
         drop(cache);
 
@@ -637,7 +723,7 @@ impl GpuContext {
         led.ensure_live(output.context_id(), output.generation())?;
         validate_affine_buffers(&led, params_buf, input, output, bytes)?;
 
-        let (scale, bias) = {
+        let (scale, bias, params_count) = {
             let v = match led
                 .buffers
                 .get(&params_buf.id())
@@ -646,21 +732,24 @@ impl GpuContext {
                 Some(GpuBuffer::Synthetic(v)) => v,
                 _ => return Err(gpu_lost("params synthetic missing")),
             };
-            if v.len() < 16 {
+            if v.len() < AFFINE_U32_PARAMS_BYTES as usize {
                 return Err(range_err("params synthetic too small"));
             }
             (
                 u32::from_le_bytes(v[0..4].try_into().unwrap()),
                 u32::from_le_bytes(v[4..8].try_into().unwrap()),
+                u32::from_le_bytes(v[8..12].try_into().unwrap()),
             )
         };
+        // Match WGSL: write only i < Params.count within the launch extent.
+        let write_count = count.min(params_count) as usize;
         let input_words = {
             let v = match led.buffers.get(&input.id()).and_then(|e| e.gpu.as_ref()) {
                 Some(GpuBuffer::Synthetic(v)) => v,
                 _ => return Err(gpu_lost("input synthetic missing")),
             };
-            let mut words = Vec::with_capacity(count as usize);
-            for i in 0..count as usize {
+            let mut words = Vec::with_capacity(write_count);
+            for i in 0..write_count {
                 let o = i * 4;
                 words.push(u32::from_le_bytes(v[o..o + 4].try_into().unwrap()));
             }
@@ -676,6 +765,7 @@ impl GpuContext {
                 let o = i * 4;
                 v[o..o + 4].copy_from_slice(&w.to_le_bytes());
             }
+            // Indices in [write_count, count) remain unchanged (shader guard).
         }
         led.note_pending_buffer(params_buf.id());
         led.note_pending_buffer(input.id());
@@ -697,6 +787,26 @@ impl GpuContext {
     }
 }
 
+fn validate_affine_aliases(
+    params_buf: &BufferHandle,
+    input: &BufferHandle,
+    output: &BufferHandle,
+) -> Result<(), DomainError> {
+    if input.id() == output.id() {
+        return Err(inp(
+            "affine input and output must not alias the same buffer (STORAGE_READ vs STORAGE_READ_WRITE)",
+            "buffer",
+        ));
+    }
+    if params_buf.id() == input.id() || params_buf.id() == output.id() {
+        return Err(inp(
+            "affine params must not alias input/output storage buffers",
+            "buffer",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_affine_buffers(
     led: &crate::resource::ResourceLedger,
     params_buf: &BufferHandle,
@@ -711,7 +821,7 @@ fn validate_affine_buffers(
     if !params_entry.usage.uniform {
         return Err(inp("params buffer missing uniform usage", "usage"));
     }
-    if params_entry.size < 16 {
+    if params_entry.size < AFFINE_U32_PARAMS_BYTES {
         return Err(range_err("params buffer must be at least 16 bytes"));
     }
 
