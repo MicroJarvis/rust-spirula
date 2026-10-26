@@ -636,9 +636,15 @@ impl SinkState {
                 return;
             }
         }
-        // Do not grow past the global budget when trim cannot free space.
+        // Reserve room for this payload: trim oldest until projected total fits.
+        // Trimming only when already over budget leaves permanent degraded mode
+        // while removable rotated siblings still exist (D1).
         if self.total_bytes.saturating_add(payload_len) > self.limits.global_disk_budget_bytes {
-            self.trim_to_policy();
+            let target = self
+                .limits
+                .global_disk_budget_bytes
+                .saturating_sub(payload_len);
+            self.trim_to_budget(target);
             if self.total_bytes.saturating_add(payload_len) > self.limits.global_disk_budget_bytes {
                 self.shared.enter_degraded();
                 self.shared.note_dropped_degraded();
@@ -732,8 +738,20 @@ impl SinkState {
         for idx in (1..=max_idx).rev() {
             let from = self.directory.join(format!("{}.{}", self.stem, idx));
             let to = self.directory.join(format!("{}.{}", self.stem, idx + 1));
-            if from.is_file() {
-                let _ = fs::rename(&from, &to);
+            if !from.is_file() {
+                continue;
+            }
+            // Non-file at the destination (e.g. `.2` directory) must stop the
+            // chain before a later rename silently overwrites a retained sibling.
+            if to.exists() && !to.is_file() {
+                self.shared.note_io_failure(false);
+                self.recompute_total_from_disk();
+                return;
+            }
+            if fs::rename(&from, &to).is_err() {
+                self.shared.note_io_failure(false);
+                self.recompute_total_from_disk();
+                return;
             }
         }
         let dest = self.directory.join(format!("{}.1", self.stem));
@@ -763,11 +781,15 @@ impl SinkState {
     }
 
     fn trim_to_policy(&mut self) {
+        self.trim_to_budget(self.limits.global_disk_budget_bytes);
+    }
+
+    /// Remove oldest rotated files until `total_bytes <= target_bytes` or stuck.
+    fn trim_to_budget(&mut self, target_bytes: u64) {
         self.trim_to_policy_for_count(self.limits.max_files.saturating_sub(1));
-        // Budget trim: remove oldest rotated files until under budget or stuck.
         loop {
             self.rebuild_inventory_from_disk();
-            if self.total_bytes <= self.limits.global_disk_budget_bytes {
+            if self.total_bytes <= target_bytes {
                 break;
             }
             let Some(old) = self.rotated.pop_back() else {
@@ -1212,6 +1234,99 @@ mod tests {
         assert!(
             !handle.writes_disabled(),
             "writable siblings must trim cleanly"
+        );
+        assert!(handle.join(Duration::from_secs(2)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn continuous_writes_trim_projected_budget_without_degrade() {
+        // D1: when total fits but next payload would exceed budget, trim oldest
+        // rotated siblings instead of entering permanent degraded mode.
+        let dir = temp_dir("budget-turnover");
+        let mut limits = DiskLogLimits::for_test();
+        limits.line_max_bytes = 16;
+        limits.rotation_bytes = 64;
+        limits.max_files = 3;
+        limits.global_disk_budget_bytes = 128;
+        limits.queue_capacity = 128;
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
+        let mut accepted = 0u64;
+        for _ in 0..100 {
+            if handle.try_enqueue_line("1234567890123456") {
+                accepted += 1;
+            }
+        }
+        assert_eq!(accepted, 100, "healthy sink must accept continuous lines");
+        assert!(handle.flush(Duration::from_secs(3)));
+        let c = handle.counters();
+        assert_eq!(
+            c.degraded, 0,
+            "must not degrade while trim can free room: {c:?}"
+        );
+        assert_eq!(
+            c.dropped_degraded, 0,
+            "no degraded drops on healthy turnover: {c:?}"
+        );
+        assert_eq!(
+            c.written, accepted,
+            "every accepted line must be written when queue is not saturated: {c:?}"
+        );
+        assert!(
+            c.budget_trimmed >= 1 || c.rotations >= 1,
+            "expected rotation/trim activity across turnovers: {c:?}"
+        );
+        let mut total = 0u64;
+        let mut files = 0usize;
+        for ent in fs::read_dir(&dir).unwrap().flatten() {
+            let meta = ent.metadata().unwrap();
+            if meta.is_file() {
+                files += 1;
+                total = total.saturating_add(meta.len());
+            }
+        }
+        assert!(files <= 3, "files={files} total={total} counters={c:?}");
+        assert!(
+            total <= 128,
+            "on-disk bytes must stay within budget; total={total} counters={c:?}"
+        );
+        assert!(!handle.writes_disabled());
+        assert!(handle.join(Duration::from_secs(2)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn higher_sibling_directory_blocks_shift_preserves_retained_history() {
+        // D2: `.2` as a directory must not let `.1 -> .2` fail silently then
+        // overwrite `.1` with the active file.
+        let dir = temp_dir("shift-dot2-dir");
+        let retained = b"important retained history\n";
+        fs::write(dir.join("spirula-diagnostics.log.1"), retained).unwrap();
+        fs::create_dir(dir.join("spirula-diagnostics.log.2")).unwrap();
+        let mut limits = DiskLogLimits::for_test();
+        limits.line_max_bytes = 16;
+        limits.rotation_bytes = 64;
+        limits.max_files = 4;
+        limits.global_disk_budget_bytes = 1000;
+        limits.queue_capacity = 128;
+        let handle = DiskLogHandle::start(DiskLogConfig::new(&dir).with_limits(limits));
+        for _ in 0..4 {
+            assert!(handle.try_enqueue_line("1234567890123456"));
+        }
+        assert!(handle.flush(Duration::from_secs(3)));
+        let c = handle.counters();
+        let history = fs::read(dir.join("spirula-diagnostics.log.1")).unwrap_or_default();
+        assert_eq!(
+            history, retained,
+            "retained `.1` history must survive blocked `.1 -> .2` shift; counters={c:?}"
+        );
+        assert!(
+            c.degraded >= 1 || handle.writes_disabled() || c.write_failures >= 1,
+            "blocked rotation must surface failure/degraded: {c:?}"
+        );
+        assert!(
+            dir.join("spirula-diagnostics.log.2").is_dir(),
+            "directory occupant at `.2` must remain"
         );
         assert!(handle.join(Duration::from_secs(2)));
         let _ = fs::remove_dir_all(&dir);

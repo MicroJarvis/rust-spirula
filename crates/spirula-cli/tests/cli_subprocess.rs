@@ -266,6 +266,13 @@ fn rejected_steps_zero_exit_2() {
     );
 }
 
+fn count_completed_lines(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|l| l.starts_with("completed "))
+        .count()
+}
+
 #[test]
 fn probe_run_normal_success_reaches_run_terminal() {
     let out = run_output(
@@ -297,10 +304,15 @@ fn probe_run_normal_success_reaches_run_terminal() {
         stdout.contains("probe-started") || stdout.contains("progress"),
         "must show run activity: {stdout}"
     );
-    assert!(
-        stdout.contains("completed ok") || stdout.contains("completed"),
-        "must show run terminal: {stdout}"
+    // Load terminal + run terminal — exactly once each (no live/query dup).
+    assert_eq!(
+        count_completed_lines(&stdout),
+        2,
+        "exactly one completed per command (ordered final state); got: {stdout}"
     );
+    // Query/replay may surface a terminal before live under scheduling; the
+    // acceptance gate is one ordered completed per command, not absence of
+    // spirula:recovered.
 }
 
 #[test]
@@ -608,9 +620,10 @@ fn adapter_recovers_terminal_under_slow_consumer_pressure() {
         stdout.contains("spirula:recovered"),
         "must prove query/replay restoration under notify pressure: {stdout}"
     );
-    assert!(
-        stdout.contains("completed"),
-        "recovered terminal must still present completed: {stdout}"
+    assert_eq!(
+        count_completed_lines(&stdout),
+        2,
+        "one completed per command under pressure; got: {stdout}"
     );
 }
 
@@ -651,10 +664,279 @@ fn adapter_recovers_failure_under_slow_consumer_pressure() {
         stdout.contains("spirula:recovered"),
         "failure terminal must restore via query under pressure: {stdout}"
     );
+    // Injected fail aborts at load — exactly one ordered completed terminal.
+    assert_eq!(
+        count_completed_lines(&stdout),
+        1,
+        "exactly one completed for the failed load under pressure; got: {stdout}"
+    );
     assert_eq!(
         stderr.lines().filter(|l| l.starts_with("error:")).count(),
         1,
         "stderr={stderr}"
+    );
+}
+
+/// Parent keeps a dup of the child's stdout write OFD; child must never arm
+/// `O_NONBLOCK` on that shared description (RAII restore is insufficient for
+/// second-SIGINT `SIG_DFL` death where `Drop` does not run).
+///
+/// `Command::spawn` takes `&mut self` and may keep the parent-owned write fd
+/// until `Command` is dropped — drop it immediately after spawn so drain can
+/// see EOF once the child exits and `watch_fd` is closed. Never treat dup as
+/// OFD isolation.
+#[cfg(unix)]
+struct StdoutFlagWatch {
+    child: Child,
+    captured: std::sync::Arc<std::sync::Mutex<String>>,
+    watch_fd: i32,
+    before: i32,
+    drain_done: mpsc::Receiver<()>,
+    /// Kept so we can join after a bounded wait; abandoned on timeout.
+    drain: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl StdoutFlagWatch {
+    fn spawn(args: &[&str], envs: &[(&str, &str)]) -> Self {
+        use std::os::fd::FromRawFd;
+
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        let watch_fd = unsafe { libc::dup(write_fd) };
+        assert!(watch_fd >= 0);
+        let before = unsafe { libc::fcntl(watch_fd, libc::F_GETFL) };
+        assert!(before >= 0);
+
+        let mut cmd = Command::new(spirula_bin());
+        cmd.args(args)
+            .stdout(unsafe { Stdio::from_raw_fd(write_fd) });
+        cmd.stderr(Stdio::null());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().expect("spawn");
+        // Critical: release any parent-owned write end still held by `cmd`.
+        // Without this, closing `watch_fd` alone never delivers EOF to drain.
+        drop(cmd);
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let captured_w = std::sync::Arc::clone(&captured);
+        let (done_tx, drain_done) = mpsc::channel();
+        let drain = thread::spawn(move || {
+            let mut reader = unsafe { std::fs::File::from_raw_fd(read_fd) };
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut g) = captured_w.lock() {
+                            g.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = done_tx.send(());
+        });
+
+        Self {
+            child,
+            captured,
+            watch_fd,
+            before,
+            drain_done,
+            drain: Some(drain),
+        }
+    }
+
+    fn pid(&self) -> i32 {
+        self.child.id() as i32
+    }
+
+    fn wait_stdout_contains(&self, needle: &str, budget: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            {
+                let g = self.captured.lock().expect("captured");
+                if g.contains(needle) {
+                    return Ok(());
+                }
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let got = self.captured.lock().expect("captured").clone();
+        Err(format!("timed out waiting for '{needle}' in:\n{got}"))
+    }
+
+    fn wait_exit(&mut self, budget: Duration) -> std::process::ExitStatus {
+        let deadline = Instant::now() + budget;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(st)) => return st,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => {
+                    let _ = self.child.kill();
+                    return self.child.wait().expect("reap");
+                }
+            }
+        }
+    }
+
+    /// Sample OFD flags, close the last parent write end, bounded-drain join.
+    fn finish(mut self) -> (i32, i32, std::process::ExitStatus) {
+        let status = self.wait_exit(Duration::from_secs(12));
+        let after = unsafe { libc::fcntl(self.watch_fd, libc::F_GETFL) };
+        unsafe {
+            libc::close(self.watch_fd);
+        }
+        self.watch_fd = -1;
+        // Child exited + cmd dropped + watch_fd closed ⇒ all write ends gone.
+        match self.drain_done.recv_timeout(Duration::from_secs(2)) {
+            Ok(()) => {
+                if let Some(h) = self.drain.take() {
+                    let _ = h.join();
+                }
+            }
+            Err(_) => {
+                // Do not join unboundedly; abandon the drain thread.
+                self.drain.take();
+            }
+        }
+        (self.before, after, status)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StdoutFlagWatch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if self.watch_fd >= 0 {
+            unsafe {
+                libc::close(self.watch_fd);
+            }
+            self.watch_fd = -1;
+        }
+        // Best-effort bounded drain wake; ignore timeout.
+        let _ = self.drain_done.recv_timeout(Duration::from_millis(200));
+        self.drain.take();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_ofd_flags_unchanged_after_normal_exit() {
+    let watch = StdoutFlagWatch::spawn(
+        &[
+            "probe-run",
+            "--steps",
+            "1",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "1",
+        ],
+        &[],
+    );
+    let (before, after, status) = watch.finish();
+    assert_eq!(status.code(), Some(0), "{status:?}");
+    assert_eq!(
+        after & libc::O_NONBLOCK,
+        before & libc::O_NONBLOCK,
+        "normal exit must not leave O_NONBLOCK on shared OFD"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_ofd_flags_unchanged_after_failure_exit() {
+    let watch = StdoutFlagWatch::spawn(
+        &[
+            "probe-run",
+            "--steps",
+            "1",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "1",
+        ],
+        &[("SPIRULA_TEST_WORKER_BEHAVIOR", "fail")],
+    );
+    let (before, after, status) = watch.finish();
+    assert_eq!(status.code(), Some(1), "{status:?}");
+    assert_eq!(
+        after & libc::O_NONBLOCK,
+        before & libc::O_NONBLOCK,
+        "failure exit must not leave O_NONBLOCK on shared OFD"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_ofd_flags_unchanged_after_first_sigint_exit_130() {
+    let watch = StdoutFlagWatch::spawn(
+        &[
+            "probe-run",
+            "--steps",
+            "100000",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "20",
+        ],
+        &[],
+    );
+    watch
+        .wait_stdout_contains("spirula:ready training", Duration::from_secs(15))
+        .expect("ready");
+    assert_eq!(unsafe { libc::kill(watch.pid(), libc::SIGINT) }, 0);
+    let (before, after, status) = watch.finish();
+    assert_eq!(status.code(), Some(130), "{status:?}");
+    assert_eq!(
+        after & libc::O_NONBLOCK,
+        before & libc::O_NONBLOCK,
+        "first SIGINT exit 130 must not leave O_NONBLOCK on shared OFD"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_ofd_flags_unchanged_after_second_sigint_dfl_death() {
+    // Drop does not run on SIG_DFL termination — flags must never have been armed.
+    let watch = StdoutFlagWatch::spawn(
+        &[
+            "probe-run",
+            "--steps",
+            "100000",
+            "--load-label",
+            "ds",
+            "--step-delay-ms",
+            "20",
+        ],
+        &[("SPIRULA_TEST_HOLD_AFTER_CANCEL", "1")],
+    );
+    watch
+        .wait_stdout_contains("spirula:ready training", Duration::from_secs(15))
+        .expect("ready");
+    assert_eq!(unsafe { libc::kill(watch.pid(), libc::SIGINT) }, 0);
+    watch
+        .wait_stdout_contains("spirula:test cancel-held", Duration::from_secs(10))
+        .expect("cancel-held barrier");
+    assert_eq!(unsafe { libc::kill(watch.pid(), libc::SIGINT) }, 0);
+    let (before, after, status) = watch.finish();
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGINT),
+        "expected SIGINT death, got {status:?}"
+    );
+    assert_eq!(
+        after & libc::O_NONBLOCK,
+        before & libc::O_NONBLOCK,
+        "second-SIGINT DFL death must not leave O_NONBLOCK on shared OFD"
     );
 }
 

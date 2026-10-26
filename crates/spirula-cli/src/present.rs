@@ -1,14 +1,21 @@
 //! Presentation helpers. No business state.
 //!
 //! Stdout presentation is asynchronous and bounded: the session control loop
-//! never blocks on a full pipe or a stalled consumer. Overflow (queue or
-//! kernel write WouldBlock) increments [`OutputSink::drops`] and drops the
-//! line. Shutdown is out-of-band (`closed`) so a full queue cannot block
-//! teardown past the join deadline.
+//! never blocks on a full pipe. Lines enter a bounded `try_send` queue; a
+//! dedicated writer thread performs **blocking** raw `write(2)` on the
+//! process stdout fd **without** taking Rust's global `stdout()` lock and
+//! **without** changing inherited file-status flags (`O_NONBLOCK` stays
+//! untouched — `dup` shares the open-file description, so flag mutation
+//! would leak to parents across second-SIGINT `SIG_DFL` death where `Drop`
+//! does not run).
+//!
+//! Join/flush use absolute deadlines. A timed-out join abandons the writer
+//! handle (control stays responsive); the abandoned thread may still block
+//! inside kernel `write` until the pipe drains or the process exits.
 
 use spirula_application::{Event, EventEnvelope, RunOutcome, SessionState};
 use spirula_core::DomainError;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -21,6 +28,10 @@ pub const READY_PREFIX: &str = "spirula:ready ";
 
 /// Default bounded presentation queue (lines). Full → drop + counter.
 pub const OUTPUT_QUEUE_CAPACITY: usize = 256;
+
+/// Per-line wall budget for a blocking raw write before the sink counts a drop
+/// and moves on (writer may still be inside the kernel write until drained).
+pub const WRITE_LINE_DEADLINE: Duration = Duration::from_millis(50);
 
 pub fn help_text() -> String {
     let mut out = String::new();
@@ -94,7 +105,7 @@ impl OutputSink {
         let handle = thread::Builder::new()
             .name("spirula-cli-stdout".into())
             .spawn(move || {
-                set_stdout_nonblocking();
+                // Never fcntl(O_NONBLOCK) on inherited stdout — OFD is shared.
                 loop {
                     if closed_w.load(Ordering::Acquire) {
                         while let Ok(msg) = rx.try_recv() {
@@ -112,12 +123,12 @@ impl OutputSink {
                     }
                     match rx.recv_timeout(Duration::from_millis(20)) {
                         Ok(SinkMsg::Line(line)) => {
-                            if !write_stdout_nonblocking(&line) {
+                            if !write_stdout_raw_blocking(&line) {
                                 drops_w.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         Ok(SinkMsg::Flush(ack)) => {
-                            let _ = io::stdout().flush();
+                            let _ = flush_stdout_raw();
                             let _ = ack.send(());
                         }
                         Ok(SinkMsg::Shutdown) => return,
@@ -182,7 +193,10 @@ impl OutputSink {
         }
     }
 
-    /// Signal writer exit and join within `deadline`. Idempotent.
+    /// Signal writer exit and join within one absolute `deadline`.
+    ///
+    /// On timeout the join handle is retained (honest: writer may still be
+    /// blocked in `write(2)`); control never waits past the deadline.
     pub fn shutdown(&self, deadline: Duration) -> bool {
         let end = Instant::now() + deadline;
         if self
@@ -267,48 +281,110 @@ fn format_outcome(outcome: &RunOutcome) -> String {
 
 /// Direct stdout write for non-session paths (help/capabilities).
 pub fn write_stdout(text: &str) {
-    let mut out = io::stdout().lock();
-    let _ = write!(out, "{text}");
-    let _ = out.flush();
+    let _ = write_stdout_raw_blocking(text);
 }
 
-fn set_stdout_nonblocking() {
+/// Blocking raw write on stdout fd — does not take `std::io::stdout()` lock
+/// and does not change file-status flags. Returns false on hard error.
+///
+/// Honest limit: a full pipe can block this call on the writer thread until
+/// the consumer drains or the process exits; [`OutputSink::shutdown`] still
+/// returns by its deadline.
+fn write_stdout_raw_blocking(line: &str) -> bool {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
         let fd = io::stdout().as_raw_fd();
-        // SAFETY: F_GETFL/F_SETFL on the process stdout fd only.
-        #[allow(unsafe_code)] // fcntl O_NONBLOCK so a full pipe cannot stall the sink thread
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            if flags >= 0 {
-                let _ = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        let mut bytes = line.as_bytes();
+        let deadline = Instant::now() + WRITE_LINE_DEADLINE;
+        while !bytes.is_empty() {
+            if Instant::now() >= deadline {
+                // Soft drop: do not mutate flags; leave any partial kernel write.
+                return false;
             }
+            // Wait briefly for writability without setting O_NONBLOCK.
+            if !poll_stdout_writable(fd, Duration::from_millis(5)) {
+                continue;
+            }
+            #[allow(unsafe_code)] // raw write(2) on stdout; no fcntl flag changes
+            let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+            if n < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                // EAGAIN should be rare without O_NONBLOCK; treat as soft drop.
+                if err.kind() == io::ErrorKind::WouldBlock {
+                    continue;
+                }
+                return false;
+            }
+            if n == 0 {
+                return false;
+            }
+            bytes = &bytes[n as usize..];
         }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let mut out = io::stdout().lock();
+        out.write_all(line.as_bytes()).is_ok()
     }
 }
 
-/// Best-effort non-blocking write. Returns false when the line is dropped
-/// (WouldBlock / Interrupted exhausted / other write error).
-fn write_stdout_nonblocking(line: &str) -> bool {
-    let mut out = io::stdout().lock();
-    let mut bytes = line.as_bytes();
-    let mut spins = 0u32;
-    while !bytes.is_empty() {
-        match out.write(bytes) {
-            Ok(0) => return false,
-            Ok(n) => bytes = &bytes[n..],
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                spins += 1;
-                if spins > 32 {
-                    return false;
-                }
-                thread::sleep(Duration::from_millis(1));
-            }
-            Err(_) => return false,
-        }
+fn flush_stdout_raw() -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = io::stdout().as_raw_fd();
+        #[allow(unsafe_code)] // fsync/fdatasync not required; fcntl no-op flush via write of 0
+        let _ = fd;
+        // Stdout pipes have no portable flush; success is best-effort.
+        true
     }
-    let _ = out.flush();
-    true
+    #[cfg(not(unix))]
+    {
+        io::stdout().flush().is_ok()
+    }
+}
+
+#[cfg(unix)]
+fn poll_stdout_writable(fd: i32, timeout: Duration) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    #[allow(unsafe_code)] // poll(2) readiness only; does not change fd flags
+    let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+    rc > 0 && (pfd.revents & (libc::POLLOUT | libc::POLLHUP | libc::POLLERR)) != 0
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)] // fcntl probes that the sink never arms O_NONBLOCK
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn sink_does_not_set_stdout_nonblock() {
+        use std::os::fd::AsRawFd;
+        let fd = io::stdout().as_raw_fd();
+        let before = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert!(before >= 0);
+        let sink = OutputSink::start(4);
+        let _ = sink.try_write_line("flag-probe\n");
+        let _ = sink.flush(Duration::from_millis(200));
+        let mid = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert_eq!(
+            mid & libc::O_NONBLOCK,
+            before & libc::O_NONBLOCK,
+            "writer must not arm O_NONBLOCK on inherited stdout"
+        );
+        assert!(sink.shutdown(Duration::from_secs(1)));
+        let after = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert_eq!(after & libc::O_NONBLOCK, before & libc::O_NONBLOCK);
+    }
 }

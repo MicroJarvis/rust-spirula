@@ -73,8 +73,16 @@ appends `(code: SP-…)`.
    two signals; tests require `WTERMSIG == SIGINT`, not exit 130.
 
 Stdout presentation is a bounded async sink (`OUTPUT_QUEUE_CAPACITY`); the
-control loop never blocks on a full pipe. Overflow drops lines and increments
-an observable drop counter. Sink flush/join use deadlines on session end.
+control loop never blocks on a full pipe. The writer thread uses blocking
+raw `write(2)` without taking Rust’s global `stdout()` lock and **never**
+changes inherited file-status flags (`O_NONBLOCK` untouched — `dup` shares
+the open-file description, and second-SIGINT `SIG_DFL` death skips `Drop`).
+Overflow / soft write-deadline drops increment a counter. Flush/join use
+absolute deadlines; timed-out join abandons the writer honestly.
+
+Live / query / drain presentation shares one seq + per-command terminal
+dedup so `command_result` recovery does not duplicate `completed` lines or
+reorder past retained control history.
 
 ### Disk diagnostics (application-owned)
 
@@ -98,14 +106,20 @@ sink). The Warning is sized with F07 `bound_error` under `SessionLimits`.
 Join’s absolute deadline includes mutex acquisition across clones; Drop
 always signals OOB shutdown even with a zero remaining teardown budget.
 Rotation rebuilds inventory from the real directory (numeric order);
-failed `remove_file` does not subtract bytes or forget the path. Non-file
-siblings (e.g. directories named like `stem.N`) are not treated as successful
-trims and block rotation — the sink then enters **degraded** mode
+failed `remove_file` does not subtract bytes or forget the path. Before each
+append, trim uses a projected target (`budget - payload_len`) so ordinary
+budget turnovers delete oldest rotated siblings instead of entering permanent
+degraded mode while removable files remain. Every owned-sibling rename in a
+rotation shift is checked; a non-file occupant or rename failure aborts the
+chain before overwriting a retained lower-index sibling, then degrades.
+Non-file siblings (e.g. directories named like `stem.N`) are not treated as
+successful trims and block rotation — the sink then enters **degraded** mode
 (`writes_disabled`, `dropped_degraded`, `degraded` counters + Warning): no
 further appends that would violate `rotation_bytes` / `global_disk_budget_bytes`
 / `max_files`. Startup trims all owned numeric siblings until `max_files`
 holds (no arbitrary iteration ceiling); if caps still cannot be met, degraded
-starts before accepting writes.
+starts before accepting writes. Parent-OFD flag tests cover normal exit,
+failure, first-SIGINT exit 130, and second-SIGINT `SIG_DFL` death.
 
 **Honest limit:** the sink thread itself may block inside kernel open/write
 on a FIFO or hanging filesystem; caller-side `join` still returns by the

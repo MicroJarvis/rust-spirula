@@ -181,8 +181,8 @@ blocked until outstanding review is closed. No merge/push until approval.
 |---|---|
 | Binding decisions | [cli.md](cli.md), [application.md](application.md) diagnostics |
 | CLI crate | `crates/spirula-cli` (deps: `spirula-core`, `spirula-application`) |
-| Disk sink / concurrent join / budget degrade | `crates/spirula-application/src/disk_log.rs` (incl. rotation-block degrade + startup max_files trim) |
-| Subprocess / SIGINT / cancel-gap / notify pressure | `crates/spirula-cli/tests/cli_subprocess.rs` |
+| Disk sink / concurrent join / budget degrade | `crates/spirula-application/src/disk_log.rs` (projected-budget trim, shift-collision preserve, rotation-block degrade, startup max_files trim) |
+| Subprocess / SIGINT / cancel-gap / notify / parent OFD flags | `crates/spirula-cli/tests/cli_subprocess.rs` |
 | Session disk / bounded Warning | `crates/spirula-application/tests/disk_diagnostics.rs` |
 | Reproducible gate | `cargo run -p spirula-xtask -- verify` (tip recorded in commit; F09 still 进行中) |
 

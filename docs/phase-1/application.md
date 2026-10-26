@@ -267,15 +267,19 @@ reserved for a future **explicit Save** command failure after entering
   in-memory `Warning` (`field=disk_log`) on write failure or policy
   degrade — never a recursive disk-bound warning loop. That Warning is
   passed through the same F07 `bound_error` / `SessionLimits` caps as
-  other event errors. When rotation/trim cannot keep owned files within
-  `max_files` / `rotation_bytes` / `global_disk_budget_bytes`, further
-  appends stop (existing data preserved). Startup enforces `max_files`
-  against on-disk siblings before accepting writes. Flush/join use one
-  absolute deadline that includes join-mutex wait; timed-out join keeps
-  the handle (`sink_alive`) for an honest retry. Service Drop always
-  signals OOB disk shutdown even when the remaining teardown budget is
-  zero, then joins under whatever budget remains. Workers never await
-  the sink. Details: [cli.md](cli.md).
+  other event errors. Pre-append trim reserves the next payload under
+  `global_disk_budget_bytes` (projected budget) so healthy turnovers keep
+  writing. Rotation shift failures (including higher-index non-file
+  collisions) abort before overwriting retained siblings and degrade.
+  When rotation/trim cannot keep owned files within `max_files` /
+  `rotation_bytes` / `global_disk_budget_bytes`, further appends stop
+  (existing data preserved). Startup enforces `max_files` against on-disk
+  siblings before accepting writes. Flush/join use one absolute deadline
+  that includes join-mutex wait; timed-out join keeps the handle
+  (`sink_alive`) for an honest retry. Service Drop always signals OOB
+  disk shutdown even when the remaining teardown budget is zero, then
+  joins under whatever budget remains. Workers never await the sink.
+  Details: [cli.md](cli.md).
 
 ### Run identity
 

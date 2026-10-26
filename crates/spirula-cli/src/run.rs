@@ -11,13 +11,82 @@ use crate::present::{self, OUTPUT_QUEUE_CAPACITY, OutputSink, capabilities_text,
 use crate::signals;
 use crate::usage_error;
 use spirula_application::{
-    ApplicationService, Command, CommandPayload, CommandResult, DiskLogConfig, DiskLogLimits,
-    Event, EventEnvelope, FakeWorkerBehavior, RunOutcome, SessionLimits, SubmitOutcome,
+    ApplicationService, Command, CommandId, CommandPayload, CommandResult, DiskLogConfig,
+    DiskLogLimits, Event, EventCursor, EventEnvelope, FakeWorkerBehavior, ReplayOutcome,
+    RunOutcome, SessionLimits, SubmitOutcome,
 };
 use spirula_core::{DomainError, EXIT_CANCELED, EXIT_SUCCESS, ErrorCode, ProcessStage};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
+
+/// Unified live / query / drain presentation: one render per event seq, and
+/// at most one `Completed` line per command id.
+struct PresentTracker {
+    last_seq: u64,
+    completed_cmds: HashSet<u64>,
+    session_id: spirula_application::SessionId,
+}
+
+impl PresentTracker {
+    fn new(session_id: spirula_application::SessionId) -> Self {
+        Self {
+            last_seq: 0,
+            completed_cmds: HashSet::new(),
+            session_id,
+        }
+    }
+
+    fn present(&mut self, out: &OutputSink, envelope: &EventEnvelope) -> bool {
+        let behind = envelope.seq <= self.last_seq;
+        if let Event::Completed { .. } = &envelope.event
+            && let Some(id) = envelope.command_id
+        {
+            if !self.completed_cmds.insert(id.get()) {
+                self.last_seq = self.last_seq.max(envelope.seq);
+                return false;
+            }
+            // First terminal for this command: skip render if seq is stale
+            // relative to already-presented progress (wait finishes via
+            // saw_completed); otherwise render once.
+            if behind {
+                return false;
+            }
+        } else if behind {
+            return false;
+        }
+        self.last_seq = envelope.seq;
+        let _ = out.try_write_event(envelope);
+        true
+    }
+
+    fn saw_completed(&self, id: CommandId) -> bool {
+        self.completed_cmds.contains(&id.get())
+    }
+
+    /// Replay retained control history after `last_seq` so recovery stays ordered.
+    fn catch_up(&mut self, app: &ApplicationService, out: &OutputSink) {
+        let cursor = EventCursor::new(self.session_id, self.last_seq);
+        let Ok(replay) = app.replay(cursor) else {
+            return;
+        };
+        match replay {
+            ReplayOutcome::ControlEvents(events) => {
+                for env in events {
+                    let _ = self.present(out, &env);
+                }
+            }
+            ReplayOutcome::ResyncRequired {
+                retained_terminals, ..
+            } => {
+                for env in retained_terminals {
+                    let _ = self.present(out, &env);
+                }
+            }
+        }
+    }
+}
 
 pub enum CliExit {
     Code(u8),
@@ -177,7 +246,7 @@ fn run_session(plan: SessionPlan) -> CliExit {
     };
     apply_test_worker_behavior(&app);
 
-    let (sub, _snap) = match app.subscribe() {
+    let (sub, snap) = match app.subscribe() {
         Ok(v) => v,
         Err(_) => {
             let _ = out.shutdown(Duration::from_millis(100));
@@ -190,12 +259,12 @@ fn run_session(plan: SessionPlan) -> CliExit {
 
     let mut cancel = CancelGate::new(plan.save_on_stop);
     let mut saw_cancel_exit = false;
+    let mut present = PresentTracker::new(snap.session_id);
 
     if let Some(label) = &plan.load_label {
         cancel.try_admit_stop(&app, &out);
         if cancel.intent {
-            // Cancel before any work: shut down without starting load/run.
-            return abort_canceled(&app, &sub, &out, &mut cancel, saw_cancel_exit);
+            return abort_canceled(&app, &sub, &out, &mut cancel, &mut present, saw_cancel_exit);
         }
         let id = match app.submit(Command::new(CommandPayload::ProbeLoad {
             label: label.clone(),
@@ -209,27 +278,39 @@ fn run_session(plan: SessionPlan) -> CliExit {
                 };
             }
         };
-        // Stop may now be valid (Loading); admit if intent already set.
         cancel.try_admit_stop(&app, &out);
-        match wait_for_command(&app, &sub, &out, id, &mut cancel, &mut saw_cancel_exit) {
+        match wait_for_command(
+            &app,
+            &sub,
+            &out,
+            id,
+            &mut cancel,
+            &mut present,
+            &mut saw_cancel_exit,
+        ) {
             WaitEnd::Exit(exit) => {
                 return finalize_wait(&app, &out, WaitEnd::Exit(exit), saw_cancel_exit);
             }
             WaitEnd::Success if plan.steps.is_some() => {}
             WaitEnd::Success => {
-                return finish_idle_success(&app, &sub, &out, &mut cancel, saw_cancel_exit);
+                return finish_idle_success(
+                    &app,
+                    &sub,
+                    &out,
+                    &mut cancel,
+                    &mut present,
+                    saw_cancel_exit,
+                );
             }
         }
     }
 
-    // Phase boundary: never start ProbeRun after cancel intent.
     cancel.observe_signals();
     cancel.try_admit_stop(&app, &out);
     if cancel.intent {
-        return abort_canceled(&app, &sub, &out, &mut cancel, saw_cancel_exit);
+        return abort_canceled(&app, &sub, &out, &mut cancel, &mut present, saw_cancel_exit);
     }
 
-    // Test hook: hold at the load→run gap while still polling cancel/SIGINT.
     if let Ok(raw) = std::env::var("SPIRULA_TEST_GAP_AFTER_LOAD_MS")
         && let Ok(ms) = raw.parse::<u64>()
     {
@@ -237,17 +318,23 @@ fn run_session(plan: SessionPlan) -> CliExit {
         while Instant::now() < end {
             cancel.try_admit_stop(&app, &out);
             if cancel.intent {
-                return abort_canceled(&app, &sub, &out, &mut cancel, saw_cancel_exit);
+                return abort_canceled(
+                    &app,
+                    &sub,
+                    &out,
+                    &mut cancel,
+                    &mut present,
+                    saw_cancel_exit,
+                );
             }
-            // Drain a little presentation so the sink does not stall tests.
             while let Some(env) = sub.try_recv() {
-                let _ = out.try_write_event(&env);
+                let _ = present.present(&out, &env);
             }
             std::thread::sleep(Duration::from_millis(2));
         }
         cancel.try_admit_stop(&app, &out);
         if cancel.intent {
-            return abort_canceled(&app, &sub, &out, &mut cancel, saw_cancel_exit);
+            return abort_canceled(&app, &sub, &out, &mut cancel, &mut present, saw_cancel_exit);
         }
     }
 
@@ -262,17 +349,23 @@ fn run_session(plan: SessionPlan) -> CliExit {
                 };
             }
         };
-        // Prior Ready-gap Rejected Stop kept intent; arm retry now that a
-        // probe is active and Stop is valid again.
         cancel.arm_retry_for_active();
         cancel.try_admit_stop(&app, &out);
-        let end = wait_for_command(&app, &sub, &out, id, &mut cancel, &mut saw_cancel_exit);
+        let end = wait_for_command(
+            &app,
+            &sub,
+            &out,
+            id,
+            &mut cancel,
+            &mut present,
+            &mut saw_cancel_exit,
+        );
         let _ = app.submit(Command::new(CommandPayload::Shutdown));
-        drain_until_shutdown(&app, &sub, &out, &mut cancel);
+        drain_until_shutdown(&app, &sub, &out, &mut cancel, &mut present);
         return finalize_wait(&app, &out, end, saw_cancel_exit || cancel.intent);
     }
 
-    finish_idle_success(&app, &sub, &out, &mut cancel, saw_cancel_exit)
+    finish_idle_success(&app, &sub, &out, &mut cancel, &mut present, saw_cancel_exit)
 }
 
 fn finish_idle_success(
@@ -280,14 +373,15 @@ fn finish_idle_success(
     sub: &spirula_application::Subscription,
     out: &OutputSink,
     cancel: &mut CancelGate,
+    present: &mut PresentTracker,
     saw_cancel_exit: bool,
 ) -> CliExit {
     cancel.observe_signals();
     if cancel.intent {
-        return abort_canceled(app, sub, out, cancel, saw_cancel_exit);
+        return abort_canceled(app, sub, out, cancel, present, saw_cancel_exit);
     }
     let _ = app.submit(Command::new(CommandPayload::Shutdown));
-    drain_until_shutdown(app, sub, out, cancel);
+    drain_until_shutdown(app, sub, out, cancel, present);
     finalize_code(app, out, EXIT_SUCCESS, saw_cancel_exit || cancel.intent)
 }
 
@@ -296,14 +390,13 @@ fn abort_canceled(
     sub: &spirula_application::Subscription,
     out: &OutputSink,
     cancel: &mut CancelGate,
+    present: &mut PresentTracker,
     saw_cancel_exit: bool,
 ) -> CliExit {
-    // One last Stop attempt if still armed; then Shutdown. Do not hammer
-    // Rejected Stop during drain — intent is already sticky for exit 130.
     cancel.try_admit_stop(app, out);
     let _ = app.submit(Command::new(CommandPayload::Shutdown));
     cancel.suppress_retry = true;
-    drain_until_shutdown(app, sub, out, cancel);
+    drain_until_shutdown(app, sub, out, cancel, present);
     finalize_code(app, out, EXIT_CANCELED, true || saw_cancel_exit)
 }
 
@@ -341,31 +434,21 @@ fn classify_outcome(outcome: &RunOutcome, saw_cancel_exit: &mut bool) -> WaitEnd
     }
 }
 
-fn present_recovered_terminal(out: &OutputSink, envelope: &EventEnvelope) {
-    let _ = out.try_write_event(envelope);
-    let _ = out.try_write_line("spirula:recovered command terminal via query\n");
-}
-
 fn wait_for_command(
     app: &ApplicationService,
     sub: &spirula_application::Subscription,
     out: &OutputSink,
-    id: spirula_application::CommandId,
+    id: CommandId,
     cancel: &mut CancelGate,
+    present: &mut PresentTracker,
     saw_cancel_exit: &mut bool,
 ) -> WaitEnd {
-    // Test-only: starve live notify so Progress fills the tiny queue and the
-    // terminal must be restored via command_result (see SPIRULA_TEST_TINY_NOTIFY).
     let pressure = std::env::var_os("SPIRULA_TEST_TINY_NOTIFY").is_some();
     loop {
-        // Control first: never wait on presentation before observing SIGINT.
         cancel.try_admit_stop(app, out);
 
         if pressure {
-            // Brief stall so the worker can overflow notify capacity=1.
             std::thread::sleep(Duration::from_millis(5));
-            // Drain at most one non-terminal event; ignore live Completed so
-            // the recovery path below is what finishes the wait.
             if let Some(envelope) = sub.try_recv() {
                 if let Event::CommandRejected { command, .. } = &envelope.event
                     && matches!(command, CommandPayload::Stop { .. })
@@ -373,16 +456,17 @@ fn wait_for_command(
                     cancel.stop_admitted = false;
                     cancel.suppress_retry = true;
                 }
+                // Under pressure, skip live Completed so query/replay proves recovery.
                 if !(matches!(envelope.event, Event::Completed { .. })
                     && envelope.command_id == Some(id))
                 {
-                    let _ = out.try_write_event(&envelope);
+                    let _ = present.present(out, &envelope);
                 }
             }
         } else {
             match sub.recv_timeout(Duration::from_millis(20)) {
                 Ok(envelope) => {
-                    let _ = out.try_write_event(&envelope);
+                    let _ = present.present(out, &envelope);
                     if let Event::CommandRejected { command, .. } = &envelope.event
                         && matches!(command, CommandPayload::Stop { .. })
                     {
@@ -391,6 +475,7 @@ fn wait_for_command(
                     }
                     if let Event::Completed { outcome } = &envelope.event
                         && envelope.command_id == Some(id)
+                        && present.saw_completed(id)
                     {
                         return classify_outcome(outcome, saw_cancel_exit);
                     }
@@ -402,18 +487,31 @@ fn wait_for_command(
         match app.command_result(id) {
             CommandResult::Ready(envelope) => {
                 if let Event::Completed { outcome } = &envelope.event {
+                    if present.saw_completed(id) {
+                        // Live path already rendered this terminal once.
+                        return classify_outcome(outcome, saw_cancel_exit);
+                    }
                     if pressure {
                         let drops = app.snapshot().drops.notification;
                         let _ = out.try_write_line(format!("spirula:test notify-drops={drops}\n"));
-                        // Require real notify loss under the pressure harness.
                         if drops == 0 {
                             continue;
                         }
                     }
-                    present_recovered_terminal(out, &envelope);
+                    // Ordered catch-up from retained control history first.
+                    present.catch_up(app, out);
+                    if !present.saw_completed(id) {
+                        let _ = present.present(out, &envelope);
+                        let _ =
+                            out.try_write_line("spirula:recovered command terminal via query\n");
+                    } else if pressure {
+                        let _ =
+                            out.try_write_line("spirula:recovered command terminal via query\n");
+                    }
                     return classify_outcome(outcome, saw_cancel_exit);
                 }
                 if matches!(envelope.event, Event::ShutdownComplete) {
+                    let _ = present.present(out, &envelope);
                     return WaitEnd::Success;
                 }
             }
@@ -437,21 +535,21 @@ fn drain_until_shutdown(
     sub: &spirula_application::Subscription,
     out: &OutputSink,
     cancel: &mut CancelGate,
+    present: &mut PresentTracker,
 ) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        // Observe SIGINT for sticky intent / exit 130, but only admit Stop
-        // when not suppressed (active probe path). Full queues must not block.
         cancel.observe_signals();
         cancel.try_admit_stop(app, out);
         match sub.recv_timeout(Duration::from_millis(50)) {
             Ok(envelope) => {
-                let _ = out.try_write_event(&envelope);
+                let _ = present.present(out, &envelope);
                 if matches!(envelope.event, Event::ShutdownComplete) {
                     return;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
+                present.catch_up(app, out);
                 if app.snapshot().state == spirula_application::SessionState::Closed {
                     return;
                 }
