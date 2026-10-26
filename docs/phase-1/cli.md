@@ -77,8 +77,10 @@ control loop never blocks on a full pipe. The writer thread uses blocking
 raw `write(2)` without taking Rust’s global `stdout()` lock and **never**
 changes inherited file-status flags (`O_NONBLOCK` untouched — `dup` shares
 the open-file description, and second-SIGINT `SIG_DFL` death skips `Drop`).
-Overflow / soft write-deadline drops increment a counter. Flush/join use
-absolute deadlines; timed-out join abandons the writer honestly.
+Overflow / soft write-deadline drops increment a counter. Flush/shutdown use
+absolute deadlines that include join-mutex acquisition (`try_lock_until`, same
+pattern as disk `join`); timed-out shutdown retains the handle and returns
+`false` honestly so a concurrent short caller never blocks on a long holder.
 
 Live / query / drain presentation shares one seq + per-command terminal
 dedup so `command_result` recovery does not duplicate `completed` lines or

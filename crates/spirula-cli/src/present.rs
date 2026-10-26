@@ -18,7 +18,7 @@ use spirula_core::DomainError;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -193,7 +193,9 @@ impl OutputSink {
         }
     }
 
-    /// Signal writer exit and join within one absolute `deadline`.
+    /// Signal writer exit and join within one absolute `deadline` (includes
+    /// join-mutex acquisition). Concurrent callers that cannot acquire the
+    /// mutex before the deadline return `false` without blocking on the holder.
     ///
     /// On timeout the join handle is retained (honest: writer may still be
     /// blocked in `write(2)`); control never waits past the deadline.
@@ -206,7 +208,9 @@ impl OutputSink {
         {
             let _ = self.tx.try_send(SinkMsg::Shutdown);
         }
-        let mut slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(mut slot) = try_lock_until(&self.join, end) else {
+            return false;
+        };
         let Some(handle) = slot.take() else {
             return true;
         };
@@ -223,6 +227,22 @@ impl OutputSink {
         }
         *slot = Some(handle);
         false
+    }
+}
+
+/// Acquire `mutex` without exceeding absolute `end`. Returns `None` on timeout.
+fn try_lock_until<'a, T>(mutex: &'a Mutex<T>, end: Instant) -> Option<MutexGuard<'a, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                if Instant::now() >= end {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 }
 
@@ -363,9 +383,10 @@ fn poll_stdout_writable(fd: i32, timeout: Duration) -> bool {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // fcntl probes that the sink never arms O_NONBLOCK
+#[allow(unsafe_code)] // fcntl / pipe / dup2 probes for flags and stalled stdout
 mod tests {
     use super::*;
+    use std::sync::Barrier;
 
     #[test]
     #[cfg(unix)]
@@ -386,5 +407,62 @@ mod tests {
         assert!(sink.shutdown(Duration::from_secs(1)));
         let after = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         assert_eq!(after & libc::O_NONBLOCK, before & libc::O_NONBLOCK);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn concurrent_shutdown_deadline_includes_mutex_wait() {
+        // Matches /tmp/spirula-f09-review/final-output-shutdown-probe: long
+        // shutdown holds the join mutex while writer blocks in write(2) on a
+        // full pipe; short shutdown's absolute deadline must include lock wait.
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        assert!(saved >= 0);
+        assert_eq!(
+            unsafe { libc::dup2(write_fd, libc::STDOUT_FILENO) },
+            libc::STDOUT_FILENO
+        );
+        unsafe {
+            libc::close(write_fd);
+        }
+
+        let out = Arc::new(OutputSink::start(4));
+        assert!(out.try_write_line(format!("{}\n", "x".repeat(8 * 1024 * 1024))));
+        thread::sleep(Duration::from_millis(30));
+
+        let clone = Arc::clone(&out);
+        let barrier = Arc::new(Barrier::new(2));
+        let b = Arc::clone(&barrier);
+        let long = thread::spawn(move || {
+            b.wait();
+            let _ = clone.shutdown(Duration::from_millis(500));
+        });
+        barrier.wait();
+        thread::sleep(Duration::from_millis(30));
+
+        let start = Instant::now();
+        let ok = out.shutdown(Duration::from_millis(10));
+        let elapsed = start.elapsed();
+        assert!(
+            !ok,
+            "short shutdown must not claim success under contention"
+        );
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "absolute deadline must include lock wait (probe: 10ms not ~470ms): {elapsed:?}"
+        );
+
+        let _ = long.join();
+        // Restore real stdout first: replacing fd 1 closes the pipe write end,
+        // so the blocked writer wakes (EPIPE) without a drain-thread EOF wait.
+        unsafe {
+            assert_eq!(libc::dup2(saved, libc::STDOUT_FILENO), libc::STDOUT_FILENO);
+            libc::close(saved);
+            libc::close(read_fd);
+        }
+        let _ = out.shutdown(Duration::from_secs(2));
+        drop(out);
     }
 }
