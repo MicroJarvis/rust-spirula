@@ -156,7 +156,8 @@ impl FeatureBits {
     }
 }
 
-/// Narrow limit floors used for required checks (not a full Limits mirror).
+/// Narrow limit floors (required min or optional desire). Same three fields —
+/// not a full wgpu `Limits` mirror.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LimitFloor {
     pub max_buffer_size: Option<u64>,
@@ -193,6 +194,70 @@ impl AdapterLimits {
     }
 }
 
+/// Resolved value for one negotiated limit field.
+///
+/// `effective` never exceeds the adapter capacity and never claims an unmet
+/// optional desire was satisfied (`desired_met` is the honesty bit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedLimit<T: Copy + Ord> {
+    /// Optional desire from the request (`None` if not optionally requested).
+    pub desired: Option<T>,
+    /// Usable value for callers (≤ adapter).
+    pub effective: T,
+    /// `true` iff no optional desire, or adapter capacity ≥ desire.
+    pub desired_met: bool,
+}
+
+impl<T: Copy + Ord> ResolvedLimit<T> {
+    fn resolve(adapter: T, desired: Option<T>) -> Self {
+        match desired {
+            None => Self {
+                desired: None,
+                effective: adapter,
+                desired_met: true,
+            },
+            Some(want) if adapter >= want => Self {
+                desired: Some(want),
+                effective: want,
+                desired_met: true,
+            },
+            Some(want) => Self {
+                desired: Some(want),
+                effective: adapter,
+                desired_met: false,
+            },
+        }
+    }
+}
+
+/// Verifiable resolved limits after required floors pass and optional desires
+/// are clamped to the device (same three fields as [`LimitFloor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedLimits {
+    pub max_buffer_size: ResolvedLimit<u64>,
+    pub max_storage_buffers_per_shader_stage: ResolvedLimit<u32>,
+    pub max_compute_workgroup_storage_size: ResolvedLimit<u32>,
+}
+
+impl ResolvedLimits {
+    fn negotiate(adapter: AdapterLimits, optional: LimitFloor) -> Self {
+        Self {
+            max_buffer_size: ResolvedLimit::resolve(
+                adapter.max_buffer_size,
+                optional.max_buffer_size,
+            ),
+            max_storage_buffers_per_shader_stage: ResolvedLimit::resolve(
+                adapter.max_storage_buffers_per_shader_stage,
+                optional.max_storage_buffers_per_shader_stage,
+            ),
+            max_compute_workgroup_storage_size: ResolvedLimit::resolve(
+                adapter.max_compute_workgroup_storage_size,
+                optional.max_compute_workgroup_storage_size,
+            ),
+        }
+    }
+}
+
 /// One adapter's report for selection / TrainPlan inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdapterCapabilities {
@@ -201,23 +266,29 @@ pub struct AdapterCapabilities {
     pub limits: AdapterLimits,
 }
 
-/// Request: required rejects; optional negotiates fallbacks.
+/// Request: required rejects; optional features/limits negotiate fallbacks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CapabilityRequest {
     pub required_features: Vec<CapabilityId>,
     pub optional_features: Vec<CapabilityId>,
+    /// Hard floor — miss rejects the adapter (`SP-GPU-001`).
     pub required_min_limits: LimitFloor,
+    /// Soft desire — miss clamps to device capacity and records `desired_met=false`.
+    /// Must not reject an adapter that already meets [`Self::required_min_limits`].
+    pub optional_desired_limits: LimitFloor,
     /// When float32 atomic is optional and missing, prefer staged reduce.
     pub prefer_staged_reduce_fallback: bool,
 }
 
 impl CapabilityRequest {
-    /// Diagnose default: no required extras; negotiate all four as optional.
+    /// Diagnose default: no required extras; negotiate all four features as
+    /// optional; no optional limit desires.
     pub fn diagnose_default() -> Self {
         Self {
             required_features: Vec::new(),
             optional_features: CapabilityId::ALL.to_vec(),
             required_min_limits: LimitFloor::default(),
+            optional_desired_limits: LimitFloor::default(),
             prefer_staged_reduce_fallback: false,
         }
     }
@@ -255,6 +326,9 @@ pub struct NegotiatedPlan {
     pub shader_f16: F16Plan,
     pub timestamp: TimestampPlan,
     pub float_atomic: FloatAtomicPlan,
+    /// Resolved limits after required floors; optional desires never invent
+    /// capacity or claim unmet requests as satisfied.
+    pub limits: ResolvedLimits,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -337,6 +411,7 @@ pub fn negotiate(
         shader_f16,
         timestamp,
         float_atomic,
+        limits: ResolvedLimits::negotiate(adapter.limits, request.optional_desired_limits),
     })
 }
 
@@ -525,6 +600,12 @@ mod tests {
         assert_eq!(sel.negotiated.shader_f16, F16Plan::FallbackF32);
         assert_eq!(sel.negotiated.timestamp, TimestampPlan::FallbackHostTimer);
         assert_eq!(sel.negotiated.float_atomic, FloatAtomicPlan::FallbackCas);
+        assert!(sel.negotiated.limits.max_buffer_size.desired.is_none());
+        assert!(sel.negotiated.limits.max_buffer_size.desired_met);
+        assert_eq!(
+            sel.negotiated.limits.max_buffer_size.effective,
+            basic_limits().max_buffer_size
+        );
     }
 
     #[test]
@@ -644,6 +725,131 @@ mod tests {
         assert_eq!(
             sel.negotiated.float_atomic,
             FloatAtomicPlan::FallbackStagedReduce
+        );
+    }
+
+    #[test]
+    fn optional_limit_desire_over_device_clamps_without_reject() {
+        let device = AdapterLimits {
+            max_buffer_size: 4 << 20,
+            max_storage_buffers_per_shader_stage: 4,
+            max_compute_workgroup_storage_size: 8_192,
+        };
+        let adapters = vec![sample(
+            0,
+            "mid",
+            AdapterClass::DiscreteGpu,
+            BackendKind::Vulkan,
+            FeatureBits::default(),
+            device,
+            FieldAvailability::Unavailable {
+                reason: "synthetic",
+            },
+        )];
+        let mut req = CapabilityRequest::diagnose_default();
+        req.optional_desired_limits.max_buffer_size = Some(64 << 20);
+        req.optional_desired_limits
+            .max_storage_buffers_per_shader_stage = Some(16);
+        let sel = select_auto(&adapters, &req).unwrap();
+        let lim = sel.negotiated.limits;
+        assert!(!lim.max_buffer_size.desired_met);
+        assert_eq!(lim.max_buffer_size.desired, Some(64 << 20));
+        assert_eq!(lim.max_buffer_size.effective, device.max_buffer_size);
+        assert!(!lim.max_storage_buffers_per_shader_stage.desired_met);
+        assert_eq!(
+            lim.max_storage_buffers_per_shader_stage.effective,
+            device.max_storage_buffers_per_shader_stage
+        );
+        // Unrequested field stays honest device capacity.
+        assert!(lim.max_compute_workgroup_storage_size.desired_met);
+        assert_eq!(
+            lim.max_compute_workgroup_storage_size.effective,
+            device.max_compute_workgroup_storage_size
+        );
+    }
+
+    #[test]
+    fn optional_limit_met_reports_desired_as_effective() {
+        let device = basic_limits();
+        let adapters = vec![sample(
+            0,
+            "fat",
+            AdapterClass::DiscreteGpu,
+            BackendKind::Metal,
+            FeatureBits::default(),
+            device,
+            FieldAvailability::Unavailable {
+                reason: "synthetic",
+            },
+        )];
+        let mut req = CapabilityRequest::diagnose_default();
+        req.optional_desired_limits.max_buffer_size = Some(1 << 20);
+        let sel = select_auto(&adapters, &req).unwrap();
+        let buf = sel.negotiated.limits.max_buffer_size;
+        assert!(buf.desired_met);
+        assert_eq!(buf.desired, Some(1 << 20));
+        assert_eq!(buf.effective, 1 << 20);
+        assert!(buf.effective <= device.max_buffer_size);
+    }
+
+    #[test]
+    fn required_limit_outranks_optional_desire() {
+        // Device meets optional desire but misses required floor → reject.
+        let adapters = vec![sample(
+            0,
+            "almost",
+            AdapterClass::DiscreteGpu,
+            BackendKind::Vulkan,
+            FeatureBits::default(),
+            AdapterLimits {
+                max_buffer_size: 8 << 20,
+                max_storage_buffers_per_shader_stage: 8,
+                max_compute_workgroup_storage_size: 16_384,
+            },
+            FieldAvailability::Unavailable {
+                reason: "synthetic",
+            },
+        )];
+        let mut req = CapabilityRequest::diagnose_default();
+        req.required_min_limits.max_buffer_size = Some(32 << 20);
+        req.optional_desired_limits.max_buffer_size = Some(4 << 20);
+        let err = select_auto(&adapters, &req).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NoAdapter);
+        assert!(
+            err.message().contains("max_buffer_size")
+                || err
+                    .context_value(ContextKey::Actual)
+                    .is_some_and(|a| a.contains("max_buffer_size"))
+        );
+    }
+
+    #[test]
+    fn required_floor_met_optional_unmet_keeps_adapter() {
+        let device = AdapterLimits {
+            max_buffer_size: 8 << 20,
+            max_storage_buffers_per_shader_stage: 8,
+            max_compute_workgroup_storage_size: 16_384,
+        };
+        let adapters = vec![sample(
+            0,
+            "ok-req",
+            AdapterClass::IntegratedGpu,
+            BackendKind::Metal,
+            FeatureBits::default(),
+            device,
+            FieldAvailability::Unavailable {
+                reason: "synthetic",
+            },
+        )];
+        let mut req = CapabilityRequest::diagnose_default();
+        req.required_min_limits.max_buffer_size = Some(4 << 20);
+        req.optional_desired_limits.max_buffer_size = Some(64 << 20);
+        let sel = select_auto(&adapters, &req).unwrap();
+        assert!(sel.adapter.limits.max_buffer_size >= 4 << 20);
+        assert!(!sel.negotiated.limits.max_buffer_size.desired_met);
+        assert_eq!(
+            sel.negotiated.limits.max_buffer_size.effective,
+            device.max_buffer_size
         );
     }
 }

@@ -13,7 +13,7 @@ mod enumerate;
 pub use adapter::{
     AdapterCapabilities, AdapterClass, AdapterIdentity, AdapterLimits, AdapterSelection,
     BackendKind, CapabilityId, CapabilityRequest, F16Plan, FeatureBits, FieldAvailability,
-    FloatAtomicPlan, LimitFloor, NegotiatedPlan, SubgroupPlan, TimestampPlan, is_eligible,
-    negotiate, select_auto,
+    FloatAtomicPlan, LimitFloor, NegotiatedPlan, ResolvedLimit, ResolvedLimits, SubgroupPlan,
+    TimestampPlan, is_eligible, negotiate, select_auto,
 };
 pub use enumerate::{WGPU_VERSION, diagnose_exit_code, enumerate_host_adapters};

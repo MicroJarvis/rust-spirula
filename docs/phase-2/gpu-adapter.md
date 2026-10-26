@@ -30,9 +30,9 @@ CLI session does **not** gain a business GPU command in this slice.
 
 - `BackendKind`, `AdapterClass`, `AdapterIdentity`, `AdapterCapabilities`
 - `CapabilityId` (`Subgroup`, `ShaderF16`, `TimestampQuery`, `Float32AtomicAdd`)
-- `CapabilityRequest`, `LimitFloor`
-- `NegotiatedPlan` and per-capability plan enums (available vs documented
-  fallback)
+- `CapabilityRequest`, `LimitFloor` (same three fields for required min and
+  optional desire)
+- `NegotiatedPlan` (feature plans + `ResolvedLimits` / `ResolvedLimit`)
 - `select_auto`, `negotiate`, pure ranking helpers (synthetic-testable)
 - `enumerate_host_adapters` (real wgpu; returns zero or more reports)
 
@@ -41,11 +41,17 @@ general-purpose wgpu mirror and does not create devices, queues, or resources.
 
 ### Required vs optional
 
-- **Required** feature/limit miss → adapter is ineligible. If none remain →
-  `SP-GPU-001` (`NoAdapter`) with context naming the missing item(s). No silent
-  downgrade of a required demand.
-- **Optional** miss → keep the adapter; negotiate an explicit fallback. Optional
-  absence must not reject an otherwise eligible adapter.
+- **Required** feature / `required_min_limits` miss → adapter is ineligible. If
+  none remain → `SP-GPU-001` (`NoAdapter`) with context naming the missing
+  item(s). No silent downgrade of a required demand.
+- **Optional** feature miss → keep the adapter; negotiate an explicit feature
+  fallback. Optional absence must not reject an otherwise eligible adapter.
+- **Optional** `optional_desired_limits` over device capacity → keep the
+  adapter; `ResolvedLimit` sets `desired_met=false` and `effective` to the
+  adapter capacity. Never claim the requested desire was satisfied. When the
+  desire is met, `effective` equals the desire (≤ adapter).
+- Required floors outrank optional desires: failing a required floor rejects
+  even if an optional desire would have been met.
 - Detecting a wgpu feature bit means **capability declared**, not that a
   Spirula kernel already implements it. Real compute stays later P2/P4 slices.
 
@@ -71,8 +77,10 @@ Binary `spirula-gpu-diagnose` (crate `spirula-gpu`):
 
 ### Tests and host evidence
 
-- Pure/synthetic matrix: empty set, required miss, optional fallback, limit
-  floors, deterministic ranking, no silent required downgrade.
+- Pure/synthetic matrix: empty set, required miss, optional feature fallback,
+  required limit floors, optional limit clamp (`desired_met=false`), required
+  outranks optional desire, deterministic ranking, no silent required
+  downgrade.
 - Host headless enumerate always runs: records actual adapters on this machine
   **or** an empty list with a precise no-adapter reason. An empty machine is
   not recorded as a successful “measured GPU” result.

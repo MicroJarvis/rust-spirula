@@ -99,6 +99,21 @@ fn run() -> Result<(), u8> {
                 sel.negotiated.timestamp,
                 sel.negotiated.float_atomic,
             );
+            let lim = &sel.negotiated.limits;
+            println!(
+                "resolved_limits max_buffer_size={{desired={:?},effective={},met={}}} \
+                 max_storage_buffers_per_stage={{desired={:?},effective={},met={}}} \
+                 max_compute_workgroup_storage={{desired={:?},effective={},met={}}}",
+                lim.max_buffer_size.desired,
+                lim.max_buffer_size.effective,
+                lim.max_buffer_size.desired_met,
+                lim.max_storage_buffers_per_shader_stage.desired,
+                lim.max_storage_buffers_per_shader_stage.effective,
+                lim.max_storage_buffers_per_shader_stage.desired_met,
+                lim.max_compute_workgroup_storage_size.desired,
+                lim.max_compute_workgroup_storage_size.effective,
+                lim.max_compute_workgroup_storage_size.desired_met,
+            );
             Ok(())
         }
         Err(err) => {
