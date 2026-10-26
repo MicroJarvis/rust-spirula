@@ -15,9 +15,14 @@ use crate::adapter::{
     AdapterCapabilities, CapabilityRequest, F16Plan, FeatureBits, FloatAtomicPlan, NegotiatedPlan,
     ResolvedLimits, SubgroupPlan, TimestampPlan, select_auto,
 };
+use crate::diagnostics::{
+    DEFAULT_DIAGNOSTIC_CAPACITY, DiagnosticKind, DiagnosticRing, DiagnosticStats,
+    GpuDiagnosticEvent, GpuOperation, ScopeErrorInject, enrich_gpu_error, kind_for_code,
+};
 use crate::enumerate::{
     WGPU_VERSION, enumerate_on_instance, map_adapter, new_instance, paired_live_adapter,
 };
+use crate::resource::ResourceLabel;
 
 /// Opaque context identity; unique per [`GpuContext`] value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,6 +31,11 @@ pub struct ContextId(u64);
 impl ContextId {
     pub fn get(self) -> u64 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(id: u64) -> Self {
+        Self(id)
     }
 }
 
@@ -36,6 +46,11 @@ pub struct ContextGeneration(u64);
 impl ContextGeneration {
     pub fn get(self) -> u64 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(generation: u64) -> Self {
+        Self(generation)
     }
 }
 
@@ -210,6 +225,9 @@ pub struct GpuContext {
     closed: bool,
     pub(crate) resource_ledger: std::sync::Arc<std::sync::Mutex<crate::resource::ResourceLedger>>,
     pub(crate) pipeline_cache: std::sync::Arc<std::sync::Mutex<crate::pipeline::PipelineCache>>,
+    pub(crate) diagnostics: DiagnosticRing,
+    pub(crate) pending_submit_inject: bool,
+    pub(crate) pending_scope_inject: Option<ScopeErrorInject>,
 }
 
 impl GpuContext {
@@ -248,6 +266,10 @@ impl GpuContext {
         }
         self.resource_ledger = Self::fresh_ledger(self.id, self.generation);
         self.pipeline_cache = Self::fresh_pipeline_cache(self.id, self.generation);
+        self.diagnostics
+            .clear_for_generation(self.id, self.generation);
+        self.pending_submit_inject = false;
+        self.pending_scope_inject = None;
     }
 }
 
@@ -267,6 +289,13 @@ impl GpuContext {
                 closed: false,
                 resource_ledger: Self::fresh_ledger(id, ContextGeneration(1)),
                 pipeline_cache: Self::fresh_pipeline_cache(id, ContextGeneration(1)),
+                diagnostics: DiagnosticRing::new(
+                    id,
+                    ContextGeneration(1),
+                    DEFAULT_DIAGNOSTIC_CAPACITY,
+                ),
+                pending_submit_inject: false,
+                pending_scope_inject: None,
             }),
             Err(failure) => Err(failure),
         }
@@ -343,6 +372,9 @@ impl GpuContext {
             closed: false,
             resource_ledger: Self::fresh_ledger(id, generation),
             pipeline_cache: Self::fresh_pipeline_cache(id, generation),
+            diagnostics: DiagnosticRing::new(id, generation, DEFAULT_DIAGNOSTIC_CAPACITY),
+            pending_submit_inject: false,
+            pending_scope_inject: None,
         })
     }
 
@@ -443,6 +475,11 @@ impl GpuContext {
         }
         self.invalidate_pipelines();
         self.backend = None;
+        // Generation-isolated: close clears the GPU-local diagnostic ring.
+        self.diagnostics
+            .clear_for_generation(self.id, self.generation);
+        self.pending_submit_inject = false;
+        self.pending_scope_inject = None;
         if let Some(report) = self.report.as_mut() {
             report.status = self.status;
             report.queue_present = false;
@@ -460,10 +497,11 @@ impl GpuContext {
         if self.closed || self.status != ContextStatus::Live {
             return;
         }
+        let reason = reason.into();
         self.lost_notices.push(LostNotice {
             context_id: self.id,
             generation: self.generation,
-            reason: reason.into(),
+            reason: reason.clone(),
             source: LostSource::SyntheticInject,
         });
         self.status = ContextStatus::Lost;
@@ -476,6 +514,16 @@ impl GpuContext {
         }
         self.invalidate_pipelines();
         self.backend = None;
+        self.record_diagnostic(
+            DiagnosticKind::DeviceLost,
+            GpuOperation::Inject,
+            None,
+            Some(ErrorCode::DeviceLost.as_str()),
+            reason,
+            None,
+            None,
+            None,
+        );
     }
 
     /// Destroy the live wgpu device **without** polling (test/diagnose hook).
@@ -500,7 +548,7 @@ impl GpuContext {
             self.lost_notices.push(LostNotice {
                 context_id: self.id,
                 generation: self.generation,
-                reason,
+                reason: reason.clone(),
                 source: LostSource::HostCallback,
             });
             self.status = ContextStatus::Lost;
@@ -513,6 +561,16 @@ impl GpuContext {
             }
             self.invalidate_pipelines();
             self.backend = None;
+            self.record_diagnostic(
+                DiagnosticKind::DeviceLost,
+                GpuOperation::Wait,
+                None,
+                Some(ErrorCode::DeviceLost.as_str()),
+                reason,
+                None,
+                None,
+                None,
+            );
         }
     }
 }
@@ -693,6 +751,168 @@ fn features_from_wgpu(features: wgpu::Features) -> FeatureBits {
         shader_f16: features.contains(wgpu::Features::SHADER_F16),
         timestamp_query: features.contains(wgpu::Features::TIMESTAMP_QUERY),
         float32_atomic_add: features.contains(wgpu::Features::SHADER_FLOAT32_ATOMIC),
+    }
+}
+
+impl GpuContext {
+    /// Shrink/grow the diagnostic ring capacity (tests). Overflow still drops oldest.
+    pub fn set_diagnostic_capacity(&mut self, capacity: usize) {
+        self.diagnostics.set_capacity(capacity);
+    }
+
+    pub fn diagnostic_stats(&self) -> DiagnosticStats {
+        self.diagnostics.stats()
+    }
+
+    /// Pull-copy of retained events with `seq > since_seq` (does not clear).
+    pub fn poll_diagnostics(&self, since_seq: u64) -> Vec<GpuDiagnosticEvent> {
+        self.diagnostics.since(since_seq)
+    }
+
+    pub fn filter_diagnostics(
+        &self,
+        since_seq: u64,
+        kind: Option<DiagnosticKind>,
+        label: Option<&str>,
+    ) -> Vec<GpuDiagnosticEvent> {
+        self.diagnostics.filter(since_seq, kind, label)
+    }
+
+    /// Fail the next [`GpuContext::submit`] with `SP-GPU-003` (synthetic).
+    pub fn inject_next_submit_error(&mut self) {
+        self.pending_submit_inject = true;
+    }
+
+    /// Fail the next wgpu error-scope observation (synthetic).
+    pub fn inject_next_scope_error(&mut self, inject: ScopeErrorInject) {
+        self.pending_scope_inject = Some(inject);
+    }
+
+    pub(crate) fn take_scope_inject(&mut self) -> Option<ScopeErrorInject> {
+        self.pending_scope_inject.take()
+    }
+
+    pub(crate) fn take_submit_inject(&mut self) -> bool {
+        let pending = self.pending_submit_inject;
+        self.pending_submit_inject = false;
+        pending
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_diagnostic(
+        &mut self,
+        kind: DiagnosticKind,
+        operation: GpuOperation,
+        label: Option<&str>,
+        code: Option<&str>,
+        message: impl Into<String>,
+        requested_bytes: Option<u64>,
+        current_bytes: Option<u64>,
+        budget_bytes: Option<u64>,
+    ) {
+        self.diagnostics.push(
+            kind,
+            operation,
+            label,
+            code,
+            message,
+            requested_bytes,
+            current_bytes,
+            budget_bytes,
+        );
+    }
+
+    pub(crate) fn record_error_diagnostic(
+        &mut self,
+        err: &DomainError,
+        operation: GpuOperation,
+        label: Option<&ResourceLabel>,
+        requested_bytes: Option<u64>,
+        current_bytes: Option<u64>,
+        budget_bytes: Option<u64>,
+    ) {
+        self.record_diagnostic(
+            kind_for_code(err.code()),
+            operation,
+            label.map(ResourceLabel::as_str),
+            Some(err.code().as_str()),
+            err.message().to_owned(),
+            requested_bytes,
+            current_bytes,
+            budget_bytes,
+        );
+    }
+
+    pub(crate) fn fail_gpu(
+        &mut self,
+        err: DomainError,
+        operation: GpuOperation,
+        label: Option<&ResourceLabel>,
+        requested_bytes: Option<u64>,
+        current_bytes: Option<u64>,
+        budget_bytes: Option<u64>,
+    ) -> DomainError {
+        let err = enrich_gpu_error(
+            err,
+            operation,
+            label,
+            requested_bytes,
+            current_bytes,
+            budget_bytes,
+        );
+        self.record_error_diagnostic(
+            &err,
+            operation,
+            label,
+            requested_bytes,
+            current_bytes,
+            budget_bytes,
+        );
+        err
+    }
+
+    /// Host/diagnose: force a wgpu validation error under error scopes.
+    ///
+    /// Maps via [`crate::diagnostics::ScopeClass::Resource`] (`SP-INP-003` for
+    /// validation). Emits a diagnostic. Not a silent drop.
+    pub fn host_probe_validation_scope(&mut self) -> Result<(), DomainError> {
+        self.poll_host_lost();
+        if self.status != ContextStatus::Live || self.closed {
+            return Err(handle_unavailable_error(self.status));
+        }
+        let Some((device, _)) = self.backend_device_queue() else {
+            return Err(handle_unavailable_error(self.status));
+        };
+        let inject = self.take_scope_inject();
+        let result = crate::resource::wgpu_scoped(
+            &device,
+            crate::diagnostics::ScopeClass::Resource,
+            inject,
+            || {
+                let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("spirula:gpu:probe:validation"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        "not valid wgsl ;;; this must fail validation".into(),
+                    ),
+                });
+            },
+        );
+        match result {
+            Ok(()) => Err(self.fail_gpu(
+                DomainError::try_new(
+                    ErrorCode::Internal,
+                    "host validation probe unexpectedly succeeded",
+                )
+                .expect("non-empty")
+                .with_user_action(UserAction::ReportDefect),
+                GpuOperation::Create,
+                None,
+                None,
+                None,
+                None,
+            )),
+            Err(err) => Err(self.fail_gpu(err, GpuOperation::Create, None, None, None, None)),
+        }
     }
 }
 

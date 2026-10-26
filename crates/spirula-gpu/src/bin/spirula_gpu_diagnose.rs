@@ -407,7 +407,7 @@ fn run_compute() -> Result<(), u8> {
     ctx.close();
     println!(
         "note: affine compute round-trip ok; not application/train/UI readiness; \
-         full GPU events=P2-F05 surface smoke=P2-F06 cache perf opt=P9-F03"
+         GPU diagnostics=P2-F05 (local ring, not app session) surface smoke=P2-F06 cache perf opt=P9-F03"
     );
     Ok(())
 }

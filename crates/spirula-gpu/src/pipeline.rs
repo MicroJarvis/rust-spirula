@@ -374,6 +374,7 @@ impl GpuContext {
             bind_layout_version: desc.bind_layout_version,
         };
 
+        let mut scope_inject = self.take_scope_inject();
         let mut cache = self.pipeline_cache.lock().expect("pipeline cache");
         cache.ensure_live(self.id(), self.generation())?;
 
@@ -416,69 +417,117 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, _)) => {
-                let module = match wgpu_scoped(&device, || {
-                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some(desc.label.as_str()),
-                        source: wgpu::ShaderSource::Wgsl(desc.source.as_str().into()),
-                    })
-                }) {
+                let module = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    scope_inject.take(),
+                    || {
+                        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some(desc.label.as_str()),
+                            source: wgpu::ShaderSource::Wgsl(desc.source.as_str().into()),
+                        })
+                    },
+                ) {
                     Ok(m) => m,
-                    Err(e) => return Err(enrich_shader_error(e, &header.name)),
+                    Err(e) => {
+                        drop(cache);
+                        let err = enrich_shader_error(e, &header.name);
+                        return Err(self.fail_gpu(
+                            err,
+                            crate::diagnostics::GpuOperation::Create,
+                            Some(&desc.label),
+                            None,
+                            None,
+                            None,
+                        ));
+                    }
                 };
 
                 // v1 and v2 share the same binding ABI; epoch is a key field only.
                 let layout_label =
                     format!("spirula:gpu:bgl:affine-u32-v{}", desc.bind_layout_version);
                 let pl_label = format!("spirula:gpu:pl:affine-u32-v{}", desc.bind_layout_version);
-                let bind_layout = match wgpu_scoped(&device, || {
-                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some(layout_label.as_str()),
-                        entries: &[
-                            wgpu::BindGroupLayoutEntry {
-                                binding: 0,
-                                visibility: wgpu::ShaderStages::COMPUTE,
-                                ty: wgpu::BindingType::Buffer {
-                                    ty: wgpu::BufferBindingType::Uniform,
-                                    has_dynamic_offset: false,
-                                    min_binding_size: std::num::NonZeroU64::new(16),
+                let bind_layout = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                            label: Some(layout_label.as_str()),
+                            entries: &[
+                                wgpu::BindGroupLayoutEntry {
+                                    binding: 0,
+                                    visibility: wgpu::ShaderStages::COMPUTE,
+                                    ty: wgpu::BindingType::Buffer {
+                                        ty: wgpu::BufferBindingType::Uniform,
+                                        has_dynamic_offset: false,
+                                        min_binding_size: std::num::NonZeroU64::new(16),
+                                    },
+                                    count: None,
                                 },
-                                count: None,
-                            },
-                            wgpu::BindGroupLayoutEntry {
-                                binding: 1,
-                                visibility: wgpu::ShaderStages::COMPUTE,
-                                ty: wgpu::BindingType::Buffer {
-                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                    has_dynamic_offset: false,
-                                    min_binding_size: None,
+                                wgpu::BindGroupLayoutEntry {
+                                    binding: 1,
+                                    visibility: wgpu::ShaderStages::COMPUTE,
+                                    ty: wgpu::BindingType::Buffer {
+                                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                        has_dynamic_offset: false,
+                                        min_binding_size: None,
+                                    },
+                                    count: None,
                                 },
-                                count: None,
-                            },
-                            wgpu::BindGroupLayoutEntry {
-                                binding: 2,
-                                visibility: wgpu::ShaderStages::COMPUTE,
-                                ty: wgpu::BindingType::Buffer {
-                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                    has_dynamic_offset: false,
-                                    min_binding_size: None,
+                                wgpu::BindGroupLayoutEntry {
+                                    binding: 2,
+                                    visibility: wgpu::ShaderStages::COMPUTE,
+                                    ty: wgpu::BindingType::Buffer {
+                                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                        has_dynamic_offset: false,
+                                        min_binding_size: None,
+                                    },
+                                    count: None,
                                 },
-                                count: None,
-                            },
-                        ],
-                    })
-                }) {
+                            ],
+                        })
+                    },
+                ) {
                     Ok(l) => l,
-                    Err(e) => return Err(enrich_shader_error(e, &header.name)),
+                    Err(e) => {
+                        drop(cache);
+                        let err = enrich_shader_error(e, &header.name);
+                        return Err(self.fail_gpu(
+                            err,
+                            crate::diagnostics::GpuOperation::Create,
+                            Some(&desc.label),
+                            None,
+                            None,
+                            None,
+                        ));
+                    }
                 };
-                let pipeline_layout = match wgpu_scoped(&device, || {
-                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some(pl_label.as_str()),
-                        bind_group_layouts: &[Some(&bind_layout)],
-                        immediate_size: 0,
-                    })
-                }) {
+                let pipeline_layout = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                            label: Some(pl_label.as_str()),
+                            bind_group_layouts: &[Some(&bind_layout)],
+                            immediate_size: 0,
+                        })
+                    },
+                ) {
                     Ok(l) => l,
-                    Err(e) => return Err(enrich_shader_error(e, &header.name)),
+                    Err(e) => {
+                        drop(cache);
+                        let err = enrich_shader_error(e, &header.name);
+                        return Err(self.fail_gpu(
+                            err,
+                            crate::diagnostics::GpuOperation::Create,
+                            Some(&desc.label),
+                            None,
+                            None,
+                            None,
+                        ));
+                    }
                 };
 
                 let constants: Vec<(&str, f64)> = key
@@ -487,21 +536,37 @@ impl GpuContext {
                     .iter()
                     .map(|(n, v)| (n.as_str(), f64::from(*v)))
                     .collect();
-                let pipeline = match wgpu_scoped(&device, || {
-                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some(desc.label.as_str()),
-                        layout: Some(&pipeline_layout),
-                        module: &module,
-                        entry_point: Some(desc.entry_point.as_str()),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &constants,
-                            ..Default::default()
-                        },
-                        cache: None,
-                    })
-                }) {
+                let pipeline = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                            label: Some(desc.label.as_str()),
+                            layout: Some(&pipeline_layout),
+                            module: &module,
+                            entry_point: Some(desc.entry_point.as_str()),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: &constants,
+                                ..Default::default()
+                            },
+                            cache: None,
+                        })
+                    },
+                ) {
                     Ok(p) => p,
-                    Err(e) => return Err(enrich_shader_error(e, &header.name)),
+                    Err(e) => {
+                        drop(cache);
+                        let err = enrich_shader_error(e, &header.name);
+                        return Err(self.fail_gpu(
+                            err,
+                            crate::diagnostics::GpuOperation::Create,
+                            Some(&desc.label),
+                            None,
+                            None,
+                            None,
+                        ));
+                    }
                 };
 
                 cache.entries.insert(
@@ -606,6 +671,7 @@ impl GpuContext {
             )));
         }
 
+        let scope_inject = self.take_scope_inject();
         let is_synthetic = self.backend_device_queue().is_none();
         if is_synthetic {
             return self.dispatch_affine_synthetic(pipeline, params_buf, input, output, count);
@@ -652,58 +718,69 @@ impl GpuContext {
         // Narrow ranges: bind Params as 16B and storage as count*4 so a larger
         // buffer allocation cannot exceed enabled max_*_buffer_binding_size.
         // Error-scope bind/encode/finish so validation cannot panic exit 101.
-        let finished = match wgpu_scoped(&device, || {
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("spirula:gpu:bg:affine-u32"),
-                layout: &bind_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &params_b,
-                            offset: 0,
-                            size: Some(params_size),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &in_b,
-                            offset: 0,
-                            size: Some(storage_size),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &out_b,
-                            offset: 0,
-                            size: Some(storage_size),
-                        }),
-                    },
-                ],
-            });
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("spirula:gpu:encoder:affine-u32"),
-            });
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("spirula:gpu:compute:affine-u32"),
-                    timestamp_writes: None,
+        let finished = match wgpu_scoped(
+            &device,
+            crate::diagnostics::ScopeClass::Resource,
+            scope_inject,
+            || {
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("spirula:gpu:bg:affine-u32"),
+                    layout: &bind_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &params_b,
+                                offset: 0,
+                                size: Some(params_size),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &in_b,
+                                offset: 0,
+                                size: Some(storage_size),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &out_b,
+                                offset: 0,
+                                size: Some(storage_size),
+                            }),
+                        },
+                    ],
                 });
-                pass.set_pipeline(&gpu_pipe);
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.dispatch_workgroups(groups, 1, 1);
-            }
-            encoder.finish()
-        }) {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("spirula:gpu:encoder:affine-u32"),
+                });
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("spirula:gpu:compute:affine-u32"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&gpu_pipe);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.dispatch_workgroups(groups, 1, 1);
+                }
+                encoder.finish()
+            },
+        ) {
             Ok(cmd) => cmd,
             Err(e) => {
                 // No pending_commands / note_pending on failure.
-                return Err(range_err(format!(
-                    "affine bind/encode failed: {}",
-                    e.message()
-                )));
+                drop(led);
+                let err = range_err(format!("affine bind/encode failed: {}", e.message()));
+                return Err(self.fail_gpu(
+                    err,
+                    crate::diagnostics::GpuOperation::Dispatch,
+                    None,
+                    None,
+                    None,
+                    None,
+                ));
             }
         };
 

@@ -785,32 +785,23 @@ impl ResourceLedger {
 /// Capture wgpu validation / OOM for one device call; typed error instead of panic.
 pub(crate) fn wgpu_scoped<T>(
     device: &wgpu::Device,
+    class: crate::diagnostics::ScopeClass,
+    inject: Option<crate::diagnostics::ScopeErrorInject>,
     op: impl FnOnce() -> T,
 ) -> Result<T, DomainError> {
+    if let Some(inj) = inject {
+        return Err(inj.into_domain_error(class));
+    }
     let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let value = op();
     let validation = pollster::block_on(validation_scope.pop());
     let oom = pollster::block_on(oom_scope.pop());
-    fn map_wgpu_err(err: wgpu::Error) -> DomainError {
-        match err {
-            wgpu::Error::Validation { description, .. }
-            | wgpu::Error::Internal { description, .. } => {
-                range_err(format!("wgpu validation: {description}"))
-            }
-            wgpu::Error::OutOfMemory { .. } => DomainError::try_new(
-                ErrorCode::AllocationFailed,
-                "wgpu out of memory during GPU resource op",
-            )
-            .expect("non-empty")
-            .with_user_action(UserAction::Retry),
-        }
-    }
     if let Some(err) = validation {
-        return Err(map_wgpu_err(err));
+        return Err(crate::diagnostics::map_wgpu_scope_error(err, class));
     }
     if let Some(err) = oom {
-        return Err(map_wgpu_err(err));
+        return Err(crate::diagnostics::map_wgpu_scope_error(err, class));
     }
     Ok(value)
 }
@@ -920,23 +911,78 @@ impl GpuContext {
             )));
         }
 
+        let scope_inject = self.take_scope_inject();
         let mut led = self.resource_ledger.lock().expect("ledger");
-        led.reserve(desc.size)?;
+        if let Some(inj) = scope_inject {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            let (requested, current, budget) = match &inj {
+                crate::diagnostics::ScopeErrorInject::OutOfMemory {
+                    requested_bytes,
+                    current_bytes,
+                    budget_bytes,
+                } => (
+                    requested_bytes.or(Some(desc.size)),
+                    current_bytes.or(Some(current)),
+                    budget_bytes.or(budget),
+                ),
+                crate::diagnostics::ScopeErrorInject::Validation => {
+                    (Some(desc.size), Some(current), budget)
+                }
+            };
+            drop(led);
+            return Err(self.fail_gpu(
+                inj.into_domain_error(crate::diagnostics::ScopeClass::Resource),
+                crate::diagnostics::GpuOperation::Create,
+                Some(&desc.label),
+                requested,
+                current,
+                budget,
+            ));
+        }
+        if let Err(e) = led.reserve(desc.size) {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                e,
+                crate::diagnostics::GpuOperation::Create,
+                Some(&desc.label),
+                Some(desc.size),
+                Some(current),
+                budget,
+            ));
+        }
         let id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
         let gpu = match self.backend_device_queue() {
             Some((device, _)) => {
-                match wgpu_scoped(&device, || {
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some(desc.label.as_str()),
-                        size: desc.size,
-                        usage: desc.usage.to_wgpu(),
-                        mapped_at_creation: false,
-                    })
-                }) {
+                match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some(desc.label.as_str()),
+                            size: desc.size,
+                            usage: desc.usage.to_wgpu(),
+                            mapped_at_creation: false,
+                        })
+                    },
+                ) {
                     Ok(buf) => GpuBuffer::Wgpu(buf),
                     Err(e) => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(desc.size);
-                        return Err(e);
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            e,
+                            crate::diagnostics::GpuOperation::Create,
+                            Some(&desc.label),
+                            Some(desc.size),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 }
             }
@@ -1000,31 +1046,72 @@ impl GpuContext {
         // Note: max_buffer_size does not limit the texture itself; padded
         // staging is checked on upload/readback before create_buffer.
 
+        let scope_inject = self.take_scope_inject();
         let mut led = self.resource_ledger.lock().expect("ledger");
-        led.reserve(accounted)?;
+        if let Some(inj) = scope_inject {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                inj.into_domain_error(crate::diagnostics::ScopeClass::Resource),
+                crate::diagnostics::GpuOperation::Create,
+                Some(&desc.label),
+                Some(accounted),
+                Some(current),
+                budget,
+            ));
+        }
+        if let Err(e) = led.reserve(accounted) {
+            let current = led.tracker.current_bytes();
+            let budget = led.budget_limit;
+            drop(led);
+            return Err(self.fail_gpu(
+                e,
+                crate::diagnostics::GpuOperation::Create,
+                Some(&desc.label),
+                Some(accounted),
+                Some(current),
+                budget,
+            ));
+        }
         let id = NEXT_RESOURCE_ID.fetch_add(1, Ordering::SeqCst);
         let gpu = match self.backend_device_queue() {
             Some((device, _)) => {
-                match wgpu_scoped(&device, || {
-                    device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some(desc.label.as_str()),
-                        size: wgpu::Extent3d {
-                            width: desc.width,
-                            height: desc.height,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        usage: desc.usage.to_wgpu(),
-                        view_formats: &[],
-                    })
-                }) {
+                match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some(desc.label.as_str()),
+                            size: wgpu::Extent3d {
+                                width: desc.width,
+                                height: desc.height,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            usage: desc.usage.to_wgpu(),
+                            view_formats: &[],
+                        })
+                    },
+                ) {
                     Ok(tex) => GpuTexture::Wgpu(tex),
                     Err(e) => {
+                        let current = led.tracker.current_bytes();
+                        let budget = led.budget_limit;
                         let _ = led.tracker.free(accounted);
-                        return Err(e);
+                        drop(led);
+                        return Err(self.fail_gpu(
+                            e,
+                            crate::diagnostics::GpuOperation::Create,
+                            Some(&desc.label),
+                            Some(accounted),
+                            Some(current),
+                            budget,
+                        ));
                     }
                 }
             }
@@ -1094,14 +1181,19 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, queue)) => {
-                let staging = match wgpu_scoped(&device, || {
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("spirula:gpu:buffer:upload-staging"),
-                        size,
-                        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-                        mapped_at_creation: true,
-                    })
-                }) {
+                let staging = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("spirula:gpu:buffer:upload-staging"),
+                            size,
+                            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+                            mapped_at_creation: true,
+                        })
+                    },
+                ) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = led.tracker.free(size);
@@ -1222,14 +1314,19 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, _queue)) => {
-                let staging = match wgpu_scoped(&device, || {
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("spirula:gpu:buffer:tex-upload-staging"),
-                        size: padded,
-                        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-                        mapped_at_creation: true,
-                    })
-                }) {
+                let staging = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("spirula:gpu:buffer:tex-upload-staging"),
+                            size: padded,
+                            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+                            mapped_at_creation: true,
+                        })
+                    },
+                ) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = led.tracker.free(padded);
@@ -1358,14 +1455,19 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, _)) => {
-                let staging = match wgpu_scoped(&device, || {
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("spirula:gpu:buffer:readback-staging"),
-                        size,
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                        mapped_at_creation: false,
-                    })
-                }) {
+                let staging = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("spirula:gpu:buffer:readback-staging"),
+                            size,
+                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                            mapped_at_creation: false,
+                        })
+                    },
+                ) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = led.tracker.free(size);
@@ -1469,14 +1571,19 @@ impl GpuContext {
 
         match self.backend_device_queue() {
             Some((device, _)) => {
-                let staging = match wgpu_scoped(&device, || {
-                    device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("spirula:gpu:buffer:tex-readback-staging"),
-                        size: padded,
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                        mapped_at_creation: false,
-                    })
-                }) {
+                let staging = match wgpu_scoped(
+                    &device,
+                    crate::diagnostics::ScopeClass::Resource,
+                    None,
+                    || {
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("spirula:gpu:buffer:tex-readback-staging"),
+                            size: padded,
+                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                            mapped_at_creation: false,
+                        })
+                    },
+                ) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = led.tracker.free(padded);
@@ -1575,6 +1682,28 @@ impl GpuContext {
     /// Submit all pending encoded copies. Does not wait.
     pub fn submit(&mut self) -> Result<SubmissionHandle, DomainError> {
         self.require_live()?;
+        // Synthetic probes fail *before* mutating pending→inflight ownership.
+        if self.take_submit_inject() {
+            return Err(self.fail_gpu(
+                submit_err("injected submit failure"),
+                crate::diagnostics::GpuOperation::Submit,
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
+        if let Some(inj) = self.take_scope_inject() {
+            return Err(self.fail_gpu(
+                inj.into_domain_error(crate::diagnostics::ScopeClass::Submit),
+                crate::diagnostics::GpuOperation::Submit,
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
+
         let mut led = self.resource_ledger.lock().expect("ledger");
         let sub_id = NEXT_SUBMISSION_ID.fetch_add(1, Ordering::SeqCst);
         let staging_ids = std::mem::take(&mut led.pending_staging);
@@ -1599,19 +1728,33 @@ impl GpuContext {
             }
         }
 
-        let wgpu_index = match self.backend_device_queue() {
-            Some((_, queue)) => {
+        let (wgpu_index, scope_err) = match self.backend_device_queue() {
+            Some((device, queue)) => {
                 let cmds = std::mem::take(&mut led.pending_commands);
                 if cmds.is_empty() && staging_ids.is_empty() {
                     // Allow empty submit as no-op token for symmetry.
                 }
                 let buffers: Vec<wgpu::CommandBuffer> =
                     cmds.into_iter().map(|c| c.command).collect();
-                Some(queue.submit(buffers))
+                // Host error scopes around submit (runtime-contracts §6.3).
+                // Always keep the submission index so inflight ownership stays
+                // waitable even when the scope reports validation/OOM.
+                let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+                let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let index = queue.submit(buffers);
+                let validation = pollster::block_on(validation_scope.pop());
+                let oom = pollster::block_on(oom_scope.pop());
+                let err = validation.or(oom).map(|e| {
+                    crate::diagnostics::map_wgpu_scope_error(
+                        e,
+                        crate::diagnostics::ScopeClass::Submit,
+                    )
+                });
+                (Some(index), err)
             }
             None => {
                 led.pending_commands.clear();
-                None
+                (None, None)
             }
         };
 
@@ -1625,6 +1768,18 @@ impl GpuContext {
                 completed: false,
             },
         );
+        drop(led);
+
+        if let Some(err) = scope_err {
+            return Err(self.fail_gpu(
+                err,
+                crate::diagnostics::GpuOperation::Submit,
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
 
         Ok(SubmissionHandle {
             context_id: self.id(),
@@ -1663,8 +1818,15 @@ impl GpuContext {
             for _ in 0..64 {
                 std::thread::yield_now();
             }
-            return Err(submit_err(
-                "submission wait timed out (caller deadline; in-flight staging retained)",
+            return Err(self.fail_gpu(
+                submit_err(
+                    "submission wait timed out (caller deadline; in-flight staging retained)",
+                ),
+                crate::diagnostics::GpuOperation::Wait,
+                None,
+                None,
+                None,
+                None,
             ));
         }
         let entry = led
@@ -1702,12 +1864,28 @@ impl GpuContext {
                     // have freed unrelated idle resources while the lock was down.
                     // This submission's staging/resources stay reserved until a
                     // later successful wait or teardown.
-                    return Err(submit_err(
-                        "submission wait timed out (caller deadline; in-flight staging retained)",
+                    drop(led);
+                    return Err(self.fail_gpu(
+                        submit_err(
+                            "submission wait timed out (caller deadline; in-flight staging retained)",
+                        ),
+                        crate::diagnostics::GpuOperation::Wait,
+                        None,
+                        None,
+                        None,
+                        None,
                     ));
                 }
                 Err(other) => {
-                    return Err(submit_err(format!("submission wait failed: {other}")));
+                    drop(led);
+                    return Err(self.fail_gpu(
+                        submit_err(format!("submission wait failed: {other}")),
+                        crate::diagnostics::GpuOperation::Wait,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ));
                 }
             }
             // Loss may have invalidated the ledger during poll_host_lost.

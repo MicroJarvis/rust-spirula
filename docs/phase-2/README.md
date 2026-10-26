@@ -6,8 +6,10 @@
 | P2-F02 device / queue / context | [device-context.md](device-context.md) | 已完成 |
 | P2-F03 buffer / texture / readback | [gpu-resources.md](gpu-resources.md) | 已完成 |
 | P2-F04 shader / pipeline contract | [gpu-pipelines.md](gpu-pipelines.md) | 已完成 |
-| P2-F05 GPU errors / diagnostic events | (not started) | 当前 |
+| P2-F05 GPU errors / diagnostic events | [gpu-diagnostics.md](gpu-diagnostics.md) | 已完成 |
+| P2-F06 headless GPU smoke | (not started) | 当前 |
 
-P2-F06+ (surface smoke, package) are not started.
-Phase 2 exit conditions remain open. Application / train / UI are not wired
-through this phase’s diagnose-only GPU boundary (`--compute` is not readiness).
+P2-F07 (package) is not started. Phase 2 exit conditions remain open.
+Application / train / UI are not wired through this phase’s diagnose-only GPU
+boundary (`--compute` is not readiness). P2-F05 diagnostics stay GPU-local
+(P6-F01 owns application session history).

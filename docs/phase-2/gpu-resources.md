@@ -4,8 +4,8 @@ Status: **已完成** (code tip `e2157c1e0578edd3d65014a5ad220400a14de65e`).
 Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md)
 (P2-F02) and P1-F08 [performance.md](../phase-1/performance.md)
 accounted-byte tracking. Shaders/pipelines/compute are P2-F04 (已完成;
-[gpu-pipelines.md](gpu-pipelines.md)). Full GPU diagnostic event fan-out
-stays P2-F05 (当前). Phase 2 exit remains open.
+[gpu-pipelines.md](gpu-pipelines.md)). GPU diagnostics are P2-F05 (已完成;
+[gpu-diagnostics.md](gpu-diagnostics.md)). Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 
@@ -101,8 +101,7 @@ require a 256-byte staging that exceeds a low buffer limit.
 - Device limits: `create_texture_2d` checks actual `max_texture_dimension_2d`
   before wgpu; staging paths check `max_buffer_size`. Create/staging paths use
   a minimal validation/OOM error scope so illegal sizes return typed errors with
-  reserve rollback — not process abort. Full diagnostic event fan-out stays
-  P2-F05.
+  reserve rollback — not process abort. Diagnostic event fan-out is P2-F05.
 
 ### Lifetime vs context generation
 
@@ -158,8 +157,8 @@ accounting reaches zero after completion.
 
 | Tested | Not tested / not claimed |
 |---|---|
-| Buffer + non-256-pitch RGBA8 host round-trip; scoped accounted bytes | Pipelines / WGSL compute (P2-F04) |
-| Alignment / staging `max_buffer_size` / texture dim typed rejection | Full GPU error-scope event fan-out (P2-F05) |
+| Buffer + non-256-pitch RGBA8 host round-trip; scoped accounted bytes | Surface smoke (P2-F06) |
+| Alignment / staging `max_buffer_size` / texture dim typed rejection | Application session event fan-out (P6-F01) |
 | Pending-encode hold; ticket RAII abandon; submission reap | Application/CLI/UI session GPU ownership |
 | Wait loss during poll → `SP-GPU-002`; map deadline cancel + retry | Train/preview product readiness |
 | `spirula-gpu-diagnose --resources` | Device-wide VRAM / OS process peak |
@@ -170,5 +169,4 @@ accounting reaches zero after completion.
 - No compute shaders, pipelines, or TrainPlan execution.
 - No claim of measured device-wide VRAM or OS process peak.
 - No application/CLI/UI GPU command beyond diagnose.
-- Full diagnostic events remain P2-F05.
-- Phase 2 exit is **not** closed; P2-F04 is the next current feature.
+- Phase 2 exit is **not** closed; P2-F06 is the next current feature.

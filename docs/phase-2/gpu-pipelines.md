@@ -2,7 +2,7 @@
 
 Status: **已完成** (code tip `2bd98deae866da09a3c14f694d9d2028f8b17f35`).
 Owner: `spirula-gpu`. Builds on [gpu-resources.md](gpu-resources.md) (P2-F03).
-Full GPU diagnostic event fan-out stays P2-F05 (当前); surface smoke P2-F06;
+GPU diagnostic events: P2-F05 (已完成); surface smoke P2-F06;
 pipeline cache *optimization* profiling stays P9-F03. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
@@ -134,7 +134,6 @@ Representative host diagnose fields (one M5 Max / Metal run; timings vary):
 - No general shader reflection / all bind types / render pipelines.
 - Layout epoch v2 shares the v1 binding ABI (key invalidation only).
 - No application/CLI/UI session GPU ownership; real train/preview not wired.
-- No full diagnostic event fan-out (P2-F05).
 - No surface present smoke (P2-F06).
 - No P9-F03 cache performance optimization claims beyond this slice’s cold/warm
   obtain timings.

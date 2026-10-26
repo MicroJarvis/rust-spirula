@@ -2,8 +2,8 @@
 
 Status: **已完成** (code tip `75d1bd48efcc8ba6451af368ce60387e6cead6b9`).
 Owner: `spirula-gpu`. Builds on [gpu-adapter.md](gpu-adapter.md) (P2-F01).
-Buffer/texture/readback stay P2-F03; shaders/pipelines/compute stay P2-F04;
-full error scopes / diagnostic event fan-out stay P2-F05. Phase 2 exit
+Buffer/texture/readback are P2-F03; shaders/pipelines/compute are P2-F04;
+GPU error scopes / diagnostic events are P2-F05 (已完成). Phase 2 exit
 remains open.
 
 ## Reference behavior
@@ -97,7 +97,7 @@ new generation. The future session worker (not wired in this slice) must call
 |---|---|
 | `spirula-gpu` library API + `spirula-gpu-diagnose --device` | `spirula-application` session ownership |
 | Synthetic test doubles for fault injection | CLI/UI GPU commands |
-| Host headless open → observe → close / owner reopen | Error scopes / submit diagnostics (P2-F05) |
+| Host headless open → observe → close / owner reopen | Surface smoke (P2-F06) |
 
 Honest scope: the library API is the owner boundary for this feature.
 Application does **not** yet own or reopen the GPU context. No compute,
@@ -142,14 +142,13 @@ wgpu edges. No new workspace path edges.
 |---|---|
 | Headless create/close/reopen; handle validation; lost latch + poll | Buffer/texture/readback (P2-F03) |
 | Negotiation applied to device request; enabled features/limits readback | Pipelines / WGSL compute (P2-F04) |
-| Synthetic + real Destroyed callback isolation across generations | Full GPU error scopes / diagnostic events (P2-F05) |
+| Synthetic + real Destroyed callback isolation across generations | Surface smoke (P2-F06) |
 | `spirula-gpu-diagnose --device` | Application/CLI/UI session GPU ownership |
 | | Training, preview, or “device open ⇒ product ready” |
 
 ## Non-claims
 
-- No buffers, textures, pipelines, submit, readback, or WGSL kernels.
+- No buffers, textures, pipelines, submit, readback, or WGSL kernels (later P2).
 - No application/CLI/UI integration; no TrainPlan execution.
 - No implicit GPU auto-rebuild; no second session state machine in GPU.
 - No claim that device creation implies train/preview/UI readiness.
-- Full diagnostic event / error-scope fan-out remains P2-F05.
