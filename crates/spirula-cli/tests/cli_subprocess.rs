@@ -189,7 +189,7 @@ fn unknown_command_exit_2() {
 fn rejected_probe_run_without_load_one_stderr_with_code() {
     // Ready is required for ProbeRun; without load the admission rejects.
     let out = run_output(
-        &["probe-run", "--steps", "1"],
+        &["probe-run", "--steps", "2"],
         &[("SPIRULA_ERROR_CODES", "1")],
         Duration::from_secs(10),
     );
@@ -200,11 +200,53 @@ fn rejected_probe_run_without_load_one_stderr_with_code() {
         String::from_utf8_lossy(&out.stderr)
     );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(err.lines().filter(|l| l.starts_with("error:")).count(), 1);
+    assert_eq!(
+        err.lines().filter(|l| l.starts_with("error:")).count(),
+        1,
+        "exactly one stderr error line, got:\n{err}"
+    );
     assert!(
-        err.contains("SP-SESS-") || err.contains("(code:"),
+        err.contains("SP-SESS-001"),
         "expected stable code on stderr: {err}"
     );
+}
+
+#[test]
+fn probe_empty_label_zero_steps_usage_exit_2_one_stderr() {
+    let out = run_output(
+        &["probe", "--label", "", "--steps", "0"],
+        &[("SPIRULA_ERROR_CODES", "1")],
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.lines().filter(|l| l.starts_with("error:")).count(), 1);
+    assert!(err.contains("SP-INP-001"), "{err}");
+}
+
+#[test]
+fn help_and_capabilities_reject_unknown_flags_exit_2() {
+    for args in [["help", "--nonsense"], ["capabilities", "--nonsense"]] {
+        let out = run_output(
+            &args,
+            &[("SPIRULA_ERROR_CODES", "1")],
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "args={args:?} stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(err.lines().filter(|l| l.starts_with("error:")).count(), 1);
+        assert!(err.contains("SP-INP-002"), "{err}");
+    }
 }
 
 #[test]

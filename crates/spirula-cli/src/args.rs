@@ -45,8 +45,14 @@ pub fn parse_args(args: &[&str]) -> Result<CliAction, ParseError> {
     let mut iter = args.iter().copied().peekable();
     let cmd = iter.next().unwrap_or("");
     match cmd {
-        "help" | "--help" | "-h" => Ok(CliAction::Help),
-        "capabilities" | "--capabilities" => Ok(CliAction::Capabilities),
+        "help" | "--help" | "-h" => {
+            reject_trailing_flags(&mut iter, "help")?;
+            Ok(CliAction::Help)
+        }
+        "capabilities" | "--capabilities" => {
+            reject_trailing_flags(&mut iter, "capabilities")?;
+            Ok(CliAction::Capabilities)
+        }
         "probe-load" => parse_probe_load(&mut iter),
         "probe-run" => parse_probe_run(&mut iter),
         "probe" => parse_probe(&mut iter),
@@ -67,6 +73,43 @@ pub fn parse_args(args: &[&str]) -> Result<CliAction, ParseError> {
             &format!("unknown command '{other}'"),
         ))),
     }
+}
+
+/// `help` / `capabilities` take no options; unknown trailing flags are usage.
+fn reject_trailing_flags<'a, I>(
+    iter: &mut std::iter::Peekable<I>,
+    command: &str,
+) -> Result<(), ParseError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    if let Some(extra) = iter.next() {
+        return Err(ParseError::Usage(usage_error(
+            ErrorCode::UnknownCommand,
+            &format!("{command} does not accept '{extra}'"),
+        )));
+    }
+    Ok(())
+}
+
+fn require_nonempty_label(label: &str, flag: &str) -> Result<(), ParseError> {
+    if label.trim().is_empty() {
+        return Err(ParseError::Usage(usage_error(
+            ErrorCode::InvalidArgument,
+            &format!("{flag} must be non-empty"),
+        )));
+    }
+    Ok(())
+}
+
+fn require_positive_steps(steps: u64, command: &str) -> Result<(), ParseError> {
+    if steps == 0 {
+        return Err(ParseError::Usage(usage_error(
+            ErrorCode::ValueOutOfRange,
+            &format!("{command} --steps must be > 0"),
+        )));
+    }
+    Ok(())
 }
 
 fn parse_probe_load<'a, I>(iter: &mut std::iter::Peekable<I>) -> Result<CliAction, ParseError>
@@ -98,12 +141,7 @@ where
             "probe-load requires --label",
         ))
     })?;
-    if label.trim().is_empty() {
-        return Err(ParseError::Usage(usage_error(
-            ErrorCode::InvalidArgument,
-            "probe-load --label must be non-empty",
-        )));
-    }
+    require_nonempty_label(&label, "probe-load --label")?;
     Ok(CliAction::ProbeLoad { label, log_dir })
 }
 
@@ -122,7 +160,9 @@ where
                 steps = Some(parse_u64(require_value(iter, "--steps")?, "steps")?);
             }
             "--load-label" => {
-                load_label = Some(require_value(iter, "--load-label")?.to_string());
+                let v = require_value(iter, "--load-label")?.to_string();
+                require_nonempty_label(&v, "probe-run --load-label")?;
+                load_label = Some(v);
             }
             "--log-dir" => {
                 log_dir = Some(PathBuf::from(require_value(iter, "--log-dir")?));
@@ -150,12 +190,7 @@ where
             "probe-run requires --steps",
         ))
     })?;
-    if steps == 0 {
-        return Err(ParseError::Usage(usage_error(
-            ErrorCode::ValueOutOfRange,
-            "probe-run --steps must be > 0",
-        )));
-    }
+    require_positive_steps(steps, "probe-run")?;
     Ok(CliAction::ProbeRun {
         steps,
         load_label,
@@ -202,6 +237,10 @@ where
             "probe requires --label",
         ))
     })?;
+    require_nonempty_label(&label, "probe --label")?;
+    if let Some(s) = steps {
+        require_positive_steps(s, "probe")?;
+    }
     Ok(CliAction::Probe {
         label,
         steps,
@@ -267,5 +306,37 @@ mod tests {
         ));
         let a = parse_args(&["probe-run", "--steps", "3", "--load-label", "ds"]).unwrap();
         assert!(matches!(a, CliAction::ProbeRun { steps: 3, .. }));
+    }
+
+    #[test]
+    fn help_and_capabilities_reject_unknown_flags() {
+        match parse_args(&["help", "--nonsense"]).unwrap_err() {
+            ParseError::Usage(e) => assert_eq!(e.code(), ErrorCode::UnknownCommand),
+            ParseError::Help => panic!("expected usage"),
+        }
+        match parse_args(&["capabilities", "--nonsense"]).unwrap_err() {
+            ParseError::Usage(e) => assert_eq!(e.code(), ErrorCode::UnknownCommand),
+            ParseError::Help => panic!("expected usage"),
+        }
+    }
+
+    #[test]
+    fn probe_aliases_reject_empty_label_and_zero_steps_before_session() {
+        match parse_args(&["probe", "--label", "", "--steps", "0"]).unwrap_err() {
+            ParseError::Usage(e) => assert_eq!(e.code(), ErrorCode::InvalidArgument),
+            ParseError::Help => panic!("expected usage"),
+        }
+        match parse_args(&["probe", "--label", "ds", "--steps", "0"]).unwrap_err() {
+            ParseError::Usage(e) => assert_eq!(e.code(), ErrorCode::ValueOutOfRange),
+            ParseError::Help => panic!("expected usage"),
+        }
+        match parse_args(&["probe-load", "--label", ""]).unwrap_err() {
+            ParseError::Usage(e) => assert_eq!(e.code(), ErrorCode::InvalidArgument),
+            ParseError::Help => panic!("expected usage"),
+        }
+        match parse_args(&["probe-run", "--steps", "1", "--load-label", ""]).unwrap_err() {
+            ParseError::Usage(e) => assert_eq!(e.code(), ErrorCode::InvalidArgument),
+            ParseError::Help => panic!("expected usage"),
+        }
     }
 }

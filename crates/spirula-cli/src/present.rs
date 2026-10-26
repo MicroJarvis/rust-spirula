@@ -28,7 +28,7 @@ pub fn help_text() -> String {
         "Exit codes: 0 success, 1 failure, 2 usage (before session), 130 cancel/SIGINT.\n",
     );
     out.push_str("SIGINT submits Stop{save:true}, waits for the terminal, then exits 130.\n");
-    out.push_str("A second SIGINT restores the default disposition.\n");
+    out.push_str("A second SIGINT restores SIG_DFL and re-raises so this delivery terminates.\n");
     out
 }
 

@@ -32,12 +32,17 @@ they do not dictate Rust channel layouts.
 
 | Invocation | Behavior |
 |---|---|
-| `help` / `--help` / bare argv | Help text; exit 0 |
-| `capabilities` | Available vs unavailable; exit 0 |
+| `help` / `--help` / bare argv | Help text; exit 0 (no trailing flags) |
+| `capabilities` | Available vs unavailable; exit 0 (no trailing flags) |
 | `probe-load --label <s> [--log-dir]` | Session + ProbeLoad; shutdown |
 | `probe-run --steps <n> [--load-label] [--log-dir] [--step-delay-ms] [--save\|--no-save]` | Optional load then ProbeRun |
 | `probe --label [--steps] …` | Convenience load[+run] |
 | `train` / `preview` | `UnimplementedOption`, exit 2 |
+
+Pre-session usage (`exit 2`, one stderr line): empty `--label` / `--load-label`,
+`--steps 0`, unknown flags on any command including `help`/`capabilities`.
+In-session admission reject (e.g. `probe-run` without a prior load) stays
+`exit 1` with exactly one stderr `error:` line and a stable code.
 
 Ready markers on stdout: `spirula:ready <state>` for `loading` / `ready` /
 `training` (contract name for Running). Subprocess tests wait on these lines,
