@@ -219,25 +219,48 @@ above.
 P1-F01 through P1-F09 are `已完成`. Phase 1 exit conditions are satisfied:
 workspace gate green on this host; headless session + CLI adapter +
 performance sample infrastructure exist without claiming real render, train,
-or UI capability. Current plan pointer: **P2-F01**.
+or UI capability.
 
 ---
 
-# P2-F01 verification record (in progress / pending review)
+# P2-F01 verification record
 
 Recorded on worktree `.worktrees/p2-f01` / branch `codex/p2-f01`, parent
-`036177d` (P1-F09 on main). Binding: [../phase-2/gpu-adapter.md](../phase-2/gpu-adapter.md).
+`036177d` (P1-F09 on main). Independent review READY on immutable code tip
+**`20718b3077e581c951bc17dbce91e9c7cdc0285f`**. Binding:
+[../phase-2/gpu-adapter.md](../phase-2/gpu-adapter.md).
 
-## Scope
+## Scope and result
 
-Adapter enumerate/select/negotiate + `spirula-gpu-diagnose` only. No
-device/queue (P2-F02), no CLI/session GPU command, no fabricated VRAM/uuid.
+P2-F01 is **complete**: adapter enumerate/select/negotiate, required/optional
+features and limits (`ResolvedLimits` preserves required floors when optional
+desire is lower), `spirula-gpu-diagnose`. No device/queue (P2-F02), no
+buffers/resources/kernels, no CLI/session GPU command, no UI. Phase 2 exit
+conditions remain open. Next feature: **P2-F02**.
 
-## Host diagnose (this machine)
+## Corrections retained
 
-Command: `cargo run -p spirula-gpu --bin spirula-gpu-diagnose`
+| tip | change |
+|---|---|
+| `2827245` | initial adapter/negotiate/diagnose |
+| `3e31089` | optional desired limits → `ResolvedLimits` |
+| `20718b3` | required floors kept in successful resolve (`effective >= required`) |
 
-Observed on this host (not a cross-platform claim):
+## Reproducible evidence (repository)
+
+| item | command / location |
+|---|---|
+| Binding | [../phase-2/gpu-adapter.md](../phase-2/gpu-adapter.md) |
+| Crate | `crates/spirula-gpu` (`wgpu = "30.0.1"`) |
+| Synthetic matrix | `cargo test -p spirula-gpu --lib` |
+| Host enumerate | `cargo test -p spirula-gpu --test host_enumerate -- --nocapture` |
+| Diagnose | `cargo run -p spirula-gpu --bin spirula-gpu-diagnose` |
+| Gate | `cargo run -p spirula-xtask -- verify` (**8/8**, host-only) |
+| Code SHA | `20718b3077e581c951bc17dbce91e9c7cdc0285f` |
+
+Ephemeral `/tmp` review probes are **not** repository entry points.
+
+## Host diagnose (this machine; not compute)
 
 ```text
 wgpu_version=30.0.1
@@ -245,13 +268,14 @@ adapter_count=1
 adapter[0] name="Apple M5 Max" backend=metal class=integrated-gpu
 vram=unavailable(...) uuid=unavailable(...)
 features={subgroup=true,f16=true,timestamp=true,f32_atomic=true}
-selected index=0 … negotiated all AvailableDeclared
+selected index=0 … negotiated AvailableDeclared (features present)
 ```
 
-Empty-adapter hosts must surface `SP-GPU-001` rather than a skipped
-“measured GPU” success.
+Enumeration ≠ kernel execution. Empty-adapter hosts must surface
+`SP-GPU-001`, not a skipped “measured GPU” success.
 
-## Gate
+## Non-claims
 
-`cargo run -p spirula-xtask -- verify` on the tip under review (host-only).
-Status remains **当前 / 待审** until independent approval; no merge/push.
+- No device/queue/context, buffers, textures, shaders, or submit.
+- No CLI/session GPU commands; no Slint; no train/preview.
+- No cross-platform CI matrix (P9-F01); host-only verify.

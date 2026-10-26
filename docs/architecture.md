@@ -96,12 +96,13 @@ IO/train/render/GPU). Bindings: [phase-1/cli.md](phase-1/cli.md),
 
 ## GPU strategy
 
-The portability baseline is `wgpu` with WGSL shaders. P2-F01 (in progress /
-pending review) pins `wgpu` 30.0.1 in `spirula-gpu`, enumerates adapters, and
-negotiates required/optional features without creating a device. Later slices
-add device smoke (P2-F02/P2-F06) and a small render path. Each GPU feature has
-a CPU reference or deterministic fixture where practical, followed by a GPU
-tolerance test.
+The portability baseline is `wgpu` with WGSL shaders. P2-F01 pins `wgpu`
+30.0.1 in `spirula-gpu`, enumerates adapters, and negotiates required/optional
+features and limits (`ResolvedLimits` keeps required floors) without creating
+a device. Bindings: [phase-2/gpu-adapter.md](phase-2/gpu-adapter.md). Next is
+device/queue lifecycle (P2-F02); later slices add smoke (P2-F06) and a small
+render path. Each GPU feature has a CPU reference or deterministic fixture
+where practical, followed by a GPU tolerance test.
 
 The rewrite should avoid translating the entire CUDA/Vulkan implementation in a
 single step. Kernels are ported by family: data upload, projection, tile/bin

@@ -1,8 +1,9 @@
 # P2-F01: adapter selection and capability negotiation
 
-Status: **当前 / 待审** (not merged). Owner: `spirula-gpu`. Device/queue
-lifecycle remains P2-F02; buffer/texture/readback remains P2-F03. The shared
-CLI session does **not** gain a business GPU command in this slice.
+Status: **已完成** (code tip `20718b3077e581c951bc17dbce91e9c7cdc0285f`).
+Owner: `spirula-gpu`. Device/queue lifecycle remains P2-F02;
+buffer/texture/readback remains P2-F03. The shared CLI session does **not**
+gain a business GPU command in this slice. Phase 2 exit is not closed.
 
 ## Reference behavior
 

@@ -94,8 +94,8 @@ Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter/backend；区分 required/optional feature/limit；声明 subgroup、f16、timestamp 与梯度累加能力和回退 | 记录真实设备/driver/limits；缺少必需能力有稳定错误；可选能力回退有测试 | 当前 |
-| P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01, P1-F07 | 创建 instance/adapter/device/queue；资源所有权、context identity/generation；由应用 owner 决定 device lost 后重建 | 创建/关闭/失败可观察；旧 generation handle 拒绝复用；应用状态只由同一 owner 更新 | 未开始 |
+| P2-F01 | adapter 选择与能力协商 | `spirula-gpu` | P1-F06 | 枚举 adapter/backend；区分 required/optional feature/limit；声明 subgroup、f16、timestamp 与梯度累加能力和回退 | 记录真实设备/driver/limits；缺少必需能力有稳定错误；可选能力回退有测试 | 已完成 |
+| P2-F02 | device、queue 与上下文生命周期 | `spirula-gpu` | P2-F01, P1-F07 | 创建 instance/adapter/device/queue；资源所有权、context identity/generation；由应用 owner 决定 device lost 后重建 | 创建/关闭/失败可观察；旧 generation handle 拒绝复用；应用状态只由同一 owner 更新 | 当前 |
 | P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 未开始 |
 | P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F03 | WGSL 版本和 bind/uniform layout；pipeline key/错误；以真实 compute 验证窄资源封装与 shader 接口 | layout/对齐及缓存失效可测；编译失败带位置；与 P2-F03 共同证明 GPU 边界可执行 | 未开始 |
 | P2-F05 | GPU 错误与诊断事件 | `spirula-gpu` | P2-F02–P2-F04 | 包裹 error scope 和提交错误；把 device lost 转成 typed error；发布带资源标签的诊断事件 | error scope、设备丢失和提交失败转为 typed error/event | 未开始 |
@@ -218,12 +218,13 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 
 ## 4. 首批功能顺序
 
-已完成 P0-F01–P0-F06 和 P1-F01–P1-F09；Phase 1 退出条件已满足。P2-F01 为当前
-功能。后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行
-顺序，不会把组内多个编号合并成一个已完成功能：
+已完成 P0-F01–P0-F06、P1-F01–P1-F09 和 P2-F01；Phase 1 退出条件已满足，
+Phase 2 退出条件尚未满足。P2-F02 为当前功能。后续按依赖推进，每个编号独立
+worktree、实现和验收；下列分组只是执行顺序，不会把组内多个编号合并成一个
+已完成功能：
 
 1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
-2. P2-F01（当前）–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
+2. P2-F01（已完成）与 P2-F02（当前）–P2-F06 → P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
@@ -299,7 +300,11 @@ CPU 微型样本生成与回读；无训练/GPU/UI 运行时）。P1-F09（最�
 diagnostics 落地，契约见 `docs/phase-1/cli.md`（help/capabilities、fake
 probe、SIGINT 0/1/2/130、rotated disk sink；真实 train/preview 仍不可用）。
 独立审查 READY，代码 tip `958d6ab2693a4e4cdd72b57140c5287c996593c7`；host-only
-`spirula-xtask verify` 8/8。下一步为 P2-F01。2026-10-25 的 OOOSplat / Brush
-审查已形成新增功能与依赖调整，见
-[审查记录](research/ooosplat-brush-review.md)。GPU、训练、UI 实现状态没有
-因本次规划调整而提前完成。
+`spirula-xtask verify` 8/8。P2-F01（adapter 选择与能力协商）已在
+`spirula-gpu` 落地，契约见 `docs/phase-2/gpu-adapter.md`（wgpu 30.0.1、
+required/optional feature 与 limit、`ResolvedLimits` 保留 required floor、
+`spirula-gpu-diagnose`；无 device/queue/kernel）。代码 tip
+`20718b3077e581c951bc17dbce91e9c7cdc0285f`；下一步为 P2-F02。Phase 2 退出
+条件仍未满足。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，
+见 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因
+本次规划调整而提前完成。
