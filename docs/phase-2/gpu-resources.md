@@ -1,10 +1,10 @@
 # P2-F03: buffer, texture, and readback
 
-Status: **当前 / 待审**. Owner: `spirula-gpu`. Builds on
-[device-context.md](device-context.md) (P2-F02) and P1-F08
-[performance.md](../phase-1/performance.md) accounted-byte tracking.
-Shaders/pipelines/compute stay P2-F04. Full GPU diagnostic event fan-out stays
-P2-F05. Phase 2 exit remains open.
+Status: **已完成** (code tip `e2157c1e0578edd3d65014a5ad220400a14de65e`).
+Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md)
+(P2-F02) and P1-F08 [performance.md](../phase-1/performance.md)
+accounted-byte tracking. Shaders/pipelines/compute stay P2-F04 (当前).
+Full GPU diagnostic event fan-out stays P2-F05. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 
@@ -137,6 +137,29 @@ accounting reaches zero after completion.
 6. Diagnose prints device/backend, accounted current/peak/budget, phase
    timings for upload/wait/readback; unavailable device → precise reason.
 
+## Verification (approval tip)
+
+- Code tip: `e2157c1e0578edd3d65014a5ad220400a14de65e` (independent code
+  approval; docs closure is a separate commit).
+- Parent fresh full verify: `cargo run -p spirula-xtask -- verify` **8/8**.
+- Actual host (Apple M5 Max / Metal): resource host tests **4/4**;
+  `spirula-gpu-diagnose --resources` with `after_drop` accounted current **0**.
+- Independent review: map-deadline cancel (`unmap`, no unbounded drain) and
+  wait-timeout + unrelated idle Drop (no whole-ledger assert panic) PASS as
+  source-scheduled proofs — not natural driver-stall claims. Report target:
+  `/tmp/spirula-p2-f03-review/REVIEW-final-e2157c1.md` (prior `3bc2409`
+  failure evidence retained under the same review dir).
+
+### Tested vs not tested
+
+| Tested | Not tested / not claimed |
+|---|---|
+| Buffer + non-256-pitch RGBA8 host round-trip; scoped accounted bytes | Pipelines / WGSL compute (P2-F04) |
+| Alignment / staging `max_buffer_size` / texture dim typed rejection | Full GPU error-scope event fan-out (P2-F05) |
+| Pending-encode hold; ticket RAII abandon; submission reap | Application/CLI/UI session GPU ownership |
+| Wait loss during poll → `SP-GPU-002`; map deadline cancel + retry | Train/preview product readiness |
+| `spirula-gpu-diagnose --resources` | Device-wide VRAM / OS process peak |
+
 ## Non-claims
 
 - No general-purpose wgpu resource API / all formats/usages.
@@ -144,3 +167,4 @@ accounting reaches zero after completion.
 - No claim of measured device-wide VRAM or OS process peak.
 - No application/CLI/UI GPU command beyond diagnose.
 - Full diagnostic events remain P2-F05.
+- Phase 2 exit is **not** closed; P2-F04 is the next current feature.

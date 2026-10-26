@@ -104,11 +104,14 @@ context id/generation, explicit close/`reopen`, lost latch + owner poll; no
 global singleton, no auto-rebuild). Application does not yet own the context;
 device open does not imply compute/train/UI readiness. Bindings:
 [phase-2/gpu-adapter.md](phase-2/gpu-adapter.md),
-[phase-2/device-context.md](phase-2/device-context.md). P2-F03 (当前) adds narrow buffer/RGBA8 texture staging upload/readback with
-explicit submit/wait and scoped accounted-byte budgets — not a general wgpu
-mirror. Pipelines (P2-F04) and smoke (P2-F06) remain later. Each GPU feature
-has a CPU reference or deterministic fixture where practical, followed by a GPU
-tolerance test.
+[phase-2/device-context.md](phase-2/device-context.md),
+[phase-2/gpu-resources.md](phase-2/gpu-resources.md). P2-F03 adds narrow
+buffer/RGBA8 texture staging upload/readback with explicit submit/wait/map and
+scoped accounted-byte budgets — not a general wgpu mirror. P2-F04 (当前)
+pipelines/WGSL compute and P2-F06 smoke remain later. Application does not own
+GPU resources yet; diagnose `--resources` is not train/preview/UI readiness.
+Each GPU feature has a CPU reference or deterministic fixture where practical,
+followed by a GPU tolerance test.
 
 The rewrite should avoid translating the entire CUDA/Vulkan implementation in a
 single step. Kernels are ported by family: data upload, projection, tile/bin
