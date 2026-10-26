@@ -3,8 +3,9 @@
 Status: **已完成** (code tip `e2157c1e0578edd3d65014a5ad220400a14de65e`).
 Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md)
 (P2-F02) and P1-F08 [performance.md](../phase-1/performance.md)
-accounted-byte tracking. Shaders/pipelines/compute stay P2-F04 (当前).
-Full GPU diagnostic event fan-out stays P2-F05. Phase 2 exit remains open.
+accounted-byte tracking. Shaders/pipelines/compute are P2-F04 (已完成;
+[gpu-pipelines.md](gpu-pipelines.md)). Full GPU diagnostic event fan-out
+stays P2-F05 (当前). Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 

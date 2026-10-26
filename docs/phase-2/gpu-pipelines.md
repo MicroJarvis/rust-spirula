@@ -1,9 +1,9 @@
 # P2-F04: shader and pipeline contract
 
-Status: **当前 / 进行中**. Owner: `spirula-gpu`. Builds on
-[gpu-resources.md](gpu-resources.md) (P2-F03). Full GPU diagnostic event
-fan-out stays P2-F05; surface smoke P2-F06; pipeline cache *optimization*
-profiling stays P9-F03. Phase 2 exit remains open.
+Status: **已完成** (code tip `2bd98deae866da09a3c14f694d9d2028f8b17f35`).
+Owner: `spirula-gpu`. Builds on [gpu-resources.md](gpu-resources.md) (P2-F03).
+Full GPU diagnostic event fan-out stays P2-F05 (当前); surface smoke P2-F06;
+pipeline cache *optimization* profiling stays P9-F03. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 
@@ -57,7 +57,8 @@ handles are rejected (`SP-INP-001` / `SP-GPU-002`).
   storage read `input` + storage read_write `output`. v2 exists so a
   `bind_layout_version` key change is a real cache miss / new pipeline id with
   CPU-exact dispatch on both epochs; other versions → typed reject. Not a
-  general layout/reflection system.
+  general layout/reflection system. **Boundary**: v2 is the same binding ABI as
+  v1 — epoch invalidation proof only, not a second layout design.
 - Kernel: `output[i] = input[i] * scale + bias + MODE` for `i < Params.count`.
 - **Count contract**: dispatch `count` is the launch extent (workgroups cover
   `0..count`; buffers must be sized for it). Uniform `Params.count` is the
@@ -108,29 +109,31 @@ pipeline obtain and compute phase timings plus accounted peak/source. Does
    drop of buffers still respects pending/inflight reclaim → current 0.
 6. Diagnose `--compute` records device/backend and timings when GPU available.
 
-## Host evidence (candidate; HOLD-MERGE)
+## Tested evidence (approved tip)
 
-Recorded on this worktree before independent review (not a merge tip yet):
+Code tip: `2bd98deae866da09a3c14f694d9d2028f8b17f35`. Independent review READY:
+`/tmp/spirula-p2-f04-review/REVIEW-final-2bd98de.md`. Commands below are the
+reproducible checks; machine `/tmp` logs are sample runs, not the sole evidence.
 
-| Field | Value |
-|---|---|
-| Device | Apple M5 Max |
-| Backend | metal (`integrated-gpu`) |
-| wgpu | 30.0.1 |
-| Limits (device) | `max_buffer_size=4294967295`, `max_storage_buffers_per_shader_stage=29`, `max_compute_workgroup_storage_size=32768`, `max_compute_workgroups_per_dimension=65535`, `max_texture_dimension_2d=32768` |
-| Proof | `count=100` (non-WG multiple), `MODE` override changes CPU-exact output |
-| Diagnose | `cargo run -p spirula-gpu --bin spirula-gpu-diagnose -- --compute` |
-| Cold pipeline | ~46.6 ms (diagnose first obtain; includes first-time Metal/WGSL compile) |
-| Warm pipeline | ~16 µs (cache hit) |
-| Compute phase | ~1.76 ms (dispatch + submit/wait + readback/map) |
-| Accounted | `source=accounted_scoped:gpu_context_resources`, peak=1232, `after_drop current=0` |
-| Host test log | `/tmp/spirula-cursor-p2-f04-host-compute.txt` |
-| Diagnose log | `/tmp/spirula-cursor-p2-f04-diagnose-compute.txt` |
+| Check | Command | Sample result |
+|---|---|---|
+| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** ok (sample: `/tmp/spirula-codex-p2-f04-2bd98de-independent-verify.log`) |
+| Host affine suite | `cargo test -p spirula-gpu --test host_compute_affine -- --nocapture` | **3/3** on Apple M5 Max / Metal (sample: `/tmp/spirula-codex-p2-f04-2bd98de-host-tests.log`) |
+| Diagnose compute | `cargo run -p spirula-gpu --bin spirula-gpu-diagnose -- --compute` | `match=cpu_exact`, `after_drop current=0` (sample: `/tmp/spirula-codex-p2-f04-2bd98de-host-diagnose.log`) |
+
+Representative host diagnose fields (one M5 Max / Metal run; timings vary):
+
+- wgpu 30.0.1; `max_buffer_size=4294967295`, storage buffers/stage=29,
+  compute workgroup storage=32768, workgroups/dim=65535, texture 2d=32768
+- Proof: `count=100` (non-WG multiple), MODE override, layout v1/v2 distinct ids
+- Accounted: `source=accounted_scoped:gpu_context_resources`, peak observed on
+  diagnose path 1232, `after_drop current=0`
 
 ## Non-claims
 
 - No general shader reflection / all bind types / render pipelines.
-- No application/CLI/UI session GPU ownership.
+- Layout epoch v2 shares the v1 binding ABI (key invalidation only).
+- No application/CLI/UI session GPU ownership; real train/preview not wired.
 - No full diagnostic event fan-out (P2-F05).
 - No surface present smoke (P2-F06).
 - No P9-F03 cache performance optimization claims beyond this slice’s cold/warm
