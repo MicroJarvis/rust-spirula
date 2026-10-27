@@ -243,4 +243,7 @@ Train/preview and P6-F03 navigation remain unwired. P3-F01 is **已完成**
 [phase-3/camera.md](phase-3/camera.md): four models / three tiers / CameraMath
 goldens / SourceCamera + DistortionFit LM/Lawson/ladder; orthographic
 explicitly unsupported; active source `-1` vs original metadata). Plan
-current work is **P3-F02**.
+current work is **P3-F02** (**HOLD** on `codex/p3-f02` until independent
+review; [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md) covers
+C-DATA-07..10 multi-format decode, EXIF bake, mask flip/offset EDT,
+depth/normal in `spirula-io` with admitted session commands).

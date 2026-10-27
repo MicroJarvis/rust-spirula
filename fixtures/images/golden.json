@@ -1,0 +1,55 @@
+{
+  "schema": "spirula-image-orient-mask-golden",
+  "version": 1,
+  "reference_commit": "9a24f09927944a795e7ba1bd8243a625bf419479",
+  "nonsquare_png": {
+    "path": "nonsquare_4x2.png",
+    "width": 4,
+    "height": 2
+  },
+  "mask_png": {
+    "path": "mask_4x2.png",
+    "width": 4,
+    "height": 2,
+    "nonzero_left": true
+  },
+  "jpeg_orient6": {
+    "path": "orient6_1x1.jpg",
+    "orientation": 6,
+    "turns_cw": 1,
+    "mirror": false
+  },
+  "apply_turns_only_size": {
+    "src_w": 4,
+    "src_h": 2,
+    "orientation": 6,
+    "out_w": 2,
+    "out_h": 4
+  },
+  "cpp_orient_mask_golden": {
+    "path": "cpp_orient_mask_golden.json",
+    "schema": "spirula-image-orient-mask-cpp-golden",
+    "version": 2,
+    "reference_commit": "9a24f09927944a795e7ba1bd8243a625bf419479",
+    "generator": "tools/image-orient-golden (extracts pin DataManager/Exif/ImageOrient/DistanceTransform into gitignored .build/)",
+    "covers": [
+      "orient_full_1_8",
+      "orient_turns_1_8",
+      "mask_nearest",
+      "alpha_cpu_resize",
+      "counterexamples",
+      "edt_offset",
+      "normal_turn",
+      "normal_combined_resize_then_turn",
+      "depth_bilinear"
+    ]
+  },
+  "formats": {
+    "bmp": "tiny_2x2.bmp",
+    "tga": "tiny_2x2.tga",
+    "tiff": "tiny_2x2.tiff",
+    "exr": "tiny_2x2.exr",
+    "depth16": "depth_2x2.png",
+    "normal": "normal_2x2.png"
+  }
+}

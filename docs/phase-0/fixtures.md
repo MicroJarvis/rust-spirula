@@ -159,7 +159,8 @@ the real readers and by P1-F02's versioned serialization.
   contract and the actual tolerance; the fixture is the deterministic input for
   that comparison.
 - The PNG image is only header-checked in Phase 0. P3-F02 adds decode,
-  orientation and mask coverage.
+  orientation and mask coverage under `fixtures/images/` (including
+  `cpp_orient_mask_golden.json` from `tools/image-orient-golden`).
 - Single-file atomic publish is P1-F05. Checkpoint directory atomicity,
   completion markers, version validation and corruption recovery remain
   P3-F07 / P5-F05; this fixture only covers a complete, well-formed save.

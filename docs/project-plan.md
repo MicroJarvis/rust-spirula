@@ -131,7 +131,8 @@ Phase 3 执行要点（2026-10-27 评审；P3-F01 已落地 main）：
   `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；集成 tip `a35a384`；契约
   [phase-3/camera.md](phase-3/camera.md)。`fixtures/camera/cpp-golden/camera_math.json`
   已连同字节数与 SHA-256 登记进 `fixtures/manifest.json`。计划当前为
-  **P3-F02**（未完成；`codex/p3-f02` worktree 另线 **HOLD**，不在本收尾范围）。
+  **P3-F02**（进行中 / **HOLD** on `codex/p3-f02` until independent review；
+  C-DATA-07..10 全矩阵范围见 [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)）。
 - **P3-F03 是数据侧关键路径**，P3-F04、P3-F08、P5-F08、P4-F01 以及 P5/P6 的
   大部分真实流程都经由它。P3-F02 与 P3-F03 应优先并行推进；P3-F05、P3-F06
   不得排在 P3-F03 之前阻塞主线。

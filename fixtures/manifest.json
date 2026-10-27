@@ -89,6 +89,66 @@
       "sha256": "4e5991a32d1c29f3e24dbc13b6c1f8830936f53cfe6ce890a523275ef219eaf9"
     },
     {
+      "path": "images/cpp_orient_mask_golden.json",
+      "bytes": 3517,
+      "sha256": "77111d31bbb77de67bd24c3c9318c4b7c7674e8885cb4aa1e213ee7c0f9f63dd"
+    },
+    {
+      "path": "images/depth_2x2.png",
+      "bytes": 75,
+      "sha256": "e89632a593188fbd4e965bb0d16aef70cb2d65eb6af7dca3c16412a92bc32905"
+    },
+    {
+      "path": "images/golden.json",
+      "bytes": 1362,
+      "sha256": "4d09c16a6123ebecfb056b315a76f251ff4c34d13bc785bf9086a7be1b82db39"
+    },
+    {
+      "path": "images/mask_4x2.png",
+      "bytes": 73,
+      "sha256": "83f6af1600eaa12fb477f9e4207ccf7a2680d87b1d5feaf0bd2e043b6ffcacdc"
+    },
+    {
+      "path": "images/nonsquare_4x2.png",
+      "bytes": 76,
+      "sha256": "73b047f8c23e37a5b6897245967e1b91fa1f9ac60b2d6e7a0133b487eb5594fb"
+    },
+    {
+      "path": "images/normal_2x2.png",
+      "bytes": 79,
+      "sha256": "a2be19b4c5e73e92c438736ac4a049842f8bed8ab99ea3d17bd75e93e2d82a6d"
+    },
+    {
+      "path": "images/orient1_1x1.jpg",
+      "bytes": 195,
+      "sha256": "677d168e268b3e2278ea46758d2209c14a00e6f13d7a6112f3943024dcb7022e"
+    },
+    {
+      "path": "images/orient6_1x1.jpg",
+      "bytes": 195,
+      "sha256": "5b7f2b92a08a76154bb1f6652a9f8fb3d8bda472c556a3ab30d1deea584cb6b7"
+    },
+    {
+      "path": "images/tiny_2x2.bmp",
+      "bytes": 70,
+      "sha256": "e3e4fbdc25d4d44234ea6fe3fc856cd0587c84def9c33981430550454936931f"
+    },
+    {
+      "path": "images/tiny_2x2.exr",
+      "bytes": 449,
+      "sha256": "11816a602d99e3b40e5a709d1d9c702814a02173c9b2b057d70b665c83d98b53"
+    },
+    {
+      "path": "images/tiny_2x2.tga",
+      "bytes": 30,
+      "sha256": "41c88be8230a06b6f67355ceaac51c9b74219ba79fe4dc5d28b8339b5de8b5f3"
+    },
+    {
+      "path": "images/tiny_2x2.tiff",
+      "bytes": 152,
+      "sha256": "9ce9330e6053cb4dd60f87f76ce513ae34a53fc12bc0c9d9eff4840e72371867"
+    },
+    {
       "path": "render/golden.png",
       "bytes": 857,
       "sha256": "7123e7c8199f8966d13208d3ef2fa438a876e0c5f1daf3aa0bf0e642bd63675e"

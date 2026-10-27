@@ -24,10 +24,10 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-04 | Nerfstudio `transforms.json` | `NerfstudioParser.cpp:419-560` | JSON + images + optional PLY | `ParsedDataset` | `applied_transform` inversion; per-frame intrinsics | fixture transforms + P3-F04 | `spirula-io` | 未开始 |
 | C-DATA-05 | Metashape XML/PSX | `MetashapeParser.cpp:385-785` | XML/ZIP tree + PLY | `ParsedDataset` | converted through a Nerfstudio-shaped meta; component selection | P3-F04 | `spirula-io` | 未开始 |
 | C-DATA-06 | train/eval split | `DatasetCommon.cpp:196-260` | camera names + config | index lists | `all/fraction/interval/filename`; empty eval legal, empty train error | P3-F03 unit tests | `spirula-io` | 未开始 |
-| C-DATA-07 | image decode (PNG/JPEG/BMP/TGA/EXR/TIFF) | `DataManager.cpp:447-518`, `DataManager.h:14-22` | file | RGB array | 8/16-bit PNG, float EXR/TIFF, no external codec runtime | fixture image + P3-F02 | `spirula-io` | 未开始 |
-| C-DATA-08 | masks and alpha | `DataManager.cpp:521-615`, `ImageProbe.cpp:60` | aux files / alpha | binary mask | white keeps, alpha >= 128 keeps, flip/offset optional | P3-F02 fixtures | `spirula-io` | 未开始 |
-| C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth, float maps, size mismatch resized later | P3-F02 | `spirula-io` | 未开始 |
-| C-DATA-10 | EXIF orientation | `DatasetCommon.cpp:45-70`, `ImageOrient.h` | JPEG EXIF | quarter turns | `none/orient/apply`; rotation applies to all aux maps | P3-F02 | `spirula-io` | 未开始 |
+| C-DATA-07 | image decode (PNG/JPEG/BMP/TGA/EXR/TIFF) | `DataManager.cpp:447-518`, `DataManager.h:14-22` | file | RGB array | 8/16-bit PNG (incl. LumaA16→U16), float EXR/TIFF preserved as F32; BMP CORE+INFO probe; budgets before alloc | fixture image + P3-F02 | `spirula-io` | 进行中 |
+| C-DATA-08 | masks and alpha | `DataManager.cpp:521-615`, `ImageProbe.cpp:60` | aux files / alpha | binary mask | white keeps, alpha >= 128 keeps, flip/offset optional; nonfinite offset rejected | P3-F02 fixtures | `spirula-io` | 进行中 |
+| C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth; normals: pixel turn → bilinear → `turn_normal_vectors` | P3-F02 | `spirula-io` | 进行中 |
+| C-DATA-10 | EXIF orientation | `DatasetCommon.cpp:45-70`, `ImageOrient.h` | JPEG EXIF | quarter turns | `none/orient/apply`; rotation applies to all aux maps | P3-F02 | `spirula-io` | 进行中 |
 | C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 已完成 |
 | C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 已完成 |
 | C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 已完成 |
@@ -161,6 +161,13 @@ refer to [fixtures.md](fixtures.md).
   metadata. Orthographic remains explicitly unsupported
   (AD-P3-F01-01 / `SP-INP-004`). CPU host goldens stay authoritative vs later
   GPU tolerances. P1 pinhole API/goldens unchanged.
+- `C-DATA-07` / `C-DATA-08` / `C-DATA-09` / `C-DATA-10` are **进行中** under
+  P3-F02 ([phase-3/image-orient-mask.md](../phase-3/image-orient-mask.md)):
+  PNG/JPEG/BMP/TGA/TIFF/EXR probe+decode with encoded/pixel budgets; JPEG EXIF
+  1..8 (full SHORT `u16`); TurnsOnly/Full bake; mask NonZero (stbi gray) +
+  nearest + flip + EDT boundary offset; Alpha `cpu_resize`≥128; depth16 +
+  normal RGB/`turn_normal_vectors`; pin-extracted C++ goldens; admitted session
+  commands. Not READY until independent review — scope is not shrunk in docs.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.

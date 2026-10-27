@@ -12,4 +12,6 @@
 # Local development worktrees and cargo home (Phase 0)
 /.worktrees/
 /.cargo-home/
+tools/image-orient-golden/bin/
+tools/image-orient-golden/.build/
 tools/camera-golden/bin/

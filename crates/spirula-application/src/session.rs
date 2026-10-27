@@ -32,7 +32,10 @@ use crate::limits::SessionLimits;
 use crate::notify::SubscribeError;
 use crate::notify::{Notifier, Subscription};
 use crate::state::SessionState;
-use crate::worker::{FakeWorkerBehavior, StallGate, WorkerEvent, WorkerHandle, WorkerRequest};
+use crate::worker::{
+    FakeWorkerBehavior, ImagePrepareOk, ImagePrepareRequest, StallGate, WorkerEvent, WorkerHandle,
+    WorkerRequest,
+};
 
 struct LogTail {
     capacity: usize,
@@ -502,7 +505,9 @@ impl ApplicationService {
         };
         let is_result = matches!(
             event,
-            WorkerEvent::LoadDone { .. } | WorkerEvent::RunTerminal { .. }
+            WorkerEvent::LoadDone { .. }
+                | WorkerEvent::ImagePrepareDone { .. }
+                | WorkerEvent::RunTerminal { .. }
         );
         let tx = if is_result {
             &self.result_inject_tx
@@ -769,6 +774,10 @@ fn validate_in_state(phase: SessionState, payload: &CommandPayload) -> Result<()
             )
         }
         CommandPayload::ProbeRun { .. } => phase == SessionState::Ready,
+        CommandPayload::PrepareOrientedImage { .. }
+        | CommandPayload::PrepareNormalizedMask { .. } => {
+            matches!(phase, SessionState::Idle | SessionState::Ready)
+        }
         CommandPayload::Pause => {
             matches!(phase, SessionState::Running | SessionState::Paused)
         }
@@ -972,6 +981,54 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 save_on_cancel: save_flag,
             });
         }
+        CommandPayload::PrepareOrientedImage {
+            path,
+            orientation,
+            turns_only,
+        } => {
+            let stall = shared.stall.clone_arc();
+            drop(st);
+            lock(&shared.worker).send(WorkerRequest::PrepareImage {
+                run_id,
+                command_id: id,
+                request: ImagePrepareRequest::Oriented {
+                    path,
+                    orientation,
+                    turns_only,
+                },
+                cancel,
+                stall,
+            });
+        }
+        CommandPayload::PrepareNormalizedMask {
+            path,
+            dst_w,
+            dst_h,
+            orientation,
+            turns_only,
+            flip,
+            alpha,
+            boundary_offset_milli,
+        } => {
+            let stall = shared.stall.clone_arc();
+            drop(st);
+            lock(&shared.worker).send(WorkerRequest::PrepareImage {
+                run_id,
+                command_id: id,
+                request: ImagePrepareRequest::Mask {
+                    path,
+                    dst_w,
+                    dst_h,
+                    orientation,
+                    turns_only,
+                    flip,
+                    alpha,
+                    boundary_offset_milli,
+                },
+                cancel,
+                stall,
+            });
+        }
         other => {
             finish_active(
                 &mut st,
@@ -1000,6 +1057,9 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             run_id, command_id, ..
         }
         | WorkerEvent::LoadDone {
+            run_id, command_id, ..
+        }
+        | WorkerEvent::ImagePrepareDone {
             run_id, command_id, ..
         }
         | WorkerEvent::RunTerminal {
@@ -1076,6 +1136,137 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             );
             complete_pending_stop(&mut st, &shared.notifier);
         }
+        WorkerEvent::ImagePrepareDone { result, .. } => {
+            let is_image = matches!(
+                st.active_payload,
+                Some(
+                    CommandPayload::PrepareOrientedImage { .. }
+                        | CommandPayload::PrepareNormalizedMask { .. }
+                )
+            );
+            if !is_image {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Result kind must match the active image command; wrong Ok type
+            // cannot close the command (defense vs late/confused worker events).
+            let kind_matches = match &result {
+                Ok(ImagePrepareOk::Oriented { .. }) => {
+                    matches!(
+                        st.active_payload,
+                        Some(CommandPayload::PrepareOrientedImage { .. })
+                    )
+                }
+                Ok(ImagePrepareOk::Mask { .. }) => {
+                    matches!(
+                        st.active_payload,
+                        Some(CommandPayload::PrepareNormalizedMask { .. })
+                    )
+                }
+                Err(_) => true, // Err is valid for either image command
+            };
+            if !kind_matches {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Owner-side arbitration: Stop/Shutdown can win after the worker
+            // checked cancel but before this result is consumed. Under the
+            // state lock, cancel always beats Prepared/Completed/Failed.
+            if st.cancel.is_cancelled()
+                || st.pending_stop.is_some()
+                || st.pending_shutdown.is_some()
+            {
+                let reason = st.cancel.reason().unwrap_or_else(|| {
+                    if st.pending_shutdown.is_some() {
+                        CancelReason::Shutdown
+                    } else {
+                        CancelReason::User
+                    }
+                });
+                finish_active(
+                    &mut st,
+                    &shared.notifier,
+                    command_id,
+                    RunOutcome::Canceled {
+                        step: 0,
+                        reason,
+                        saved_checkpoint: None,
+                    },
+                    Some(run_id),
+                );
+                complete_pending_stop(&mut st, &shared.notifier);
+                return;
+            }
+            match result {
+                Ok(ImagePrepareOk::Oriented {
+                    path,
+                    width,
+                    height,
+                    orientation,
+                    turns_only,
+                }) => {
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(command_id),
+                        Some(run_id),
+                        Event::ImagePrepared {
+                            path,
+                            width,
+                            height,
+                            orientation,
+                            turns_only,
+                        },
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Ok(ImagePrepareOk::Mask {
+                    path,
+                    width,
+                    height,
+                    kept,
+                    alpha,
+                }) => {
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(command_id),
+                        Some(run_id),
+                        Event::MaskPrepared {
+                            path,
+                            width,
+                            height,
+                            kept,
+                            alpha,
+                        },
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Err(error) => {
+                    let error = bound_error(&error, &st.limits);
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Failed { error },
+                        Some(run_id),
+                    );
+                }
+            }
+            complete_pending_stop(&mut st, &shared.notifier);
+        }
         WorkerEvent::RunTerminal {
             outcome,
             checkpoint_label,
@@ -1094,6 +1285,27 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 .is_err()
             {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Image prepare cancel arrives as RunTerminal only (never Prepared).
+            // Keep Idle|Ready phase; do not run probe checkpoint/save machine.
+            let is_image = matches!(
+                st.active_payload,
+                Some(
+                    CommandPayload::PrepareOrientedImage { .. }
+                        | CommandPayload::PrepareNormalizedMask { .. }
+                )
+            );
+            if is_image {
+                let _ = (checkpoint_label, save_failed, final_progress);
+                let outcome = outcome_from_terminal(outcome);
+                // Exactly-once cancel terminal; never Completed after cancel.
+                if !matches!(outcome, RunOutcome::Canceled { .. }) {
+                    st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                    return;
+                }
+                finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
+                complete_pending_stop(&mut st, &shared.notifier);
                 return;
             }
             let _ = checkpoint_label; // canonical label lives on outcome after sanitize
