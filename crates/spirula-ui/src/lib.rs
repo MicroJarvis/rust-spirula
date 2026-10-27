@@ -5,6 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+mod probe_driver;
+
+pub use probe_driver::{ProbeDriver, ProbeStep, drive_owner};
+
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer, SharedString};
 use spirula_core::{
     ContextKey, DomainError, ErrorCode, FrameCopyReport, PresentedFrame, rgba8_matches_cpu_probe,

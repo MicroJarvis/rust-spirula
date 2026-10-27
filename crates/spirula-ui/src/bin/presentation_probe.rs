@@ -4,15 +4,19 @@
 //! Cycles application resize → request → Slint display so CUA can verify
 //! different size frames (not only stretching a fixed 64×48). Generation
 //! gates stay in force. Does **not** claim wgpu surface present.
+//!
+//! Close path: callbacks / timer / paint notifier hold `Weak` refs; owner is
+//! `take()`n after `run` returns so shutdown always completes (exit 0).
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::process::ExitCode;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, RenderingState, Timer, TimerMode};
-use spirula_application::{PresentationOwner, PresentationStatus};
+use spirula_application::PresentationStatus;
 use spirula_ui::{
-    SetImageEvidence, image_from_presented_frame, mark_property_assigned,
+    ProbeDriver, SetImageEvidence, drive_owner, image_from_presented_frame, mark_property_assigned,
     mark_software_paint_verified,
 };
 
@@ -69,80 +73,69 @@ slint::slint! {
 const SIZES: [(u32, u32); 4] = [(64, 48), (65, 3), (63, 2), (128, 72)];
 
 struct ProbeState {
-    owner: PresentationOwner,
+    owner: Option<spirula_application::PresentationOwner>,
+    driver: ProbeDriver,
     evidence: Option<SetImageEvidence>,
     paint_marked: bool,
-    /// Last size applied via application resize.
-    applied: (u32, u32),
-    /// Pending size requested by UI controls / auto-cycle.
-    want: (u32, u32),
     cycle_idx: usize,
     last_auto: Instant,
-    awaiting_generation: Option<u64>,
     device_label: String,
 }
 
-fn apply_want(st: &mut ProbeState) {
-    let (w, h) = st.want;
-    if (w, h) == st.applied && st.awaiting_generation.is_none() {
-        return;
+fn main() -> ExitCode {
+    match run_probe() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => code,
     }
-    if st.owner.resize(w, h).is_err() {
-        return;
-    }
-    st.applied = (w, h);
-    let generation = st.owner.size_generation();
-    st.awaiting_generation = Some(generation);
-    let _ = st.owner.request_frame();
 }
 
-fn main() {
-    let ui = PresentationProbe::new().expect("slint UI");
+fn run_probe() -> Result<(), ExitCode> {
+    let ui = PresentationProbe::new().map_err(|e| {
+        eprintln!("probe: slint UI init failed: {e:?}");
+        ExitCode::FAILURE
+    })?;
     ui.set_status_text("starting presentation worker (GPU opens off UI thread)…".into());
 
-    let owner = match PresentationOwner::start(64, 48) {
+    let owner = match spirula_application::PresentationOwner::start(64, 48) {
         Ok(o) => o,
         Err(e) => {
             ui.set_status_text(format!("start failed: {e}").into());
             let _ = ui.run();
-            return;
+            return Ok(());
         }
     };
 
     let state = Rc::new(RefCell::new(ProbeState {
-        owner,
+        owner: Some(owner),
+        driver: ProbeDriver::new(64, 48),
         evidence: None,
         paint_marked: false,
-        applied: (64, 48),
-        want: (64, 48),
         cycle_idx: 0,
         last_auto: Instant::now(),
-        awaiting_generation: None,
         device_label: String::new(),
     }));
 
+    // Weak callbacks: window/close must not keep ProbeState alive past cleanup.
     {
-        let st = Rc::clone(&state);
-        ui.on_size_a(move || {
-            st.borrow_mut().want = (64, 48);
-        });
-        let st = Rc::clone(&state);
-        ui.on_size_b(move || {
-            st.borrow_mut().want = (65, 3);
-        });
-        let st = Rc::clone(&state);
-        ui.on_size_c(move || {
-            st.borrow_mut().want = (128, 72);
-        });
-        let st = Rc::clone(&state);
+        let weak = Rc::downgrade(&state);
+        ui.on_size_a(move || set_want(&weak, 64, 48));
+        let weak = Rc::downgrade(&state);
+        ui.on_size_b(move || set_want(&weak, 65, 3));
+        let weak = Rc::downgrade(&state);
+        ui.on_size_c(move || set_want(&weak, 128, 72));
+        let weak = Rc::downgrade(&state);
         ui.on_cycle_size(move || {
+            let Some(st) = weak.upgrade() else {
+                return;
+            };
             let mut s = st.borrow_mut();
             s.cycle_idx = (s.cycle_idx + 1) % SIZES.len();
-            s.want = SIZES[s.cycle_idx];
+            let (w, h) = SIZES[s.cycle_idx];
+            s.driver.set_want(w, h);
         });
     }
 
-    let state_paint = Rc::clone(&state);
+    let state_paint = Rc::downgrade(&state);
     let ui_paint = ui.as_weak();
     match ui
         .window()
@@ -151,7 +144,10 @@ fn main() {
                 RenderingState::AfterRendering => {}
                 _ => return,
             }
-            let mut st = state_paint.borrow_mut();
+            let Some(st_rc) = state_paint.upgrade() else {
+                return;
+            };
+            let mut st = st_rc.borrow_mut();
             if st.paint_marked {
                 return;
             }
@@ -186,14 +182,29 @@ fn main() {
     }
 
     let ui_weak = ui.as_weak();
-    let state_tick = Rc::clone(&state);
+    let state_tick = Rc::downgrade(&state);
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
-        let mut st = state_tick.borrow_mut();
-        match st.owner.status() {
+        let Some(st_rc) = state_tick.upgrade() else {
+            return;
+        };
+        let mut st = st_rc.borrow_mut();
+        let ProbeState {
+            owner,
+            driver,
+            evidence,
+            paint_marked,
+            cycle_idx,
+            last_auto,
+            device_label,
+        } = &mut *st;
+        let Some(owner) = owner.as_ref() else {
+            return;
+        };
+        match owner.status() {
             PresentationStatus::Opening => {
                 ui.set_status_text("Opening GPU on presentation worker…".into());
             }
@@ -203,31 +214,38 @@ fn main() {
             PresentationStatus::Closed => {
                 ui.set_status_text("presentation closed".into());
             }
-            PresentationStatus::Ready { device_label } => {
-                if st.device_label.is_empty() {
-                    st.device_label = device_label;
+            PresentationStatus::Ready { device_label: label } => {
+                if device_label.is_empty() {
+                    *device_label = label;
                 }
-                // Auto-cycle sizes every 2.5s so CUA sees frame stream without
-                // relying only on window stretch of a fixed buffer.
-                if st.last_auto.elapsed() >= Duration::from_millis(2500) {
-                    st.cycle_idx = (st.cycle_idx + 1) % SIZES.len();
-                    st.want = SIZES[st.cycle_idx];
-                    st.last_auto = Instant::now();
+                // Auto-cycle sizes every 2.5s after first assign so CUA can see
+                // a multi-size stream without only stretching a fixed buffer.
+                if driver.assigned_count >= 1 && last_auto.elapsed() >= Duration::from_millis(2500)
+                {
+                    *cycle_idx = (*cycle_idx + 1) % SIZES.len();
+                    let (w, h) = SIZES[*cycle_idx];
+                    driver.set_want(w, h);
+                    *last_auto = Instant::now();
                 }
-                apply_want(&mut st);
 
-                if let Some(d) = st.owner.take_latest() {
-                    let gen_ok = st
-                        .awaiting_generation
-                        .is_none_or(|g| d.frame.size_generation >= g);
-                    if !gen_ok {
+                if let Err(e) = drive_owner(driver, owner) {
+                    ui.set_status_text(format!("drive failed: {e}").into());
+                    return;
+                }
+
+                if let Some(d) = owner.take_latest() {
+                    let assigned = driver.try_assign(
+                        d.frame.size_generation,
+                        d.frame.width,
+                        d.frame.height,
+                    );
+                    if !assigned {
                         return;
                     }
-                    st.awaiting_generation = None;
                     match image_from_presented_frame(&d.frame) {
-                        Ok((image, mut evidence)) => {
+                        Ok((image, mut set_evidence)) => {
                             ui.set_frame_image(image);
-                            mark_property_assigned(&mut evidence);
+                            mark_property_assigned(&mut set_evidence);
                             ui.set_size_label(
                                 format!(
                                     "{}×{} generation={}",
@@ -235,39 +253,42 @@ fn main() {
                                 )
                                 .into(),
                             );
-                            st.paint_marked = false;
+                            *paint_marked = false;
                             ui.set_status_text(
                                 format!(
                                     "{}\n{}\ndevice={}\nproduce_to_take={:?}\n\
-                                     want={:?} applied={:?} generation={}\n\
+                                     want={:?} applied={:?} awaiting={:?} assigned={}\n\
+                                     stats={:?}\n\
                                      software_paint=unverified until AfterRendering\n\
                                      claims_wgpu_surface_present=false",
-                                    evidence.status,
-                                    format_copies(&evidence.copies),
-                                    st.device_label,
+                                    set_evidence.status,
+                                    format_copies(&set_evidence.copies),
+                                    device_label,
                                     d.produce_to_take,
-                                    st.want,
-                                    st.applied,
-                                    d.frame.size_generation,
+                                    driver.want,
+                                    driver.applied,
+                                    driver.awaiting_generation,
+                                    driver.assigned_count,
+                                    owner.stats(),
                                 )
                                 .into(),
                             );
-                            st.evidence = Some(evidence);
+                            *evidence = Some(set_evidence);
                         }
                         Err(e) => {
                             ui.set_status_text(format!("image build failed: {e}").into());
                         }
                     }
-                } else if st.awaiting_generation.is_some() {
-                    let _ = st.owner.request_frame();
+                } else if driver.awaiting_generation.is_some() {
                     ui.set_status_text(
                         format!(
-                            "Ready; waiting {}×{} generation≥{:?}… device={} stats={:?}",
-                            st.want.0,
-                            st.want.1,
-                            st.awaiting_generation,
-                            st.device_label,
-                            st.owner.stats()
+                            "Ready; waiting {}×{} generation≥{:?}… device={} stats={:?} assigned={}",
+                            driver.want.0,
+                            driver.want.1,
+                            driver.awaiting_generation,
+                            device_label,
+                            owner.stats(),
+                            driver.assigned_count,
                         )
                         .into(),
                     );
@@ -276,13 +297,37 @@ fn main() {
         }
     });
 
-    let _ = ui.run();
+    let run_res = ui.run();
+    // Stop timer before releasing state (drops tick Strong/Weak upgrades).
     drop(timer);
-    let owner = Rc::try_unwrap(state)
-        .unwrap_or_else(|_| panic!("probe state still shared"))
-        .into_inner()
-        .owner;
-    owner.shutdown();
+    // Clear Slint callbacks so they drop any residual upgrades promptly.
+    ui.on_size_a(|| {});
+    ui.on_size_b(|| {});
+    ui.on_size_c(|| {});
+    ui.on_cycle_size(|| {});
+
+    let owner = state.borrow_mut().owner.take();
+    // Drop UI before shutdown join so paint notifier cannot race.
+    drop(ui);
+    if let Some(owner) = owner {
+        owner.shutdown();
+    }
+    // Strong Rc should be unique now; ignore leftover Weak-only holds.
+    drop(state);
+
+    if let Err(e) = run_res {
+        eprintln!("probe: ui.run ended with error: {e:?}");
+        return Err(ExitCode::FAILURE);
+    }
+    eprintln!("probe: clean shutdown (owner released)");
+    Ok(())
+}
+
+fn set_want(weak: &Weak<RefCell<ProbeState>>, w: u32, h: u32) {
+    let Some(st) = weak.upgrade() else {
+        return;
+    };
+    st.borrow_mut().driver.set_want(w, h);
 }
 
 fn format_copies(c: &spirula_core::FrameCopyReport) -> String {

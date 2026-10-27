@@ -125,11 +125,13 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 - `mark_software_paint_verified` only from a verified paint path
   (`RenderingState::AfterRendering`). If the notifier is unsupported, paint
   stays **unverified** — never mark before the window draws.
-- Probe binary: worker opens GPU; UI timer polls status/frames; auto-cycles
-  application `resize` → `request_frame` → display across sizes (64×48, 65×3,
-  63×2, 128×72) with generation gate — not window-stretch of a fixed buffer.
-  Tech buttons also drive resize. Window stays open for CUA. Software renderer
-  ≠ wgpu surface present.
+- Probe binary: worker opens GPU; UI timer polls status/frames via
+  [`ProbeDriver`](../../crates/spirula-ui/src/probe_driver.rs) — **resize only
+  when wanted size changes**; initial frame is `request` only; while awaiting a
+  generation, never re-resize (fixes gen spin / blank image / taken=0).
+  Auto-cycles sizes after first assign (64×48, 65×3, 63×2, 128×72). Tech
+  buttons also set want. Callbacks hold `Weak`; close `take`s owner then
+  shutdown (exit 0). Software renderer ≠ wgpu surface present.
 - No navigation chrome (P6-F03).
 
 ### Measurement honesty
@@ -178,7 +180,8 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 | Date | Host | Command | Result |
 |---|---|---|---|
 | 2026-10-27 | macOS aarch64 (this worktree) | `cargo run -p spirula-ui --bin spirula-presentation-probe` (left visible for CUA) | **进行中** — window launched for operator/CUA check of display/resize/close; not claimed complete until CUA confirms draw |
-| 2026-10-27 | macOS aarch64 | `/tmp/SpirulaPresentationProbe.app` via `open` (bundle id `local.spirula.presentation-probe`; ad-hoc codesign; not a P9 package; not in repo) | **进行中** — CUA inventory could not attach to bare binary; .app wrapper for operator/CUA; multi-size frame stream; draw not claimed complete |
+| 2026-10-27 | macOS aarch64 | `/tmp/SpirulaPresentationProbe.app` via `open` (bundle id `local.spirula.presentation-probe`; ad-hoc codesign; not a P9 package; not in repo) | **进行中** — CUA connected; blank image / `taken=0` / gen spin from per-tick resize while awaiting (CPU resource diag pid 55193, 51% over 177s, Action none); process gone after CUA close with no crash .ips — panic-on-`try_unwrap` possible; fixed in follow-up candidate |
+| 2026-10-27 | macOS aarch64 | same `/tmp/SpirulaPresentationProbe.app` (ProbeDriver + Weak close) | **进行中** — relaunched for CUA re-check of display / size switch / resize / clean close |
 
 ## Non-claims
 
