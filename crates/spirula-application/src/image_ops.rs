@@ -73,7 +73,18 @@ pub(crate) fn run_prepare_oriented_rgb(
         t
     };
     let (ow, oh) = oriented_size(w, h, xf.turns_cw);
-    let mut dst = vec![0u8; (ow as usize) * (oh as usize) * 3];
+    spirula_io::ensure_pixel_budget(ow, oh)?;
+    let dst_len = (ow as usize)
+        .checked_mul(oh as usize)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or_else(|| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "image_size",
+                "oriented byte product overflow",
+            )
+        })?;
+    let mut dst = vec![0u8; dst_len];
     let (dw, dh) = apply_orientation(&rgb, w, h, 3, orientation, policy, &mut dst)?;
     Ok(OrientedRgb {
         width: dw,
@@ -88,16 +99,35 @@ pub(crate) fn run_prepare_normalized_mask(
     path: &Path,
     args: PrepareMaskArgs,
 ) -> Result<NormalizedMask, DomainError> {
-    let bytes = read_image_bytes_capped(path)?;
-    let (w, h, ch, samples) = decode_mask_image_bytes(&bytes)?;
-    let mut dst = vec![0u8; (args.dst_w as usize) * (args.dst_h as usize)];
+    // Validate dims/options before any read/decode/allocation (incl. u32::MAX).
+    spirula_io::ensure_pixel_budget(args.dst_w, args.dst_h)?;
+    if !args.boundary_offset_frac.is_finite() {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "mask_boundary_offset",
+            "boundary_offset_frac must be finite",
+        ));
+    }
+    let orientation = ExifOrientation::from_u8(args.orientation)?;
+    let dst_len = (args.dst_w as usize)
+        .checked_mul(args.dst_h as usize)
+        .ok_or_else(|| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "dst_size",
+                "destination byte product overflow",
+            )
+        })?;
     let opts = MaskNormalizeOptions {
         kind: args.kind,
         flip: args.flip,
         boundary_offset_frac: args.boundary_offset_frac,
-        orientation: ExifOrientation::from_u8(args.orientation)?,
+        orientation,
         apply_policy: args.policy,
     };
+    let bytes = read_image_bytes_capped(path)?;
+    let (w, h, ch, samples) = decode_mask_image_bytes(&bytes)?;
+    let mut dst = vec![0u8; dst_len];
     normalize_mask(&samples, w, h, ch, args.dst_w, args.dst_h, opts, &mut dst)?;
     Ok(NormalizedMask {
         width: args.dst_w,

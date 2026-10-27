@@ -56,10 +56,44 @@ pub fn stbi_luma_u8(r: u8, g: u8, b: u8) -> u8 {
     ((u32::from(r) * 77 + u32::from(g) * 150 + u32::from(b) * 29) >> 8) as u8
 }
 
+fn plane_layout(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+) -> Result<(usize, usize), DomainError> {
+    if !(1..=4).contains(&channels) {
+        return Err(err(
+            ErrorCode::InvalidArgument,
+            "channels",
+            format!("mask channels must be 1..=4, got {channels}"),
+        ));
+    }
+    ensure_pixel_budget(width, height)?;
+    let px = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "mask_size", "overflow"))?;
+    let need = px
+        .checked_mul(channels as usize)
+        .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "mask_size", "overflow"))?;
+    if samples.len() < need {
+        return Err(err(
+            ErrorCode::MalformedRecord,
+            "mask",
+            format!("buffer short: need {need}, got {}", samples.len()),
+        ));
+    }
+    Ok((px, channels as usize))
+}
+
 /// Extract NonZero plane: gray via stbi Y, alpha channel ignored for RGBA/LA.
-pub fn extract_nonzero_plane(samples: &[u8], width: u32, height: u32, channels: u32) -> Vec<u8> {
-    let px = (width as usize) * (height as usize);
-    let ch = channels as usize;
+pub fn extract_nonzero_plane(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+) -> Result<Vec<u8>, DomainError> {
+    let (px, ch) = plane_layout(samples, width, height, channels)?;
     let mut plane = vec![0u8; px];
     for (i, out) in plane.iter_mut().enumerate() {
         let base = i * ch;
@@ -71,14 +105,18 @@ pub fn extract_nonzero_plane(samples: &[u8], width: u32, height: u32, channels: 
         };
         *out = u8::from(y != 0);
     }
-    plane
+    Ok(plane)
 }
 
 /// Extract alpha plane for AlphaThreshold128. Returns 0..=255 samples.
 /// Channels without alpha (L/RGB) yield all-255 (opaque).
-pub fn extract_alpha_plane(samples: &[u8], width: u32, height: u32, channels: u32) -> Vec<u8> {
-    let px = (width as usize) * (height as usize);
-    let ch = channels as usize;
+pub fn extract_alpha_plane(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+) -> Result<Vec<u8>, DomainError> {
+    let (px, ch) = plane_layout(samples, width, height, channels)?;
     let mut plane = vec![255u8; px];
     match ch {
         2 => {
@@ -95,7 +133,7 @@ pub fn extract_alpha_plane(samples: &[u8], width: u32, height: u32, channels: u3
             // L / RGB: no alpha → opaque
         }
     }
-    plane
+    Ok(plane)
 }
 
 /// Nearest-neighbor resize matching `cpu_nearest_resize_u8` (DataManager.cpp).
@@ -276,8 +314,8 @@ pub fn normalize_mask(
     }
 
     let mut plane = match opts.kind {
-        MaskSourceKind::NonZero => extract_nonzero_plane(samples, width, height, channels),
-        MaskSourceKind::AlphaThreshold128 => extract_alpha_plane(samples, width, height, channels),
+        MaskSourceKind::NonZero => extract_nonzero_plane(samples, width, height, channels)?,
+        MaskSourceKind::AlphaThreshold128 => extract_alpha_plane(samples, width, height, channels)?,
     };
 
     let xf = {

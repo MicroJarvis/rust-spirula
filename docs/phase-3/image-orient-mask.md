@@ -11,9 +11,9 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 
 | Matrix | Delivered in this tip |
 |---|---|
-| **C-DATA-07** | PNG / JPEG / BMP / TGA / TIFF / EXR decode + header/dimension probe; `DecodedRgb::{U8,U16,F32}`; encoded + pixel budgets before decode |
-| **C-DATA-08** | NonZero (stbi gray, alpha ignored); Alpha LA/RGBA + `cpu_resize` ≥128; flip; **boundary offset** (`fraction * sqrt(W*H)` EDT) |
-| **C-DATA-09** | 16-bit depth PNG (+ bilinear); RGB normal + `turn_normal_vectors` + bilinear |
+| **C-DATA-07** | PNG / JPEG / BMP (CORE+INFO) / TGA / TIFF / EXR decode + header/dimension probe; `DecodedRgb::{U8,U16,F32}` preserves 16-bit/`f32` DynamicImage variants; encoded + pixel budgets before decode/alloc |
+| **C-DATA-08** | NonZero (stbi gray, alpha ignored); Alpha LA/RGBA + `cpu_resize` ≥128; flip; **boundary offset** (`fraction * sqrt(W*H)` EDT); nonfinite offset rejected before mutation |
+| **C-DATA-09** | 16-bit depth PNG (+ bilinear); RGB normal: pixel turn → bilinear resize → `turn_normal_vectors` (pin `decode_normal_into` order) |
 | **C-DATA-10** | JPEG EXIF Orientation 1..8; modes; Full/TurnsOnly bake; SHORT `u16` (257/262 rejected); LE/BE + bad IFD |
 
 These rows stay **进行中** until independent READY — not claimed complete by
@@ -27,7 +27,7 @@ shrinking scope in docs.
 | Mask NonZero | `DataManager.cpp:521-552` | `stbi_load` req_comp=1; `!=0`; turns; nearest; flip; then EDT offset |
 | Alpha mask | `DataManager.cpp:554-614` | Alpha plane; `cpu_resize` then `>=128` |
 | Depth | `DataManager.cpp:616-636` | 16-bit PNG; bilinear |
-| Normal | `DataManager.cpp:638-656` | RGB; turn pixels; `turn_normal_vectors`; bilinear |
+| Normal | `DataManager.cpp:638-656` | RGB; turn pixels; bilinear resize; then `turn_normal_vectors` on dst |
 | EDT offset | `DistanceTransform.h`; `apply_boundary_offset` | `fraction * sqrt(W*H)` px dilate/erode |
 | EXIF | `Exif.h` | Orientation SHORT 1..8; `exifTransform` |
 
@@ -42,6 +42,12 @@ Admitted commands (wiring not deferred):
 
 - `PrepareOrientedImage`
 - `PrepareNormalizedMask` (includes `boundary_offset_frac`)
+
+Heavy decode/normalize runs on the existing fake-worker thread (not the
+owner dispatch loop). Stop/Shutdown set the cancel token; canceled work
+emits exactly one `Canceled` terminal and **never** `ImagePrepared` /
+`MaskPrepared` or a silent `Completed`. Destination dims and options are
+validated at command admission and again before allocation.
 
 Events: `ImagePrepared` / `MaskPrepared`. E2E:
 `crates/spirula-application/tests/image_ops_e2e.rs`.

@@ -138,12 +138,16 @@ pub fn apply_mask_boundary_offset_px(
     width: u32,
     offset_px: f32,
 ) -> Result<(), DomainError> {
+    if !offset_px.is_finite() {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "mask_boundary_offset",
+            "offset_px must be finite",
+        ));
+    }
     ensure_pixel_budget(width, height)?;
     let h = height as usize;
     let w = width as usize;
-    if offset_px == 0.0 || h == 0 || w == 0 || (h == 1 && w == 1) {
-        return Ok(());
-    }
     let need = h
         .checked_mul(w)
         .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "mask_size", "overflow"))?;
@@ -158,6 +162,10 @@ pub fn apply_mask_boundary_offset_px(
                 "boundary offset requires binary 0/1 samples",
             ));
         }
+    }
+    // Validate dims/length/binary before no-op early returns (incl. 1x1).
+    if offset_px == 0.0 || (h == 1 && w == 1) {
+        return Ok(());
     }
     let mx = h.max(w);
     let mut d2_fg = vec![0.0f32; need];
@@ -202,9 +210,6 @@ pub fn apply_mask_boundary_offset_frac(
     width: u32,
     fraction: f32,
 ) -> Result<(), DomainError> {
-    if fraction == 0.0 {
-        return Ok(());
-    }
     if !fraction.is_finite() {
         return Err(err(
             ErrorCode::ValueOutOfRange,
@@ -212,7 +217,23 @@ pub fn apply_mask_boundary_offset_frac(
             "fraction must be finite",
         ));
     }
-    let offset_px = fraction * ((width as f32) * (height as f32)).sqrt();
+    // Always validate mask through the px path (incl. fraction == 0 no-op).
+    let area = (width as f32) * (height as f32);
+    if !area.is_finite() {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "mask_boundary_offset",
+            "width*height product overflowed f32",
+        ));
+    }
+    let offset_px = fraction * area.sqrt();
+    if !offset_px.is_finite() {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "mask_boundary_offset",
+            "offset_px overflowed f32",
+        ));
+    }
     apply_mask_boundary_offset_px(mask, height, width, offset_px)
 }
 
@@ -225,5 +246,22 @@ mod tests {
         let mut m = [1u8, 0, 0, 1];
         apply_mask_boundary_offset_frac(&mut m, 2, 2, 0.0).unwrap();
         assert_eq!(m, [1, 0, 0, 1]);
+    }
+
+    #[test]
+    fn rejects_nan_before_mutation() {
+        let mut m = [0u8, 1, 0, 1];
+        let e = apply_mask_boundary_offset_px(&mut m, 2, 2, f32::NAN).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(m, [0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn one_by_one_validates_then_noop() {
+        let mut m = [1u8];
+        apply_mask_boundary_offset_px(&mut m, 1, 1, 3.0).unwrap();
+        assert_eq!(m, [1]);
+        let e = apply_mask_boundary_offset_px(&mut [2u8], 1, 1, 3.0).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::InvalidArgument);
     }
 }

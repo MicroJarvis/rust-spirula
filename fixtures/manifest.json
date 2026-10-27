@@ -90,8 +90,8 @@
     },
     {
       "path": "images/cpp_orient_mask_golden.json",
-      "bytes": 3354,
-      "sha256": "9d6911aecae26e9ad1f51961c1c9fd7818fd1893c0a704c6e25592f20ce3558f"
+      "bytes": 3517,
+      "sha256": "77111d31bbb77de67bd24c3c9318c4b7c7674e8885cb4aa1e213ee7c0f9f63dd"
     },
     {
       "path": "images/depth_2x2.png",
@@ -100,8 +100,8 @@
     },
     {
       "path": "images/golden.json",
-      "bytes": 1320,
-      "sha256": "76ab54d4c53c9e4cc608669987cc264d12fb02d6a9d3863ae636ec1b73d85120"
+      "bytes": 1362,
+      "sha256": "4d09c16a6123ebecfb056b315a76f251ff4c34d13bc785bf9086a7be1b82db39"
     },
     {
       "path": "images/mask_4x2.png",

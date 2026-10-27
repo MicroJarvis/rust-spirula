@@ -58,6 +58,14 @@ pub(crate) fn check_image_path(path: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
+fn bound_image_path(path: String) -> String {
+    if path.len() > IMAGE_PATH_MAX_BYTES {
+        omit_label(path.len())
+    } else {
+        path
+    }
+}
+
 pub(crate) fn check_log_message(message: &str, limits: &SessionLimits) -> Result<(), DomainError> {
     if message.len() > limits.log_message_max_bytes {
         return Err(reject_oversized(
@@ -300,6 +308,49 @@ pub(crate) fn sanitize_worker_event(
             command_id,
             label: bound_retained_label(label, limits),
         }),
+        WorkerEvent::ImagePrepareDone {
+            run_id,
+            command_id,
+            result,
+        } => {
+            let result = match result {
+                Ok(ok) => Ok(match ok {
+                    crate::worker::ImagePrepareOk::Oriented {
+                        path,
+                        width,
+                        height,
+                        orientation,
+                        turns_only,
+                    } => crate::worker::ImagePrepareOk::Oriented {
+                        // Paths use IMAGE_PATH_MAX_BYTES (admission), not label_max.
+                        path: bound_image_path(path),
+                        width,
+                        height,
+                        orientation,
+                        turns_only,
+                    },
+                    crate::worker::ImagePrepareOk::Mask {
+                        path,
+                        width,
+                        height,
+                        kept,
+                        alpha,
+                    } => crate::worker::ImagePrepareOk::Mask {
+                        path: bound_image_path(path),
+                        width,
+                        height,
+                        kept,
+                        alpha,
+                    },
+                }),
+                Err(error) => Err(bound_error(&error, limits)),
+            };
+            Some(WorkerEvent::ImagePrepareDone {
+                run_id,
+                command_id,
+                result,
+            })
+        }
         WorkerEvent::RunTerminal {
             run_id,
             command_id,

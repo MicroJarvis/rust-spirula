@@ -1,8 +1,8 @@
 //! Normal aux map decode (P3-F02 / C-DATA-09).
 //!
 //! Parity with pin `DataManager.cpp:decode_normal_into` + `turn_normal_vectors`:
-//! RGB8 normals, optional quarter turns on pixels, then vector remapping, then
-//! bilinear resize to destination.
+//! RGB8 normals, optional quarter turns on pixels, bilinear resize to
+//! destination, then vector remapping on the destination buffer.
 
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 
@@ -17,10 +17,27 @@ fn err(code: ErrorCode, field: &str, msg: impl Into<String>) -> DomainError {
 }
 
 /// Remap packed RGB normal vectors after a pixel turn (`turn_normal_vectors`).
-pub fn turn_normal_vectors(px: &mut [u8], n_pixels: usize, turns_cw: u8) {
+///
+/// Requires `px.len() >= n_pixels * 3`. Short or overflowing inputs return a
+/// typed error instead of panicking.
+pub fn turn_normal_vectors(
+    px: &mut [u8],
+    n_pixels: usize,
+    turns_cw: u8,
+) -> Result<(), DomainError> {
+    let need = n_pixels
+        .checked_mul(3)
+        .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "normal", "n_pixels overflow"))?;
+    if px.len() < need {
+        return Err(err(
+            ErrorCode::MalformedRecord,
+            "normal",
+            format!("buffer short: need {need}, got {}", px.len()),
+        ));
+    }
     let t = turns_cw & 3;
     if t == 0 {
-        return;
+        return Ok(());
     }
     for i in 0..n_pixels {
         let p = &mut px[i * 3..i * 3 + 3];
@@ -42,6 +59,7 @@ pub fn turn_normal_vectors(px: &mut [u8], n_pixels: usize, turns_cw: u8) {
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// Bilinear RGB8 resize (`cpu_bilinear_resize<uint8_t,3>`).
@@ -126,7 +144,7 @@ pub fn decode_normal_rgb8_bytes(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), Dom
     Ok((w, h, rgb.into_raw()))
 }
 
-/// Orient pixels, remap vectors, bilinear to destination (DataManager order).
+/// Orient pixels, bilinear to destination, then remap vectors (DataManager order).
 pub fn normalize_normal_rgb8(
     samples: &[u8],
     width: u32,
@@ -138,7 +156,10 @@ pub fn normalize_normal_rgb8(
 ) -> Result<(), DomainError> {
     ensure_pixel_budget(width, height)?;
     ensure_pixel_budget(dst_w, dst_h)?;
-    let need = (width as usize) * (height as usize) * 3;
+    let need = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "normal", "buffer size overflow"))?;
     if samples.len() < need {
         return Err(err(ErrorCode::MalformedRecord, "normal", "buffer short"));
     }
@@ -149,12 +170,26 @@ pub fn normalize_normal_rgb8(
     let (ow, oh) = oriented_size(width, height, xf.turns_cw);
     let mut plane = samples[..need].to_vec();
     if !xf.identity() {
-        let mut buf = vec![0u8; (ow as usize) * (oh as usize) * 3];
+        let oriented_bytes = (ow as usize)
+            .checked_mul(oh as usize)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                err(
+                    ErrorCode::ValueOutOfRange,
+                    "normal",
+                    "oriented size overflow",
+                )
+            })?;
+        let mut buf = vec![0u8; oriented_bytes];
         orient_pixels(&plane, width, height, 3, xf, &mut buf)?;
         plane = buf;
     }
-    turn_normal_vectors(&mut plane, (ow as usize) * (oh as usize), xf.turns_cw);
-    cpu_bilinear_resize_rgb8(&plane, ow, oh, dst_w, dst_h, dst)
+    // Pin order: resize destination first, then turn_normal_vectors on dst.
+    cpu_bilinear_resize_rgb8(&plane, ow, oh, dst_w, dst_h, dst)?;
+    let dst_pixels = (dst_w as usize)
+        .checked_mul(dst_h as usize)
+        .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "normal", "dst pixels overflow"))?;
+    turn_normal_vectors(dst, dst_pixels, xf.turns_cw)
 }
 
 #[cfg(test)]
@@ -164,7 +199,22 @@ mod tests {
     #[test]
     fn turn1_matches_datamanager() {
         let mut nrm = [200u8, 100, 128];
-        turn_normal_vectors(&mut nrm, 1, 1);
+        turn_normal_vectors(&mut nrm, 1, 1).unwrap();
         assert_eq!(nrm, [155, 200, 128]); // 255-100, 200, 128
+    }
+
+    #[test]
+    fn short_buffer_is_typed_error() {
+        let mut short = [0u8; 2];
+        let e = turn_normal_vectors(&mut short, 1, 1).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::MalformedRecord);
+    }
+
+    #[test]
+    fn resize_then_turn_matches_pin_counterexample() {
+        // 2x1 RGB [0,0,128] [0,1,128], turns=1, dst 1x1 → [254,0,128]
+        let mut dst = [0u8; 3];
+        normalize_normal_rgb8(&[0, 0, 128, 0, 1, 128], 2, 1, 1, 1, 1, &mut dst).unwrap();
+        assert_eq!(dst, [254, 0, 128]);
     }
 }

@@ -2,9 +2,11 @@
 
 use std::path::PathBuf;
 
+use spirula_core::ErrorCode;
 use spirula_io::{
     DecodedRgb, MaskNormalizeOptions, MaskSourceKind, apply_mask_boundary_offset_frac,
-    decode_depth16_bytes, decode_normal_rgb8_bytes, decode_rgb_auto_bytes, decode_rgb8,
+    apply_mask_boundary_offset_px, decode_depth16_bytes, decode_normal_rgb8_bytes,
+    decode_rgb_auto_bytes, decode_rgb8, extract_alpha_plane, extract_nonzero_plane,
     normalize_depth16, normalize_mask, normalize_normal_rgb8, probe_image_size,
     turn_normal_vectors,
 };
@@ -54,13 +56,17 @@ fn depth16_bilinear_matches_cpp_golden() {
 #[test]
 fn normal_turn_and_decode() {
     let mut nrm = [200u8, 100, 128];
-    turn_normal_vectors(&mut nrm, 1, 1);
+    turn_normal_vectors(&mut nrm, 1, 1).unwrap();
     assert_eq!(nrm, [155, 200, 128]);
     let bytes = std::fs::read(fixtures().join("normal_2x2.png")).unwrap();
     let (w, h, samples) = decode_normal_rgb8_bytes(&bytes).unwrap();
     let mut dst = vec![0u8; 2 * 2 * 3];
     normalize_normal_rgb8(&samples, w, h, 1, 2, 2, &mut dst).unwrap();
     assert_eq!(dst.len(), 12);
+    // Pin decode_normal_into order: resize then turn vectors.
+    let mut combined = [0u8; 3];
+    normalize_normal_rgb8(&[0, 0, 128, 0, 1, 128], 2, 1, 1, 1, 1, &mut combined).unwrap();
+    assert_eq!(combined, [254, 0, 128]);
 }
 
 #[test]
@@ -119,4 +125,51 @@ fn normalize_mask_applies_flip_then_offset() {
     )
     .unwrap();
     assert_eq!(dst.iter().filter(|&&v| v == 1).count(), 8);
+}
+
+#[test]
+fn normal_combined_matches_cpp_golden_exact_pixels() {
+    let g: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures().join("cpp_orient_mask_golden.json")).unwrap(),
+    )
+    .unwrap();
+    let cases = g["counterexamples"]["normal_combined_2x1_to_1x1"]
+        .as_array()
+        .expect("normal_combined golden");
+    assert_eq!(cases.len(), 4);
+    for case in cases {
+        let turns = case["turns_cw"].as_u64().unwrap() as u8;
+        let expect: Vec<u8> = case["rgb"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect();
+        let mut dst = [0u8; 3];
+        normalize_normal_rgb8(&[0, 0, 128, 0, 1, 128], 2, 1, turns, 1, 1, &mut dst).unwrap();
+        assert_eq!(dst.as_slice(), expect.as_slice(), "turns={turns}");
+    }
+}
+
+#[test]
+fn plane_extractors_reject_short_and_bad_channels() {
+    let e = extract_nonzero_plane(&[0u8; 2], 1, 1, 3).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::MalformedRecord);
+    let e = extract_alpha_plane(&[0u8; 2], 1, 1, 4).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::MalformedRecord);
+    let e = extract_nonzero_plane(&[0u8; 4], 1, 1, 0).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidArgument);
+    let e = extract_nonzero_plane(&[0u8; 4], u32::MAX, u32::MAX, 1).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+}
+
+#[test]
+fn nan_mask_offset_rejected_without_mutation() {
+    let mut m = [0u8, 1, 0, 1];
+    let e = apply_mask_boundary_offset_px(&mut m, 2, 2, f32::NAN).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(m, [0, 1, 0, 1]);
+    let e = apply_mask_boundary_offset_frac(&mut m, 2, 2, f32::INFINITY).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(m, [0, 1, 0, 1]);
 }

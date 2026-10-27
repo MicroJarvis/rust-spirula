@@ -214,6 +214,171 @@ fn session_command_missing_path_fails_terminal() {
 }
 
 #[test]
+fn stop_cancels_image_prepare_without_prepared_event() {
+    // StallGate holds decode so Stop is admitted and cancel wins first.
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let gate = app.stall_gate();
+    gate.set_stalled(true);
+    let path = fixtures()
+        .join("nonsquare_4x2.png")
+        .to_string_lossy()
+        .into_owned();
+    let id = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path,
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.active_command == Some(id)));
+    let _stop = match app.submit(Command::new(CommandPayload::Stop { save: false })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("stop reject: {error}"),
+    };
+    let terminal = wait_terminal(&app, id);
+    match terminal.event {
+        Event::Completed {
+            outcome: OutcomeView::Canceled { .. },
+        } => {}
+        other => panic!("expected Canceled, got {other:?}"),
+    }
+    gate.set_stalled(false);
+    let snap = app.snapshot();
+    let replay = app
+        .replay(spirula_application::EventCursor::new(snap.session_id, 0))
+        .expect("replay");
+    let spirula_application::ReplayOutcome::ControlEvents(events) = replay else {
+        panic!("resync");
+    };
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.event, Event::ImagePrepared { .. }) && e.command_id == Some(id)),
+        "no ImagePrepared after cancel"
+    );
+}
+
+#[test]
+fn shutdown_cancels_held_image_prepare() {
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let gate = app.stall_gate();
+    gate.set_stalled(true);
+    let id = match app.submit(Command::new(CommandPayload::PrepareNormalizedMask {
+        path: fixtures()
+            .join("mask_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        dst_w: 2,
+        dst_h: 2,
+        orientation: 1,
+        turns_only: true,
+        flip: false,
+        alpha: false,
+        boundary_offset_milli: 0,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.active_command == Some(id)));
+    let _ = app.submit(Command::new(CommandPayload::Shutdown));
+    let terminal = wait_terminal(&app, id);
+    assert!(matches!(
+        terminal.event,
+        Event::Completed {
+            outcome: OutcomeView::Canceled { .. }
+        }
+    ));
+    gate.set_stalled(false);
+    let snap = app.snapshot();
+    let replay = app
+        .replay(spirula_application::EventCursor::new(snap.session_id, 0))
+        .expect("replay");
+    let spirula_application::ReplayOutcome::ControlEvents(events) = replay else {
+        panic!("resync");
+    };
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.event, Event::MaskPrepared { .. }) && e.command_id == Some(id))
+    );
+}
+
+#[test]
+fn slow_subscriber_does_not_block_image_cancel_recovery() {
+    let mut limits = SessionLimits::for_test();
+    limits.notification_queue_capacity = 1;
+    let app = ApplicationService::start(limits);
+    let (_sub, _) = app.subscribe().expect("subscribe");
+    // Do not drain — stall the live subscriber.
+    let gate = app.stall_gate();
+    gate.set_stalled(true);
+    let id = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path: fixtures()
+            .join("nonsquare_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(1), |s| s.active_command == Some(id)));
+    let _ = app.submit(Command::new(CommandPayload::Stop { save: false }));
+    let terminal = wait_terminal(&app, id);
+    assert!(matches!(
+        terminal.event,
+        Event::Completed {
+            outcome: OutcomeView::Canceled { .. }
+        }
+    ));
+    gate.set_stalled(false);
+    // Recovery: a fresh prepare must complete with Prepared after cancel.
+    let id2 = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path: fixtures()
+            .join("nonsquare_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    let terminal2 = wait_terminal(&app, id2);
+    assert!(matches!(
+        terminal2.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { .. }
+        }
+    ));
+}
+
+#[test]
+fn oversized_mask_dst_rejected_at_admission() {
+    let app = ApplicationService::start(SessionLimits::for_test());
+    match app.submit(Command::new(CommandPayload::PrepareNormalizedMask {
+        path: fixtures()
+            .join("mask_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        dst_w: u32::MAX,
+        dst_h: u32::MAX,
+        orientation: 1,
+        turns_only: true,
+        flip: false,
+        alpha: false,
+        boundary_offset_milli: 0,
+    })) {
+        SubmitOutcome::Rejected { error } => {
+            assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+        }
+        SubmitOutcome::Accepted { .. } => panic!("u32::MAX dst must reject before alloc"),
+    }
+}
+
+#[test]
 fn session_rejects_image_prepare_while_probe_in_flight() {
     let app = ApplicationService::start(SessionLimits::for_test());
     let load = match app.submit(Command::new(CommandPayload::ProbeLoad {

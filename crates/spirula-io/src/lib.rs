@@ -48,7 +48,7 @@ pub use image_orient::{
 };
 pub use image_probe::{
     DecodedRgb, decode_rgb_auto, decode_rgb_auto_bytes, decode_rgb8, decode_rgb8_bytes,
-    probe_image_size, probe_image_size_bytes, read_image_bytes_capped,
+    ensure_pixel_budget, probe_image_size, probe_image_size_bytes, read_image_bytes_capped,
 };
 pub use perf::{
     load_perf_report, parse_perf_report_bytes, parse_perf_report_str, provenance_hashes,

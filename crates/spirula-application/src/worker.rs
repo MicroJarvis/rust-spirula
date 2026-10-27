@@ -62,6 +62,45 @@ impl StallGate {
     }
 }
 
+/// Image prepare work offloaded from the owner dispatch loop (P3-F02).
+#[derive(Debug)]
+pub(crate) enum ImagePrepareRequest {
+    Oriented {
+        path: String,
+        orientation: Option<u8>,
+        turns_only: bool,
+    },
+    Mask {
+        path: String,
+        dst_w: u32,
+        dst_h: u32,
+        orientation: u8,
+        turns_only: bool,
+        flip: bool,
+        alpha: bool,
+        boundary_offset_milli: i32,
+    },
+}
+
+/// Successful image prepare payload (Prepared event fields only).
+#[derive(Debug)]
+pub enum ImagePrepareOk {
+    Oriented {
+        path: String,
+        width: u32,
+        height: u32,
+        orientation: u8,
+        turns_only: bool,
+    },
+    Mask {
+        path: String,
+        width: u32,
+        height: u32,
+        kept: u64,
+        alpha: bool,
+    },
+}
+
 /// Messages the owner sends to the worker thread.
 #[derive(Debug)]
 pub(crate) enum WorkerRequest {
@@ -80,6 +119,14 @@ pub(crate) enum WorkerRequest {
         stall: Arc<Mutex<bool>>,
         /// Live flag so Stop{save} can update a running worker.
         save_on_cancel: Arc<AtomicBool>,
+    },
+    PrepareImage {
+        run_id: RunId,
+        command_id: CommandId,
+        request: ImagePrepareRequest,
+        cancel: CancelToken,
+        /// Shared with probe stall gate so tests can hold decode while Stop runs.
+        stall: Arc<Mutex<bool>>,
     },
     Shutdown,
 }
@@ -101,6 +148,13 @@ pub enum WorkerEvent {
         run_id: RunId,
         command_id: CommandId,
         label: String,
+    },
+    /// Image prepare finished on the worker. Never paired with a Prepared event
+    /// after cancel — canceled work uses [`Self::RunTerminal`] only.
+    ImagePrepareDone {
+        run_id: RunId,
+        command_id: CommandId,
+        result: Result<ImagePrepareOk, spirula_core::DomainError>,
     },
     RunTerminal {
         run_id: RunId,
@@ -326,6 +380,42 @@ fn worker_loop(
                     );
                 }
             }
+            Ok(WorkerRequest::PrepareImage {
+                run_id,
+                command_id,
+                request,
+                cancel,
+                stall,
+            }) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_image_prepare(
+                        &progress_tx,
+                        &result_tx,
+                        &limits,
+                        run_id,
+                        command_id,
+                        request,
+                        cancel,
+                        stall,
+                    );
+                }));
+                if result.is_err() {
+                    let err = spirula_core::DomainError::try_new(
+                        spirula_core::ErrorCode::Internal,
+                        "image prepare worker panic",
+                    )
+                    .expect("message");
+                    forward_result(
+                        &result_tx,
+                        &limits,
+                        WorkerEvent::ImagePrepareDone {
+                            run_id,
+                            command_id,
+                            result: Err(err),
+                        },
+                    );
+                }
+            }
             Err(_) => break,
         }
     }
@@ -482,6 +572,151 @@ fn run_probe(
 
 fn note_panic_progress(slot: &Arc<Mutex<Option<ProgressSnapshot>>>, snapshot: ProgressSnapshot) {
     *lock(slot) = Some(snapshot);
+}
+
+/// Run admitted image prepare off the owner thread. Cancel is polled before
+/// decode and after completion; canceled work emits only `RunTerminal::Canceled`
+/// (never `ImagePrepareDone` / Prepared).
+#[allow(clippy::too_many_arguments)]
+fn run_image_prepare(
+    progress_tx: &SyncSender<WorkerEvent>,
+    result_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
+    run_id: RunId,
+    command_id: CommandId,
+    request: ImagePrepareRequest,
+    cancel: CancelToken,
+    stall: Arc<Mutex<bool>>,
+) {
+    if wait_image_gate(progress_tx, limits, run_id, command_id, &cancel, &stall).is_err() {
+        hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+        finish_canceled(
+            result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+        );
+        return;
+    }
+
+    let outcome = match request {
+        ImagePrepareRequest::Oriented {
+            path,
+            orientation,
+            turns_only,
+        } => {
+            let policy = if turns_only {
+                spirula_io::ApplyPolicy::TurnsOnly
+            } else {
+                spirula_io::ApplyPolicy::FullTransform
+            };
+            match crate::image_ops::run_prepare_oriented_rgb(
+                std::path::Path::new(&path),
+                orientation,
+                policy,
+            ) {
+                Ok(img) => Ok(ImagePrepareOk::Oriented {
+                    path,
+                    width: img.width,
+                    height: img.height,
+                    orientation: img.orientation,
+                    turns_only,
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        ImagePrepareRequest::Mask {
+            path,
+            dst_w,
+            dst_h,
+            orientation,
+            turns_only,
+            flip,
+            alpha,
+            boundary_offset_milli,
+        } => {
+            let args = crate::image_ops::PrepareMaskArgs {
+                dst_w,
+                dst_h,
+                kind: if alpha {
+                    spirula_io::MaskSourceKind::AlphaThreshold128
+                } else {
+                    spirula_io::MaskSourceKind::NonZero
+                },
+                orientation,
+                policy: if turns_only {
+                    spirula_io::ApplyPolicy::TurnsOnly
+                } else {
+                    spirula_io::ApplyPolicy::FullTransform
+                },
+                flip,
+                boundary_offset_frac: (boundary_offset_milli as f32) / 1000.0,
+            };
+            match crate::image_ops::run_prepare_normalized_mask(std::path::Path::new(&path), args) {
+                Ok(mask) => {
+                    let kept = mask.samples.iter().filter(|&&v| v == 1).count() as u64;
+                    Ok(ImagePrepareOk::Mask {
+                        path,
+                        width: mask.width,
+                        height: mask.height,
+                        kept,
+                        alpha,
+                    })
+                }
+                Err(e) => Err(e),
+            }
+        }
+    };
+
+    if cancel.is_cancelled() {
+        hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+        finish_canceled(
+            result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+        );
+        return;
+    }
+
+    forward_result(
+        result_tx,
+        limits,
+        WorkerEvent::ImagePrepareDone {
+            run_id,
+            command_id,
+            result: outcome,
+        },
+    );
+}
+
+/// Poll cancel while optionally stalled (same StallGate as probe runs).
+/// `Err(())` means cancel won before decode should start.
+fn wait_image_gate(
+    progress_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
+    run_id: RunId,
+    command_id: CommandId,
+    cancel: &CancelToken,
+    stall: &Mutex<bool>,
+) -> Result<(), ()> {
+    let poll = limits.poll_interval();
+    let mut announced = false;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(());
+        }
+        if !*lock(stall) {
+            return Ok(());
+        }
+        if !announced {
+            let _ = try_progress(
+                progress_tx,
+                limits,
+                WorkerEvent::Log {
+                    run_id,
+                    command_id,
+                    message: "spirula:test image-prepare-stalled".into(),
+                },
+            );
+            announced = true;
+        }
+        thread::sleep(poll.min(Duration::from_millis(5)));
+    }
 }
 
 /// Test-only unfinished-cancel gate (`SPIRULA_TEST_HOLD_AFTER_CANCEL`).

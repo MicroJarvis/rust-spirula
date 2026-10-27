@@ -22,7 +22,8 @@ fn err(code: ErrorCode, field: &str, msg: impl Into<String>) -> DomainError {
         .expect("field")
 }
 
-pub(crate) fn ensure_pixel_budget(w: u32, h: u32) -> Result<(), DomainError> {
+/// Reject zero / oversize dimensions before decode or destination allocation.
+pub fn ensure_pixel_budget(w: u32, h: u32) -> Result<(), DomainError> {
     let n = u64::from(w).saturating_mul(u64::from(h));
     if w == 0 || h == 0 {
         return Err(err(
@@ -194,24 +195,58 @@ fn probe_png_ihdr(bytes: &[u8]) -> Result<(u32, u32), DomainError> {
 }
 
 fn probe_bmp_header(bytes: &[u8]) -> Result<(u32, u32), DomainError> {
-    // BITMAPINFOHEADER at offset 14: width i32, height i32
-    if bytes.len() < 26 {
+    // BITMAPFILEHEADER (14) + DIB header size at offset 14.
+    if bytes.len() < 18 {
         return Err(err(
             ErrorCode::MalformedRecord,
             "bmp",
             "truncated BMP header",
         ));
     }
-    let w = i32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
-    let h = i32::from_le_bytes([bytes[22], bytes[23], bytes[24], bytes[25]]).unsigned_abs();
-    if w <= 0 {
+    let dib = u32::from_le_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
+    let (w, h) = if dib == 12 {
+        // BITMAPCOREHEADER: width/height are u16
+        if bytes.len() < 26 {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "bmp",
+                "truncated BITMAPCOREHEADER",
+            ));
+        }
+        let w = u32::from(u16::from_le_bytes([bytes[18], bytes[19]]));
+        let h = u32::from(u16::from_le_bytes([bytes[20], bytes[21]]));
+        (w, h)
+    } else if dib >= 40 {
+        // BITMAPINFOHEADER (and later): width i32, height i32
+        if bytes.len() < 26 {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "bmp",
+                "truncated BITMAPINFOHEADER",
+            ));
+        }
+        let w = i32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
+        let h = i32::from_le_bytes([bytes[22], bytes[23], bytes[24], bytes[25]]).unsigned_abs();
+        if w <= 0 {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "bmp",
+                format!("non-positive BMP width {w}"),
+            ));
+        }
+        (w as u32, h)
+    } else {
+        // Unknown/short DIB schema: fall back to safe decoder dimension probe.
+        return probe_via_image_decoder(bytes, Some("bmp"));
+    };
+    if w == 0 || h == 0 {
         return Err(err(
             ErrorCode::MalformedRecord,
             "bmp",
-            format!("non-positive BMP width {w}"),
+            format!("non-positive BMP size {w}x{h}"),
         ));
     }
-    Ok((w as u32, h))
+    Ok((w, h))
 }
 
 fn probe_jpeg_sof(bytes: &[u8]) -> Result<(u32, u32), DomainError> {
@@ -391,31 +426,9 @@ fn load_dynamic(bytes: &[u8], ext_hint: Option<&str>) -> Result<image::DynamicIm
     })
 }
 
-/// Probe dtype then decode: EXR → F32; 16-bit → U16; else U8.
+/// Probe dtype then decode: float DynamicImage → F32; 16-bit → U16; else U8.
 pub fn decode_rgb_auto_bytes(bytes: &[u8]) -> Result<DecodedRgb, DomainError> {
     let (w, h) = probe_image_size_bytes(bytes)?;
-    if is_exr(bytes) {
-        let img = image::load_from_memory(bytes).map_err(|e| {
-            err(
-                ErrorCode::DecodeFailed,
-                "exr",
-                format!("decode failed: {e}"),
-            )
-        })?;
-        let rgb = img.to_rgb32f();
-        if rgb.width() != w || rgb.height() != h {
-            return Err(err(
-                ErrorCode::MalformedRecord,
-                "exr",
-                "decode size mismatch",
-            ));
-        }
-        return Ok(DecodedRgb::F32 {
-            width: w,
-            height: h,
-            rgb: rgb.into_raw(),
-        });
-    }
     let img = image::load_from_memory(bytes).map_err(|e| {
         err(
             ErrorCode::DecodeFailed,
@@ -423,13 +436,35 @@ pub fn decode_rgb_auto_bytes(bytes: &[u8]) -> Result<DecodedRgb, DomainError> {
             format!("decode failed: {e}"),
         )
     })?;
-    // Prefer 16-bit when the decoder produced Luma16/Rgb16.
     use image::DynamicImage;
     match img {
+        DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_) => {
+            let rgb = img.to_rgb32f();
+            if rgb.width() != w || rgb.height() != h {
+                return Err(err(
+                    ErrorCode::MalformedRecord,
+                    "image",
+                    "decode size mismatch",
+                ));
+            }
+            Ok(DecodedRgb::F32 {
+                width: rgb.width(),
+                height: rgb.height(),
+                rgb: rgb.into_raw(),
+            })
+        }
         DynamicImage::ImageLuma16(_)
+        | DynamicImage::ImageLumaA16(_)
         | DynamicImage::ImageRgb16(_)
         | DynamicImage::ImageRgba16(_) => {
             let rgb = img.to_rgb16();
+            if rgb.width() != w || rgb.height() != h {
+                return Err(err(
+                    ErrorCode::MalformedRecord,
+                    "image",
+                    "decode size mismatch",
+                ));
+            }
             Ok(DecodedRgb::U16 {
                 width: rgb.width(),
                 height: rgb.height(),
@@ -438,6 +473,13 @@ pub fn decode_rgb_auto_bytes(bytes: &[u8]) -> Result<DecodedRgb, DomainError> {
         }
         other => {
             let rgb = other.to_rgb8();
+            if rgb.width() != w || rgb.height() != h {
+                return Err(err(
+                    ErrorCode::MalformedRecord,
+                    "image",
+                    "decode size mismatch",
+                ));
+            }
             Ok(DecodedRgb::U8 {
                 width: rgb.width(),
                 height: rgb.height(),
@@ -493,6 +535,86 @@ mod tests {
         let mut huge = vec![0xFFu8, 0xD8];
         huge.resize((MAX_ENCODED_BYTES as usize) + 1, 0);
         let e = probe_image_size_bytes(&huge).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    }
+
+    #[test]
+    fn bmp_coreheader_1x1_probes_correct_size() {
+        // Valid 1x1 24-bit BITMAPCOREHEADER (DIB size 12).
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&30u32.to_le_bytes());
+        bmp.extend_from_slice(&[0; 4]);
+        bmp.extend_from_slice(&26u32.to_le_bytes());
+        bmp.extend_from_slice(&12u32.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&24u16.to_le_bytes());
+        bmp.extend_from_slice(&[10, 20, 30, 0]);
+        let decoded = image::load_from_memory(&bmp).expect("image crate CORE");
+        assert_eq!((decoded.width(), decoded.height()), (1, 1));
+        assert_eq!(probe_image_size_bytes(&bmp).unwrap(), (1, 1));
+    }
+
+    #[test]
+    fn bmp_infoheader_and_oversize_reject() {
+        // Minimal BITMAPINFOHEADER 1x1 (DIB size 40) — dimensions only; may not
+        // decode, but probe must read 1x1.
+        let mut bmp = vec![0u8; 54];
+        bmp[0] = b'B';
+        bmp[1] = b'M';
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&1i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+        assert_eq!(probe_image_size_bytes(&bmp).unwrap(), (1, 1));
+
+        // Oversize INFO width/height rejected before decode.
+        let mut huge = bmp.clone();
+        huge[18..22].copy_from_slice(&50_000i32.to_le_bytes());
+        huge[22..26].copy_from_slice(&50_000i32.to_le_bytes());
+        let e = probe_image_size_bytes(&huge).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    }
+
+    #[test]
+    fn decode_rgb_auto_preserves_luma_a16_and_float_tiff() {
+        let la =
+            image::ImageBuffer::<image::LumaA<u16>, Vec<u16>>::from_raw(1, 1, vec![1000, 65535])
+                .unwrap();
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLumaA16(la)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        match decode_rgb_auto_bytes(out.get_ref()).unwrap() {
+            DecodedRgb::U16 { width, height, rgb } => {
+                assert_eq!((width, height), (1, 1));
+                assert_eq!(rgb, vec![1000, 1000, 1000]);
+            }
+            other => panic!("expected U16, got {other:?}"),
+        }
+
+        let tif =
+            image::ImageBuffer::<image::Rgb<f32>, Vec<f32>>::from_raw(1, 1, vec![2.5, 0.5, 0.25])
+                .unwrap();
+        let mut tf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb32F(tif)
+            .write_to(&mut tf, image::ImageFormat::Tiff)
+            .unwrap();
+        match decode_rgb_auto_bytes(tf.get_ref()).unwrap() {
+            DecodedRgb::F32 { width, height, rgb } => {
+                assert_eq!((width, height), (1, 1));
+                assert!((rgb[0] - 2.5).abs() < 1e-5);
+                assert!((rgb[1] - 0.5).abs() < 1e-5);
+                assert!((rgb[2] - 0.25).abs() < 1e-5);
+            }
+            other => panic!("expected F32, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u32_max_dims_reject_before_alloc() {
+        let e = ensure_pixel_budget(u32::MAX, u32::MAX).unwrap_err();
         assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
     }
 }

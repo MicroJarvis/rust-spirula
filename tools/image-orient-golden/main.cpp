@@ -158,6 +158,34 @@ int main() {
     std::printf(",\"normal_turn1\":");
     dump_arr(nrm, 3);
 
+    // decode_normal_into order: pixel turn → bilinear resize → turn_normal_vectors
+    // Counterexample src 2x1 RGB, dst 1x1, for turns_cw 0..3 (exact pixels).
+    std::printf(",\"normal_combined_2x1_to_1x1\":[");
+    for (int turns = 0; turns < 4; turns++) {
+        if (turns) std::putchar(',');
+        uint8_t src6[6] = {0, 0, 128, 0, 1, 128};
+        const uint8_t* src = src6;
+        int sw = 2, sh = 1;
+        std::vector<uint8_t> turned;
+        if ((turns & 3) != 0) {
+            turned.resize((size_t)sw * sh * 3);
+            spirula::orient_pixels(src, sw, sh, 3, turns, false, turned.data());
+            spirula::oriented_size(turns, sw, sh);
+            src = turned.data();
+        }
+        uint8_t dst3[3];
+        if (sw == 1 && sh == 1) {
+            std::memcpy(dst3, src, 3);
+        } else {
+            cpu_bilinear_resize<uint8_t, 3>(src, sh, sw, dst3, 1, 1);
+        }
+        turn_normal_vectors(dst3, 1, turns);
+        std::printf("{\"turns_cw\":%d,\"rgb\":", turns);
+        dump_arr(dst3, 3);
+        std::printf("}");
+    }
+    std::printf("]");
+
     // Depth bilinear 2x2 -> 1x1
     uint16_t depth[4] = {100, 200, 300, 400};
     uint16_t dout[1];

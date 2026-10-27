@@ -32,7 +32,10 @@ use crate::limits::SessionLimits;
 use crate::notify::SubscribeError;
 use crate::notify::{Notifier, Subscription};
 use crate::state::SessionState;
-use crate::worker::{FakeWorkerBehavior, StallGate, WorkerEvent, WorkerHandle, WorkerRequest};
+use crate::worker::{
+    FakeWorkerBehavior, ImagePrepareOk, ImagePrepareRequest, StallGate, WorkerEvent, WorkerHandle,
+    WorkerRequest,
+};
 
 struct LogTail {
     capacity: usize,
@@ -981,57 +984,19 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
             orientation,
             turns_only,
         } => {
-            let policy = if turns_only {
-                spirula_io::ApplyPolicy::TurnsOnly
-            } else {
-                spirula_io::ApplyPolicy::FullTransform
-            };
+            let stall = shared.stall.clone_arc();
             drop(st);
-            let outcome = crate::image_ops::run_prepare_oriented_rgb(
-                std::path::Path::new(&path),
-                orientation,
-                policy,
-            );
-            let mut st = lock(&shared.state);
-            if st.active_command != Some(id) || st.active_run != Some(run_id) {
-                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
-                return;
-            }
-            match outcome {
-                Ok(img) => {
-                    publish_control(
-                        &mut st,
-                        &shared.notifier,
-                        Some(id),
-                        Some(run_id),
-                        Event::ImagePrepared {
-                            path,
-                            width: img.width,
-                            height: img.height,
-                            orientation: img.orientation,
-                            turns_only,
-                        },
-                    );
-                    finish_active(
-                        &mut st,
-                        &shared.notifier,
-                        id,
-                        RunOutcome::Completed { step: 0 },
-                        Some(run_id),
-                    );
-                }
-                Err(error) => {
-                    finish_active(
-                        &mut st,
-                        &shared.notifier,
-                        id,
-                        RunOutcome::Failed {
-                            error: error.without_source(),
-                        },
-                        Some(run_id),
-                    );
-                }
-            }
+            lock(&shared.worker).send(WorkerRequest::PrepareImage {
+                run_id,
+                command_id: id,
+                request: ImagePrepareRequest::Oriented {
+                    path,
+                    orientation,
+                    turns_only,
+                },
+                cancel,
+                stall,
+            });
         }
         CommandPayload::PrepareNormalizedMask {
             path,
@@ -1043,67 +1008,24 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
             alpha,
             boundary_offset_milli,
         } => {
-            let args = crate::image_ops::PrepareMaskArgs {
-                dst_w,
-                dst_h,
-                kind: if alpha {
-                    spirula_io::MaskSourceKind::AlphaThreshold128
-                } else {
-                    spirula_io::MaskSourceKind::NonZero
-                },
-                orientation,
-                policy: if turns_only {
-                    spirula_io::ApplyPolicy::TurnsOnly
-                } else {
-                    spirula_io::ApplyPolicy::FullTransform
-                },
-                flip,
-                boundary_offset_frac: (boundary_offset_milli as f32) / 1000.0,
-            };
+            let stall = shared.stall.clone_arc();
             drop(st);
-            let outcome =
-                crate::image_ops::run_prepare_normalized_mask(std::path::Path::new(&path), args);
-            let mut st = lock(&shared.state);
-            if st.active_command != Some(id) || st.active_run != Some(run_id) {
-                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
-                return;
-            }
-            match outcome {
-                Ok(mask) => {
-                    let kept = mask.samples.iter().filter(|&&v| v == 1).count() as u64;
-                    publish_control(
-                        &mut st,
-                        &shared.notifier,
-                        Some(id),
-                        Some(run_id),
-                        Event::MaskPrepared {
-                            path,
-                            width: mask.width,
-                            height: mask.height,
-                            kept,
-                            alpha,
-                        },
-                    );
-                    finish_active(
-                        &mut st,
-                        &shared.notifier,
-                        id,
-                        RunOutcome::Completed { step: 0 },
-                        Some(run_id),
-                    );
-                }
-                Err(error) => {
-                    finish_active(
-                        &mut st,
-                        &shared.notifier,
-                        id,
-                        RunOutcome::Failed {
-                            error: error.without_source(),
-                        },
-                        Some(run_id),
-                    );
-                }
-            }
+            lock(&shared.worker).send(WorkerRequest::PrepareImage {
+                run_id,
+                command_id: id,
+                request: ImagePrepareRequest::Mask {
+                    path,
+                    dst_w,
+                    dst_h,
+                    orientation,
+                    turns_only,
+                    flip,
+                    alpha,
+                    boundary_offset_milli,
+                },
+                cancel,
+                stall,
+            });
         }
         other => {
             finish_active(
@@ -1133,6 +1055,9 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             run_id, command_id, ..
         }
         | WorkerEvent::LoadDone {
+            run_id, command_id, ..
+        }
+        | WorkerEvent::ImagePrepareDone {
             run_id, command_id, ..
         }
         | WorkerEvent::RunTerminal {
@@ -1209,6 +1134,88 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             );
             complete_pending_stop(&mut st, &shared.notifier);
         }
+        WorkerEvent::ImagePrepareDone { result, .. } => {
+            let is_image = matches!(
+                st.active_payload,
+                Some(
+                    CommandPayload::PrepareOrientedImage { .. }
+                        | CommandPayload::PrepareNormalizedMask { .. }
+                )
+            );
+            if !is_image {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            match result {
+                Ok(ImagePrepareOk::Oriented {
+                    path,
+                    width,
+                    height,
+                    orientation,
+                    turns_only,
+                }) => {
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(command_id),
+                        Some(run_id),
+                        Event::ImagePrepared {
+                            path,
+                            width,
+                            height,
+                            orientation,
+                            turns_only,
+                        },
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Ok(ImagePrepareOk::Mask {
+                    path,
+                    width,
+                    height,
+                    kept,
+                    alpha,
+                }) => {
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(command_id),
+                        Some(run_id),
+                        Event::MaskPrepared {
+                            path,
+                            width,
+                            height,
+                            kept,
+                            alpha,
+                        },
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Err(error) => {
+                    let error = bound_error(&error, &st.limits);
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Failed { error },
+                        Some(run_id),
+                    );
+                }
+            }
+            complete_pending_stop(&mut st, &shared.notifier);
+        }
         WorkerEvent::RunTerminal {
             outcome,
             checkpoint_label,
@@ -1227,6 +1234,27 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 .is_err()
             {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Image prepare cancel arrives as RunTerminal only (never Prepared).
+            // Keep Idle|Ready phase; do not run probe checkpoint/save machine.
+            let is_image = matches!(
+                st.active_payload,
+                Some(
+                    CommandPayload::PrepareOrientedImage { .. }
+                        | CommandPayload::PrepareNormalizedMask { .. }
+                )
+            );
+            if is_image {
+                let _ = (checkpoint_label, save_failed, final_progress);
+                let outcome = outcome_from_terminal(outcome);
+                // Exactly-once cancel terminal; never Completed after cancel.
+                if !matches!(outcome, RunOutcome::Canceled { .. }) {
+                    st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                    return;
+                }
+                finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
+                complete_pending_stop(&mut st, &shared.notifier);
                 return;
             }
             let _ = checkpoint_label; // canonical label lives on outcome after sanitize

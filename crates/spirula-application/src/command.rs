@@ -128,15 +128,7 @@ impl CommandPayload {
             } => {
                 crate::bound::check_image_path(path)?;
                 spirula_io::ExifOrientation::from_u8(*orientation).map(|_| ())?;
-                if *dst_w == 0 || *dst_h == 0 {
-                    return Err(DomainError::try_new(
-                        ErrorCode::ValueOutOfRange,
-                        "mask destination size must be positive",
-                    )
-                    .expect("message")
-                    .with_context(ContextKey::Field, "dst_size")
-                    .expect("field"));
-                }
+                spirula_io::ensure_pixel_budget(*dst_w, *dst_h)?;
                 Ok(())
             }
             _ => Ok(()),
