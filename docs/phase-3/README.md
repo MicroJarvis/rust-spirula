@@ -14,6 +14,13 @@ original source metadata.
 
 This branch (`codex/p3-f02`) implements C-DATA-07..10 (PNG/JPEG/BMP/TGA/TIFF/EXR,
 mask flip/offset, depth/normal, EXIF) in `spirula-io` plus admitted session
-commands. Plan IDs total **75** (P2-F08 added on main). Status **进行中** /
-**HOLD** until independent review — full matrix scope is not shrunk in docs.
-Current plan work is **P3-F02**.
+commands. Plan IDs total **75** (P2-F08 added on main; P3-F01 already on this
+baseline via merge from clean main `33cf0c1`). Status **进行中** / **HOLD**
+until independent review — full matrix scope is not shrunk in docs.
+
+Cancelable prepare keeps path extension hints for TGA (no reliable magic):
+`decode_rgb8_bytes_hinted` / `decode_mask_image_bytes_hinted`. Owned CPU loops
+(orient / resize / EDT) use `CancelCheckpoint` (≥250 ms); third-party `image`
+decode is non-preemptible mid-call — see
+[image-orient-mask.md](image-orient-mask.md). Fixture `images/tiny_2x2.tga` is
+registered in `fixtures/manifest.json`. Current plan work is **P3-F02**.

@@ -67,7 +67,11 @@ owned loops.
 Also: pre-decode StallGate (tests); wrong `ImagePrepareOk` kind vs active
 payload is stale and cannot close the command. Path extension hints are
 preserved for TGA (no reliable magic): cancelable prepare uses
-`decode_rgb8_bytes_hinted`, matching `decode_rgb8(path)`.
+`decode_rgb8_bytes_hinted` / `decode_mask_image_bytes_hinted` (same as
+path-based `decode_rgb8` / hinted mask decode). Sync + admitted TGA coverage:
+`sync_and_admitted_prepare_tga_preserves_ext_hint` and
+`sync_and_admitted_prepare_tga_mask_preserves_ext_hint` in
+`image_ops_e2e.rs`.
 
 **HOLD:** mid-decode cancel inside the third-party decoder remains unmet
 relative to a strict 250 ms-inside-decode reading of §5; docs do not claim it.

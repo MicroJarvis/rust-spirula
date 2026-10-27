@@ -623,6 +623,67 @@ fn sync_and_admitted_prepare_tga_preserves_ext_hint() {
 }
 
 #[test]
+fn sync_and_admitted_prepare_tga_mask_preserves_ext_hint() {
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let path = fixtures().join("tiny_2x2.tga");
+    let args = PrepareMaskArgs {
+        dst_w: 2,
+        dst_h: 2,
+        kind: MaskSourceKind::NonZero,
+        orientation: 1,
+        policy: ApplyPolicy::TurnsOnly,
+        flip: false,
+        boundary_offset_frac: 0.0,
+    };
+    let mask = app
+        .prepare_normalized_mask_file(&path, args)
+        .expect("sync TGA mask prepare");
+    assert_eq!((mask.width, mask.height), (2, 2));
+    assert_eq!(mask.samples.len(), 4);
+
+    let path_s = path.to_string_lossy().into_owned();
+    let id = match app.submit(Command::new(CommandPayload::PrepareNormalizedMask {
+        path: path_s.clone(),
+        dst_w: 2,
+        dst_h: 2,
+        orientation: 1,
+        turns_only: true,
+        flip: false,
+        alpha: false,
+        boundary_offset_milli: 0,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    let terminal = wait_terminal(&app, id);
+    assert!(matches!(
+        terminal.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { .. }
+        }
+    ));
+    let snap = app.snapshot();
+    let replay = app
+        .replay(spirula_application::EventCursor::new(snap.session_id, 0))
+        .expect("replay");
+    let spirula_application::ReplayOutcome::ControlEvents(events) = replay else {
+        panic!("resync");
+    };
+    let prepared = events.iter().find_map(|e| match &e.event {
+        Event::MaskPrepared {
+            path: p,
+            width,
+            height,
+            ..
+        } if e.command_id == Some(id) => Some((p.clone(), *width, *height)),
+        _ => None,
+    });
+    let (p, w, h) = prepared.expect("MaskPrepared for TGA");
+    assert_eq!(p, path_s);
+    assert_eq!((w, h), (2, 2));
+}
+
+#[test]
 fn session_rejects_image_prepare_while_probe_in_flight() {
     let app = ApplicationService::start(SessionLimits::for_test());
     let load = match app.submit(Command::new(CommandPayload::ProbeLoad {
