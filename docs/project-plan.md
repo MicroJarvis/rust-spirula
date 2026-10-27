@@ -101,7 +101,7 @@ Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU
 | P2-F05 | GPU 错误与诊断事件 | `spirula-gpu` | P2-F02–P2-F04 | 包裹 error scope 和提交错误；把 device lost 转成 typed error；发布带资源标签的诊断事件 | error scope、设备丢失和提交失败转为 typed error/event | 已完成 |
 | P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；记录设备、backend 和跳过原因；surface 只保留诚实 unsupported 门禁（不伪造窗口），present 验证移交 P2-F08 | 无窗口 compute 测试在支持设备上可复现；surface 不得伪造 present 成功 | 已完成 |
 | P2-F07 | 最小 CLI 包与隔离启动 | workspace/`spirula-xtask` | P2-F06, P1-F09 | 从干净 checkout 构建可携带 CLI 包；记录版本/hash/运行库；在无源码隔离目录运行 help/能力诊断及微型 GPU smoke | 包内入口可启动；真实设备 smoke 或明确硬件缺失；P4-F06/P5-F07 继续加入真实业务样本 | 已完成 |
-| P2-F08 | wgpu surface present 验证 | `spirula-gpu` | P2-F01–P2-F05 | 最小真实窗口 surface 配置；adapter surface 能力与 format/present mode 协商；present 后读回或合成器可见性判定；present 失败/丢 surface 的 typed error | 真实窗口下 present 成功才可关闭本编号；主机无法 present 时必须按平台精确记录 unsupported（命令/环境/原因），但 **unsupported 不得冒充本编号已完成，也不得自动降低 Phase 2 出口标准**；不得用 software paint 冒充 present；Phase 2 出口仍以本编号的 present 证据或另行书面决策为准 | 未开始 |
+| P2-F08 | wgpu surface present 验证 | `spirula-gpu` | P2-F01–P2-F05 | 最小真实窗口 surface；`Surface::get_capabilities(&adapter)` 协商 format/present mode；`get_current_texture`→`CurrentSurfaceTexture`（Success/Suboptimal/Timeout/Occluded/Outdated/Lost/Validation）；`Queue::present` 提交；分层证据：像素校验 ≠ present 调用 ≠ 真实窗口可见性；可见性须可重复已知图案窗口证据或受支持平台合成器反馈（写明限度）；texture readback 不能关闭本编号 | 真实窗口下 Layer C 可见性成立才可关闭本编号；主机无法 present/无法提供可见性证据时必须按平台精确记录 unsupported（命令/环境/原因），但 **unsupported 不得冒充本编号已完成，也不得自动降低 Phase 2 出口标准**；不得用 software paint 或 readback 冒充 present；Phase 2 出口仍以本编号的可见性证据或另行书面决策为准 | 未开始 |
 
 Phase 2 出口条件：P2-F01 至 P2-F08 有真实设备或不可用证据，目标开发机
 compute smoke 通过、窄资源封装与最小 CLI 包可运行；不支持的 adapter、
@@ -257,10 +257,12 @@ Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface prese
 9. P6-F01–P6-F06：完善业务集成、完整 CLI 和 Slint，共享同一会话。
 10. **P2-F08（surface present 验证）**：与第 4–9 步并行，不阻塞数据/渲染/训练
     主线；它是 Phase 2 出口的唯一剩余条件，越晚验证，P4-F06 和 P6-F03 的显示
-    假设越可能返工。若目标开发机无法提供真实窗口 present，必须按平台记录
-    unsupported（命令/环境/原因）；**该记录不等于 P2-F08 已完成，也不自动降低
-    或关闭 Phase 2 出口**——任何出口书面调整须另行审查，且不得用 unsupported
-    或 software paint 偷换 present 验收。
+    假设越可能返工。验收须分开像素校验、`Queue::present` 提交与真实窗口
+    可见性；readback 不能关闭本编号。若目标开发机无法提供真实窗口 present
+    或 Layer C 可见性证据，必须按平台记录 unsupported（命令/环境/原因）；
+    **该记录不等于 P2-F08 已完成，也不自动降低或关闭 Phase 2 出口**——任何
+    出口书面调整须另行审查，且不得用 unsupported、software paint 或 readback
+    偷换 present 验收。
 11. P7-F01–P7-F07：编辑、网格、分块 splat 导出和其他导出。
 12. P8-F07 → P8-F01/P8-F05，再按前置推进 P8-F02–P8-F04/P8-F06。
 13. P9-F01–P9-F05：汇总平台、质量/性能与完整发布；各功能的资源/数值测量已在此前执行。
@@ -406,4 +408,7 @@ P2-F06 的验收文字要求“最小 surface 测试在支持设备上可复现�
 交付的是 unsupported 门禁，没有任何编号负责真正验证 present，导致 Phase 2
 出口缺少负责人而无限期挂起。P2-F08 接手该责任，P2-F06 的验收文字同步收窄。
 既有编号不重排、不复用；P2-F08 追加在 P2 末尾。unsupported 证据不能偷换
-功能完成，也不能自动降低 Phase 2 出口标准。
+功能完成，也不能自动降低 Phase 2 出口标准。契约钉死 wgpu 30.0.1：
+`Surface::get_capabilities`、`CurrentSurfaceTexture` 全分支、`Queue::present`
+返回 `()`；可见性证据与像素 readback 分离，见
+[phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)。

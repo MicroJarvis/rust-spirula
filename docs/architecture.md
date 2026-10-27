@@ -126,9 +126,12 @@ post-submit wait failures (not application session history; P6-F01). Surface
 smoke is P2-F06 (已完成): headless affine compute smoke with Fail reclaim, plus
 an honest surface **unsupported** gate that will not forge a window
 (`spirula-gpu-smoke`; present not verified). **P2-F08 owns real surface present
-verification** (added 2026-10-27): real-window surface config, adapter surface
-capability + format/present-mode negotiation, present evidence, and typed
-present/surface-loss errors — the only remaining Phase 2 exit condition.
+verification** (added 2026-10-27): real-window surface config,
+`Surface::get_capabilities` + format/present-mode negotiation,
+`CurrentSurfaceTexture` policy, and Layer C visibility evidence (readback or
+`Queue::present` alone is not enough; surface vs device loss distinct) — the
+only remaining Phase 2 exit condition
+([phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)).
 Packaging is P2-F07 (已完成;
 [phase-2/cli-package.md](phase-2/cli-package.md)). Presentation (P6-F07) owns a
 transient GPU context for probe frames; diagnose/smoke/train/preview remain

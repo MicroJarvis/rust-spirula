@@ -146,7 +146,7 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 | GPU→display present latency / compositor | **Unmeasurable** here — recorded as unavailable |
 | Process-wide CPU total peak | **Not measured** in this tip |
 | Zero-copy / shared texture | **Not claimed** |
-| wgpu surface present | **Unverified** — owned by **P2-F08** (未开始); P2-F06 honest unsupported gate is not a present pass |
+| wgpu surface present | **Unverified** — owned by **P2-F08** (未开始); P2-F06 honest unsupported gate is not a present pass; this tip's readback→Slint path is pixel/host upload only and cannot close P2-F08 |
 
 ## Acceptance
 

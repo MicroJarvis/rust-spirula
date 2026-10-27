@@ -18,19 +18,23 @@ including after early **P6-F07** (已完成; see
 [../phase-6/presentation-path.md](../phase-6/presentation-path.md)), which
 validated readback→Slint host frames without claiming wgpu surface present.
 **P2-F08 owns the remaining exit condition** (added 2026-10-27 plan review;
-see [project-plan.md](../project-plan.md) §4): a real-window surface,
-adapter surface capability + format/present-mode negotiation, present
-verification, and typed present/surface-loss errors. F06's acceptance wording
-was narrowed accordingly — its surface deliverable is the honest
-unsupported gate, and it never counted as a present pass. If the target host
-cannot provide a real window, P2-F08 must record per-platform unsupported
-evidence (command, environment, reason); that record does **not** mark
-P2-F08 complete and does **not** automatically lower or close the Phase 2
-exit — any written exit adjustment needs a separate review and must not
-substitute unsupported or software paint for present verification. Plan
-current work is **P3-F01**. Phase 2 diagnose/smoke remain separate from
-presentation; train/preview/P6-F03 stay unwired. P2-F05 diagnostics stay
-GPU-local (P6-F01 owns application session history). Real host OOM remains
-unsupported; the 60 s stall watchdog stays deferred. Packaging honesty:
-macOS tested; Linux NOREPLACE path implemented but not host-tested here;
-Windows publish unsupported.
+see [project-plan.md](../project-plan.md) §4 and
+[gpu-surface-present.md](gpu-surface-present.md)): a real-window surface,
+`Surface::get_capabilities` negotiation, `CurrentSurfaceTexture` policy, and
+**Layer C** visibility evidence (repeatable known-pattern real-window proof
+or supported platform compositor feedback with documented limits). Texture
+readback validates pixels only; `Queue::present` returns `()` and does not
+by itself prove compositor visibility — neither closes P2-F08 alone. F06's
+acceptance wording was narrowed accordingly — its surface deliverable is the
+honest unsupported gate, and it never counted as a present pass. If the
+target host cannot provide a real window or Layer C evidence, P2-F08 must
+record per-platform unsupported evidence (command, environment, reason);
+that record does **not** mark P2-F08 complete and does **not** automatically
+lower or close the Phase 2 exit — any written exit adjustment needs a
+separate review and must not substitute unsupported, software paint, or
+readback for present verification. Plan current work is **P3-F01**. Phase 2
+diagnose/smoke remain separate from presentation; train/preview/P6-F03 stay
+unwired. P2-F05 diagnostics stay GPU-local (P6-F01 owns application session
+history). Real host OOM remains unsupported; the 60 s stall watchdog stays
+deferred. Packaging honesty: macOS tested; Linux NOREPLACE path implemented
+but not host-tested here; Windows publish unsupported.
