@@ -3,6 +3,11 @@
 //! Parity with pin `DataManager.cpp:decode_normal_into` + `turn_normal_vectors`:
 //! RGB8 normals, optional quarter turns on pixels, bilinear resize to
 //! destination, then vector remapping on the destination buffer.
+//!
+//! These helpers are sync library APIs for fixtures/goldens. They are **not**
+//! on the application `PrepareOrientedImage` / `PrepareNormalizedMask` path and
+//! do not observe [`crate::CancelCheckpoint`] (documented in
+//! `docs/phase-3/image-orient-mask.md`).
 
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 

@@ -2,6 +2,9 @@
 //!
 //! Parity with pin `DataManager.cpp:decode_depth_into`: 16-bit single-channel
 //! PNG (stb `stbi_load_16` req_comp=1), optional quarter turns, bilinear resize.
+//!
+//! Sync library APIs only — not on admitted image prepare; no
+//! [`crate::CancelCheckpoint`] (see `docs/phase-3/image-orient-mask.md`).
 
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 

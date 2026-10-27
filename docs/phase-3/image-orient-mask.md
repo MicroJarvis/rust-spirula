@@ -60,7 +60,8 @@ owned loops.
 |---|---|
 | `image` crate decode (`load_from_memory` / TGA hinted decode) | **Non-preemptible third-party call.** No mid-decode 250 ms guarantee. Checkpoints surround the call. |
 | Capped file read | One bounded read; checkpoint before/after (not mid-`read`). |
-| Owned CPU: orient / nearest / area-bilinear resize / EDT | `CancelCheckpoint` polls ≥ every 250 ms (per row / column block). Returns `SP-CAN-001`. |
+| Owned CPU on **image prepare** path: `orient_pixels` / mask `nearest_resize_u8` / mask `cpu_resize_u8` (area or bilinear) / mask EDT | `CancelCheckpoint` polls ≥ every 250 ms (per row / column block). Returns `SP-CAN-001`. |
+| C-DATA-09 sync library only: `normalize_normal_rgb8`, `cpu_bilinear_resize_rgb8`, `turn_normal_vectors`, `normalize_depth16`, `cpu_bilinear_resize_u16` | **Not** on admitted/sync `PrepareOrientedImage` / `PrepareNormalizedMask`. No `CancelCheckpoint` today; **not** claimed for the 250 ms loop contract until wired or given cancelable variants. |
 | Worker enqueue + owner apply | Post-work cancel before `ImagePrepareDone`; owner arbitrates queued Ok/Err vs pending Stop/Shutdown under the state lock. |
 | Service Drop | Existing owner/worker `shutdown_join` within `teardown_deadline` (unchanged). |
 
