@@ -110,13 +110,13 @@ buffer/RGBA8 texture staging upload/readback with explicit submit/wait/map and
 scoped accounted-byte budgets — not a general wgpu mirror. P2-F04 (已完成)
 adds session-owned WGSL compute pipeline key/cache and a minimal affine-u32
 proof on top of P2-F03 staging (layout epochs v1/v2 same ABI for key
-invalidation only). P2-F05 (当前 / HOLD pending review) maps wgpu error scopes /
-submit / lost to stable `SP-GPU-*` with a GPU-local bounded diagnostic ring
-and latched post-submit wait failures (not application session history;
-P6-F01). Surface smoke remains P2-F06 (未开始 until F05 approved). Application
-does not own GPU resources yet;
-diagnose `--resources` / `--compute` are not train/preview/UI readiness.
-Bindings: [phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md),
+invalidation only). P2-F05 (已完成) maps wgpu error scopes / submit / lost to
+stable `SP-GPU-*` with a GPU-local bounded diagnostic ring and latched
+post-submit wait failures (not application session history; P6-F01). Surface
+smoke is P2-F06 (当前). Application does not own GPU resources yet; diagnose
+`--resources` / `--compute` are not train/preview/UI readiness. Real host OOM
+remains unsupported; the 60 s stall watchdog stays deferred. Bindings:
+[phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md),
 [phase-2/gpu-diagnostics.md](phase-2/gpu-diagnostics.md).
 Each GPU feature has a CPU reference or deterministic fixture where practical,
 followed by a GPU tolerance test.

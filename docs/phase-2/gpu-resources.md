@@ -4,8 +4,9 @@ Status: **已完成** (code tip `e2157c1e0578edd3d65014a5ad220400a14de65e`).
 Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md)
 (P2-F02) and P1-F08 [performance.md](../phase-1/performance.md)
 accounted-byte tracking. Shaders/pipelines/compute are P2-F04 (已完成;
-[gpu-pipelines.md](gpu-pipelines.md)). GPU diagnostics are P2-F05 (当前 / HOLD;
-[gpu-diagnostics.md](gpu-diagnostics.md)). Phase 2 exit remains open.
+[gpu-pipelines.md](gpu-pipelines.md)). GPU diagnostics are P2-F05 (已完成;
+[gpu-diagnostics.md](gpu-diagnostics.md)). Surface smoke is P2-F06 (当前).
+Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 
@@ -169,5 +170,4 @@ accounting reaches zero after completion.
 - No compute shaders, pipelines, or TrainPlan execution.
 - No claim of measured device-wide VRAM or OS process peak.
 - No application/CLI/UI GPU command beyond diagnose.
-- Phase 2 exit is **not** closed; P2-F05 remains current until independently
-  approved (P2-F06 stays 未开始).
+- Phase 2 exit is **not** closed; P2-F06 is current (P2-F05 docs-closed).

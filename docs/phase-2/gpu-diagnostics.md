@@ -1,10 +1,10 @@
 # P2-F05: GPU errors and diagnostic events
 
-Status: **当前 / 进行中** (HOLD-MERGE pending independent delta review; not
-approved — do not treat as 已完成 / do not advance P2-F06). Owner: `spirula-gpu`.
-Builds on [device-context.md](device-context.md), [gpu-resources.md](gpu-resources.md),
-[gpu-pipelines.md](gpu-pipelines.md). Surface smoke stays P2-F06; application
-session wiring of these events stays P6-F01. Phase 2 exit remains open.
+Status: **已完成** (code tip `31b6087695fcf54322bca822b2de36f1f906b6fe`).
+Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md),
+[gpu-resources.md](gpu-resources.md), [gpu-pipelines.md](gpu-pipelines.md).
+Surface smoke stays P2-F06 (当前); application session wiring of these events
+stays P6-F01. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 
@@ -83,7 +83,7 @@ latched post-submit wait failure.
   post-submit Validation/OOM → waitable handle + typed wait `Err` + reclaim.
 - Real host OOM: **unsupported** — not claimed (source-scheduled inject only).
 
-## Acceptance (pending independent review)
+## Acceptance (met)
 
 1. Scoped validation/OOM/submit/wait/lost map to stable codes with operation +
    label (+ budget) — including upload/readback/map paths.
@@ -95,18 +95,22 @@ latched post-submit wait failure.
 5. Dispatch/create OOM keeps `SP-GPU-004` (not remapped to input) with bytes.
 6. No application session subscription; no F06 surface.
 
-## Evidence
+## Tested evidence (approved tip)
 
-| Check | Command / artifact |
-|---|---|
-| Synthetic diagnostics | `cargo test -p spirula-gpu --test diagnostics_lifecycle_synthetic` |
-| Host validation/lost/budget/post-submit | `cargo test -p spirula-gpu --test host_diagnostics` |
-| Focused | `/tmp/spirula-cursor-p2-f05-focused-diag.log` |
-| Fresh full gate | `/tmp/spirula-cursor-p2-f05-verify.log` |
+Code tip: `31b6087695fcf54322bca822b2de36f1f906b6fe`. Independent review READY:
+`/tmp/spirula-p2-f05-review/REVIEW-final-31b6087.md`. Commands below are the
+reproducible checks; machine `/tmp` logs are sample runs, not the sole evidence.
+
+| Check | Command | Sample result |
+|---|---|---|
+| Synthetic diagnostics | `cargo test -p spirula-gpu --test diagnostics_lifecycle_synthetic -- --nocapture` | **15/15** (sample: `/tmp/spirula-cursor-p2-f05-focused-diag.log`) |
+| Host validation/lost/budget/post-submit | `cargo test -p spirula-gpu --test host_diagnostics -- --nocapture` | **6/6** on Apple M5 Max / Metal (same sample log) |
+| Fresh full gate | `cargo fmt/check/test/clippy` workspace gate | ok (sample: `/tmp/spirula-cursor-p2-f05-verify.log`) |
+| Independent probes | exact `git archive` + host Validation/OOM wait latch | READY; evidence under `/tmp/spirula-p2-f05-review/final31/` |
 
 ## Non-claims
 
-- Not independently approved / docs-closure complete.
 - Not F06 surface smoke; not app/train/UI / P6-F01 fan-out.
 - Not real hardware OOM; not 60 s stall watchdog.
 - Not a general logging framework or P9 aggregation.
+- Phase 2 exit is **not** closed; P2-F06 is current.
