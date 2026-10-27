@@ -32,7 +32,8 @@ pub use ids::{CommandId, RunId, SessionId};
 pub use limits::SessionLimits;
 pub use notify::{SubscribeError, Subscription};
 pub use presentation::{
-    DeliveredFrame, PresentationOwner, PresentationStats, produce_presentation_frame_once,
+    DeliveredFrame, PresentationOwner, PresentationStats, PresentationStatus,
+    produce_presentation_frame_once,
 };
 pub use session::{ApplicationService, SubscribeHandoffError};
 pub use state::SessionState;

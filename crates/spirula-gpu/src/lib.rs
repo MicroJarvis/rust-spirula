@@ -43,7 +43,7 @@ pub use pipeline::{
     PipelineCacheStats, PipelineKey, ShaderHeader, SpecConstants, affine_bind_layout_supported,
     cpu_affine_u32, parse_shader_header,
 };
-pub use present::produce_probe_rgba_frame;
+pub use present::{assert_presentation_cleanup, produce_probe_rgba_frame};
 pub use resource::{
     BufferDesc, BufferHandle, BufferUsage, COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT,
     PendingResourceCounts, RESOURCE_ACCOUNT_SOURCE, ReadbackTicket, ResourceAccountingSnapshot,

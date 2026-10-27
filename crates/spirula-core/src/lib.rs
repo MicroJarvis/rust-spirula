@@ -49,7 +49,8 @@ pub use perf::{
     UnavailableMetric, parse_schema_version,
 };
 pub use presentation::{
-    FrameCopyReport, PresentationPathKind, PresentedFrame, cpu_probe_rgba8, rgba8_matches_cpu_probe,
+    FrameCopyReport, PresentationPathKind, PresentedFrame, ProbeCorners, cpu_probe_corners,
+    cpu_probe_rgba8, rgba8_corners, rgba8_matches_cpu_probe,
 };
 pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,
