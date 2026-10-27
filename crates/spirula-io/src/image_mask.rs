@@ -4,11 +4,14 @@
 //! `DataManager.cpp:decode_mask_into` / `decode_alpha_mask_into` /
 //! `cpu_resize` (without boundary EDT).
 
-use spirula_core::{ContextKey, DomainError, ErrorCode};
+use spirula_core::{CancelToken, ContextKey, DomainError, ErrorCode};
 
-use crate::image_edt::apply_mask_boundary_offset_frac;
-use crate::image_orient::{ApplyPolicy, ExifOrientation, orient_pixels, oriented_size};
-use crate::image_probe::{ensure_encoded_budget, ensure_pixel_budget, probe_image_size_bytes};
+use crate::cancel_checkpoint::CancelCheckpoint;
+use crate::image_edt::apply_mask_boundary_offset_frac_cancelable;
+use crate::image_orient::{ApplyPolicy, ExifOrientation, orient_pixels_cancelable, oriented_size};
+use crate::image_probe::{
+    ensure_encoded_budget, ensure_pixel_budget, load_dynamic, probe_image_size_bytes_hinted,
+};
 
 fn err(code: ErrorCode, field: &str, msg: impl Into<String>) -> DomainError {
     DomainError::try_new(code, msg)
@@ -145,6 +148,19 @@ pub fn nearest_resize_u8(
     dst_h: u32,
     dst: &mut [u8],
 ) -> Result<(), DomainError> {
+    nearest_resize_u8_cancelable(src, src_w, src_h, dst_w, dst_h, dst, None)
+}
+
+pub(crate) fn nearest_resize_u8_cancelable(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    dst: &mut [u8],
+    cancel: Option<&CancelToken>,
+) -> Result<(), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
     ensure_pixel_budget(src_w, src_h)?;
     ensure_pixel_budget(dst_w, dst_h)?;
     let need_s = (src_w as usize)
@@ -165,6 +181,7 @@ pub fn nearest_resize_u8(
     let sh = src_h as i32;
     let sw = src_w as i32;
     for y in 0..dst_h {
+        cp.poll()?;
         let v = (y as f32 + 0.5) * sy - 0.5;
         let ys = ((v + 0.5).floor() as i32).clamp(0, sh - 1) as u32;
         for x in 0..dst_w {
@@ -185,6 +202,18 @@ pub fn cpu_resize_u8(
     dst_h: u32,
     dst: &mut [u8],
 ) -> Result<(), DomainError> {
+    cpu_resize_u8_cancelable(src, src_w, src_h, dst_w, dst_h, dst, None)
+}
+
+pub(crate) fn cpu_resize_u8_cancelable(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    dst: &mut [u8],
+    cancel: Option<&CancelToken>,
+) -> Result<(), DomainError> {
     ensure_pixel_budget(src_w, src_h)?;
     ensure_pixel_budget(dst_w, dst_h)?;
     let need_s = (src_w as usize) * (src_h as usize);
@@ -198,9 +227,9 @@ pub fn cpu_resize_u8(
     }
     let down = dst_h <= src_h && dst_w <= src_w && (dst_h < src_h || dst_w < src_w);
     if down {
-        cpu_area_resize_u8(src, src_w, src_h, dst_w, dst_h, dst)
+        cpu_area_resize_u8(src, src_w, src_h, dst_w, dst_h, dst, cancel)
     } else {
-        cpu_bilinear_resize_u8(src, src_w, src_h, dst_w, dst_h, dst)
+        cpu_bilinear_resize_u8(src, src_w, src_h, dst_w, dst_h, dst, cancel)
     }
 }
 
@@ -211,12 +240,15 @@ fn cpu_bilinear_resize_u8(
     dw: u32,
     dh: u32,
     dst: &mut [u8],
+    cancel: Option<&CancelToken>,
 ) -> Result<(), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
     let sx = (sw as f32) / (dw as f32);
     let sy = (sh as f32) / (dh as f32);
     let sh_i = sh as i32;
     let sw_i = sw as i32;
     for y in 0..dh {
+        cp.poll()?;
         let v = (y as f32 + 0.5) * sy - 0.5;
         let y0 = v.floor() as i32;
         let fy = v - y0 as f32;
@@ -250,10 +282,13 @@ fn cpu_area_resize_u8(
     dw: u32,
     dh: u32,
     dst: &mut [u8],
+    cancel: Option<&CancelToken>,
 ) -> Result<(), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
     let sy = (sh as f64) / (dh as f64);
     let sx = (sw as f64) / (dw as f64);
     for y in 0..dh {
+        cp.poll()?;
         let v0 = f64::from(y) * sy;
         let v1 = f64::from(y + 1) * sy;
         let y0 = v0 as i32;
@@ -294,6 +329,27 @@ pub fn normalize_mask(
     opts: MaskNormalizeOptions,
     dst: &mut [u8],
 ) -> Result<(), DomainError> {
+    normalize_mask_cancelable(
+        samples, width, height, channels, dst_w, dst_h, opts, dst, None,
+    )
+}
+
+/// Like [`normalize_mask`], observing `cancel` at least every 250 ms in owned
+/// CPU loops (resize / EDT). Returns `SP-CAN-001` when canceled.
+#[allow(clippy::too_many_arguments)]
+pub fn normalize_mask_cancelable(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+    dst_w: u32,
+    dst_h: u32,
+    opts: MaskNormalizeOptions,
+    dst: &mut [u8],
+    cancel: Option<&CancelToken>,
+) -> Result<(), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
+    cp.poll_now()?;
     ensure_pixel_budget(width, height)?;
     ensure_pixel_budget(dst_w, dst_h)?;
     if !(1..=4).contains(&channels) {
@@ -317,6 +373,7 @@ pub fn normalize_mask(
         MaskSourceKind::NonZero => extract_nonzero_plane(samples, width, height, channels)?,
         MaskSourceKind::AlphaThreshold128 => extract_alpha_plane(samples, width, height, channels)?,
     };
+    cp.poll_now()?;
 
     let xf = {
         let mut t = opts.orientation.transform();
@@ -328,22 +385,24 @@ pub fn normalize_mask(
     let (ow, oh) = oriented_size(width, height, xf.turns_cw);
     if !xf.identity() {
         let mut buf = vec![0u8; (ow as usize) * (oh as usize)];
-        orient_pixels(&plane, width, height, 1, xf, &mut buf)?;
+        orient_pixels_cancelable(&plane, width, height, 1, xf, &mut buf, cancel)?;
         plane = buf;
     }
+    cp.poll_now()?;
 
     let mut resized = vec![0u8; (dst_w as usize) * (dst_h as usize)];
     match opts.kind {
         MaskSourceKind::NonZero => {
-            nearest_resize_u8(&plane, ow, oh, dst_w, dst_h, &mut resized)?;
+            nearest_resize_u8_cancelable(&plane, ow, oh, dst_w, dst_h, &mut resized, cancel)?;
         }
         MaskSourceKind::AlphaThreshold128 => {
-            cpu_resize_u8(&plane, ow, oh, dst_w, dst_h, &mut resized)?;
+            cpu_resize_u8_cancelable(&plane, ow, oh, dst_w, dst_h, &mut resized, cancel)?;
             for v in &mut resized {
                 *v = u8::from(*v >= 128);
             }
         }
     }
+    cp.poll_now()?;
 
     // Flip before boundary offset (DataManager.cpp:547-551).
     if opts.flip {
@@ -351,7 +410,14 @@ pub fn normalize_mask(
             *v = u8::from(*v == 0);
         }
     }
-    apply_mask_boundary_offset_frac(&mut resized, dst_h, dst_w, opts.boundary_offset_frac)?;
+    apply_mask_boundary_offset_frac_cancelable(
+        &mut resized,
+        dst_h,
+        dst_w,
+        opts.boundary_offset_frac,
+        cancel,
+    )?;
+    cp.poll_now()?;
 
     let n = (dst_w as usize) * (dst_h as usize);
     if dst.len() < n {
@@ -365,14 +431,21 @@ pub fn normalize_mask(
 ///
 /// Budgets (encoded + header pixels) run before `load_from_memory`.
 pub fn decode_mask_image_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, Vec<u8>), DomainError> {
+    decode_mask_image_bytes_hinted(bytes, None)
+}
+
+/// Decode mask bytes with an optional lowercase extension hint.
+///
+/// TGA has no reliable magic; path-based prepare must pass `Some("tga")`.
+pub fn decode_mask_image_bytes_hinted(
+    bytes: &[u8],
+    ext_hint: Option<&str>,
+) -> Result<(u32, u32, u32, Vec<u8>), DomainError> {
     ensure_encoded_budget(bytes.len())?;
-    let (w, h) = probe_image_size_bytes(bytes)?;
-    let img = image::load_from_memory(bytes).map_err(|e| {
-        err(
-            ErrorCode::DecodeFailed,
-            "mask",
-            format!("decode failed: {e}"),
-        )
+    let (w, h) = probe_image_size_bytes_hinted(bytes, ext_hint)?;
+    let img = load_dynamic(bytes, ext_hint).map_err(|e| {
+        // Remap field context to mask for callers.
+        err(e.code(), "mask", e.message().to_string())
     })?;
     use image::DynamicImage;
     let (cw, ch, channels, raw) = match img {
@@ -534,5 +607,40 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(e.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn normalize_mask_cancelable_observes_pre_canceled_token() {
+        use spirula_core::CancelReason;
+        let cancel = CancelToken::new();
+        assert!(cancel.request(CancelReason::User));
+        let samples = [0u8, 1, 0, 1];
+        let mut dst = [0u8; 4];
+        let e = normalize_mask_cancelable(
+            &samples,
+            2,
+            2,
+            1,
+            2,
+            2,
+            MaskNormalizeOptions::default(),
+            &mut dst,
+            Some(&cancel),
+        )
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::Canceled);
+    }
+
+    #[test]
+    fn tga_mask_bytes_require_ext_hint() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/images/tiny_2x2.tga");
+        let b = std::fs::read(&path).unwrap();
+        let (w, h, ch, _) = decode_mask_image_bytes_hinted(&b, Some("tga")).unwrap();
+        assert_eq!((w, h, ch), (2, 2, 3));
+        assert!(
+            decode_mask_image_bytes(&b).is_err(),
+            "unhinted TGA mask bytes must fail so path/extension hint stays required"
+        );
     }
 }

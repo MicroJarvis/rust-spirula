@@ -9,10 +9,17 @@ use std::path::Path;
 
 use spirula_core::{CancelToken, ContextKey, DomainError, ErrorCode};
 use spirula_io::{
-    ApplyPolicy, ExifOrientation, MaskNormalizeOptions, MaskSourceKind, apply_orientation,
-    decode_mask_image_bytes, decode_rgb8_bytes, normalize_mask, oriented_size, probe_image_size,
-    read_image_bytes_capped, read_path_exif_orientation,
+    ApplyPolicy, ExifOrientation, MaskNormalizeOptions, MaskSourceKind,
+    apply_orientation_cancelable, decode_mask_image_bytes_hinted, decode_rgb8_bytes_hinted,
+    normalize_mask_cancelable, oriented_size, probe_image_size, read_image_bytes_capped,
+    read_path_exif_orientation,
 };
+
+fn path_ext_hint(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+}
 
 use crate::session::ApplicationService;
 use crate::state::SessionState;
@@ -113,7 +120,9 @@ pub(crate) fn run_prepare_oriented_rgb_cancelable(
     if canceled(cancel) {
         return ImageWorkResult::Canceled;
     }
-    let (w, h, rgb) = match decode_rgb8_bytes(&bytes) {
+    // Preserve path extension hint (TGA has no reliable magic).
+    let hint = path_ext_hint(path);
+    let (w, h, rgb) = match decode_rgb8_bytes_hinted(&bytes, hint.as_deref()) {
         Ok(v) => v,
         Err(e) => return ImageWorkResult::Failed(e),
     };
@@ -145,10 +154,12 @@ pub(crate) fn run_prepare_oriented_rgb_cancelable(
         }
     };
     let mut dst = vec![0u8; dst_len];
-    let (dw, dh) = match apply_orientation(&rgb, w, h, 3, orientation, policy, &mut dst) {
-        Ok(v) => v,
-        Err(e) => return ImageWorkResult::Failed(e),
-    };
+    let (dw, dh) =
+        match apply_orientation_cancelable(&rgb, w, h, 3, orientation, policy, &mut dst, cancel) {
+            Ok(v) => v,
+            Err(e) if e.code() == ErrorCode::Canceled => return ImageWorkResult::Canceled,
+            Err(e) => return ImageWorkResult::Failed(e),
+        };
     if canceled(cancel) {
         return ImageWorkResult::Canceled;
     }
@@ -226,7 +237,9 @@ pub(crate) fn run_prepare_normalized_mask_cancelable(
     if canceled(cancel) {
         return ImageWorkResult::Canceled;
     }
-    let (w, h, ch, samples) = match decode_mask_image_bytes(&bytes) {
+    // Preserve path extension hint (TGA has no reliable magic).
+    let hint = path_ext_hint(path);
+    let (w, h, ch, samples) = match decode_mask_image_bytes_hinted(&bytes, hint.as_deref()) {
         Ok(v) => v,
         Err(e) => return ImageWorkResult::Failed(e),
     };
@@ -234,8 +247,12 @@ pub(crate) fn run_prepare_normalized_mask_cancelable(
         return ImageWorkResult::Canceled;
     }
     let mut dst = vec![0u8; dst_len];
-    if let Err(e) = normalize_mask(&samples, w, h, ch, args.dst_w, args.dst_h, opts, &mut dst) {
-        return ImageWorkResult::Failed(e);
+    match normalize_mask_cancelable(
+        &samples, w, h, ch, args.dst_w, args.dst_h, opts, &mut dst, cancel,
+    ) {
+        Ok(()) => {}
+        Err(e) if e.code() == ErrorCode::Canceled => return ImageWorkResult::Canceled,
+        Err(e) => return ImageWorkResult::Failed(e),
     }
     if canceled(cancel) {
         return ImageWorkResult::Canceled;

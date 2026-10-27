@@ -135,7 +135,7 @@ pub fn probe_image_size_bytes(bytes: &[u8]) -> Result<(u32, u32), DomainError> {
     probe_image_size_bytes_hinted(bytes, None)
 }
 
-fn probe_image_size_bytes_hinted(
+pub(crate) fn probe_image_size_bytes_hinted(
     bytes: &[u8],
     ext_hint: Option<&str>,
 ) -> Result<(u32, u32), DomainError> {
@@ -382,7 +382,11 @@ pub fn decode_rgb8_bytes(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), DomainErro
     decode_rgb8_bytes_hinted(bytes, None)
 }
 
-fn decode_rgb8_bytes_hinted(
+/// Decode RGB8 with an optional lowercase extension hint.
+///
+/// TGA has no reliable magic; callers that already know the path/extension
+/// must pass `Some("tga")` (same as [`decode_rgb8`]).
+pub fn decode_rgb8_bytes_hinted(
     bytes: &[u8],
     ext_hint: Option<&str>,
 ) -> Result<(u32, u32, Vec<u8>), DomainError> {
@@ -405,7 +409,10 @@ fn decode_rgb8_bytes_hinted(
     Ok((w, h, rgb.into_raw()))
 }
 
-fn load_dynamic(bytes: &[u8], ext_hint: Option<&str>) -> Result<image::DynamicImage, DomainError> {
+pub(crate) fn load_dynamic(
+    bytes: &[u8],
+    ext_hint: Option<&str>,
+) -> Result<image::DynamicImage, DomainError> {
     if matches!(ext_hint, Some("tga")) {
         let mut reader = image::ImageReader::new(Cursor::new(bytes));
         reader.set_format(image::ImageFormat::Tga);
@@ -510,6 +517,7 @@ pub fn decode_rgb_auto(path: &Path) -> Result<DecodedRgb, DomainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn rejects_unsupported_extension() {
@@ -616,5 +624,21 @@ mod tests {
     fn u32_max_dims_reject_before_alloc() {
         let e = ensure_pixel_budget(u32::MAX, u32::MAX).unwrap_err();
         assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    }
+
+    #[test]
+    fn tga_bytes_require_ext_hint() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/images/tiny_2x2.tga");
+        let b = std::fs::read(&path).unwrap();
+        let (w, h, rgb) = decode_rgb8_bytes_hinted(&b, Some("tga")).unwrap();
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(rgb.len(), 12);
+        // TGA lacks reliable magic: unhinted byte decode must not be the prepare path.
+        assert!(
+            decode_rgb8_bytes(&b).is_err(),
+            "unhinted TGA bytes must fail so path/extension hint stays required"
+        );
+        assert_eq!(decode_rgb8(&path).unwrap(), (w, h, rgb));
     }
 }

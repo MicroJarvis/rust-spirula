@@ -575,6 +575,54 @@ fn oversized_mask_dst_rejected_at_admission() {
 }
 
 #[test]
+fn sync_and_admitted_prepare_tga_preserves_ext_hint() {
+    // TGA has no reliable magic; cancelable byte decode must keep path hint.
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let path = fixtures().join("tiny_2x2.tga");
+    let oriented = app
+        .prepare_oriented_rgb_file(&path, Some(1), ApplyPolicy::TurnsOnly)
+        .expect("sync TGA prepare");
+    assert_eq!((oriented.width, oriented.height), (2, 2));
+    assert_eq!(oriented.rgb.len(), 2 * 2 * 3);
+
+    let path_s = path.to_string_lossy().into_owned();
+    let id = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path: path_s.clone(),
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    let terminal = wait_terminal(&app, id);
+    assert!(matches!(
+        terminal.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { .. }
+        }
+    ));
+    let snap = app.snapshot();
+    let replay = app
+        .replay(spirula_application::EventCursor::new(snap.session_id, 0))
+        .expect("replay");
+    let spirula_application::ReplayOutcome::ControlEvents(events) = replay else {
+        panic!("resync");
+    };
+    let prepared = events.iter().find_map(|e| match &e.event {
+        Event::ImagePrepared {
+            path: p,
+            width,
+            height,
+            ..
+        } if e.command_id == Some(id) => Some((p.clone(), *width, *height)),
+        _ => None,
+    });
+    let (p, w, h) = prepared.expect("ImagePrepared for TGA");
+    assert_eq!(p, path_s);
+    assert_eq!((w, h), (2, 2));
+}
+
+#[test]
 fn session_rejects_image_prepare_while_probe_in_flight() {
     let app = ApplicationService::start(SessionLimits::for_test());
     let load = match app.submit(Command::new(CommandPayload::ProbeLoad {

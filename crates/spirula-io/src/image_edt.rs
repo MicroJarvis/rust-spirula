@@ -3,8 +3,9 @@
 //! Parity with pin `core/DistanceTransform.h`. Fraction → pixels:
 //! `fraction * sqrt(W*H)` (`DataManager.cpp:apply_boundary_offset`).
 
-use spirula_core::{ContextKey, DomainError, ErrorCode};
+use spirula_core::{CancelToken, ContextKey, DomainError, ErrorCode};
 
+use crate::cancel_checkpoint::CancelCheckpoint;
 use crate::image_probe::ensure_pixel_budget;
 
 fn err(code: ErrorCode, field: &str, msg: impl Into<String>) -> DomainError {
@@ -101,12 +102,15 @@ fn dt2d_squared(
     cols_out: &mut [f32],
     v_buf: &mut [i32],
     z_buf: &mut [f64],
-) {
+    cp: &mut CancelCheckpoint<'_>,
+) -> Result<(), DomainError> {
     for y in 0..h {
+        cp.poll()?;
         dt_row_squared(&mask[y * w..], w, src_value, &mut d2_out[y * w..]);
     }
     let mut x0 = 0usize;
     while x0 < w {
+        cp.poll()?;
         let nc = COL_BLOCK.min(w - x0);
         for y in 0..h {
             for c in 0..nc {
@@ -129,6 +133,7 @@ fn dt2d_squared(
         }
         x0 += COL_BLOCK;
     }
+    Ok(())
 }
 
 /// Dilate (`offset_px > 0`) or erode (`offset_px < 0`) a 0/1 mask in place.
@@ -138,6 +143,18 @@ pub fn apply_mask_boundary_offset_px(
     width: u32,
     offset_px: f32,
 ) -> Result<(), DomainError> {
+    apply_mask_boundary_offset_px_cancelable(mask, height, width, offset_px, None)
+}
+
+pub fn apply_mask_boundary_offset_px_cancelable(
+    mask: &mut [u8],
+    height: u32,
+    width: u32,
+    offset_px: f32,
+    cancel: Option<&CancelToken>,
+) -> Result<(), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
+    cp.poll_now()?;
     if !offset_px.is_finite() {
         return Err(err(
             ErrorCode::ValueOutOfRange,
@@ -184,7 +201,8 @@ pub fn apply_mask_boundary_offset_px(
         &mut cols_out,
         &mut v_buf,
         &mut z_buf,
-    );
+        &mut cp,
+    )?;
     dt2d_squared(
         &mask[..need],
         h,
@@ -195,8 +213,12 @@ pub fn apply_mask_boundary_offset_px(
         &mut cols_out,
         &mut v_buf,
         &mut z_buf,
-    );
+        &mut cp,
+    )?;
     for i in 0..need {
+        if i % 4096 == 0 {
+            cp.poll()?;
+        }
         let sd = d2_fg[i].sqrt() - d2_bg[i].sqrt();
         mask[i] = u8::from(sd <= offset_px);
     }
@@ -209,6 +231,16 @@ pub fn apply_mask_boundary_offset_frac(
     height: u32,
     width: u32,
     fraction: f32,
+) -> Result<(), DomainError> {
+    apply_mask_boundary_offset_frac_cancelable(mask, height, width, fraction, None)
+}
+
+pub fn apply_mask_boundary_offset_frac_cancelable(
+    mask: &mut [u8],
+    height: u32,
+    width: u32,
+    fraction: f32,
+    cancel: Option<&CancelToken>,
 ) -> Result<(), DomainError> {
     if !fraction.is_finite() {
         return Err(err(
@@ -234,7 +266,7 @@ pub fn apply_mask_boundary_offset_frac(
             "offset_px overflowed f32",
         ));
     }
-    apply_mask_boundary_offset_px(mask, height, width, offset_px)
+    apply_mask_boundary_offset_px_cancelable(mask, height, width, offset_px, cancel)
 }
 
 #[cfg(test)]

@@ -51,20 +51,26 @@ validated at command admission and again before allocation.
 
 ### Cancel responsiveness (actual limits)
 
-Image prepare is **not** preemptible inside a single `image` crate
-`load_from_memory` / decode call. Cancel is observed cooperatively at:
+Runtime §5 requires cancel observation at least every **250 ms** inside long
+owned CPU/GPU loops, and `ApplicationService` Drop must join the worker within
+`teardown_deadline`. Stage-boundary-only checks do **not** replace that for
+owned loops.
 
-1. pre-decode StallGate / poll (tests can hold here);
-2. between application stages (path/EXIF → read bytes → decode → bake /
-   normalize);
-3. after the worker finishes, before enqueueing `ImagePrepareDone`;
-4. on the **owner**, under the state lock, when applying
-   `ImagePrepareDone` if Stop/Shutdown already won (queued Ok/Err cannot
-   become Prepared/Completed/Failed after cancel).
+| Region | Cancel behavior |
+|---|---|
+| `image` crate decode (`load_from_memory` / TGA hinted decode) | **Non-preemptible third-party call.** No mid-decode 250 ms guarantee. Checkpoints surround the call. |
+| Capped file read | One bounded read; checkpoint before/after (not mid-`read`). |
+| Owned CPU: orient / nearest / area-bilinear resize / EDT | `CancelCheckpoint` polls ≥ every 250 ms (per row / column block). Returns `SP-CAN-001`. |
+| Worker enqueue + owner apply | Post-work cancel before `ImagePrepareDone`; owner arbitrates queued Ok/Err vs pending Stop/Shutdown under the state lock. |
+| Service Drop | Existing owner/worker `shutdown_join` within `teardown_deadline` (unchanged). |
 
-There is **no** claim that image prepare meets probe-run
-`cancel_poll_interval` mid-decode latency. Wrong `ImagePrepareOk` kind vs
-active payload is dropped as stale and cannot close the command.
+Also: pre-decode StallGate (tests); wrong `ImagePrepareOk` kind vs active
+payload is stale and cannot close the command. Path extension hints are
+preserved for TGA (no reliable magic): cancelable prepare uses
+`decode_rgb8_bytes_hinted`, matching `decode_rgb8(path)`.
+
+**HOLD:** mid-decode cancel inside the third-party decoder remains unmet
+relative to a strict 250 ms-inside-decode reading of §5; docs do not claim it.
 
 Events: `ImagePrepared` / `MaskPrepared`. E2E:
 `crates/spirula-application/tests/image_ops_e2e.rs`.
@@ -106,8 +112,12 @@ consumed by orient/mask/format/offset tests.
 
 ## Non-claims
 
-- P3-F01 camera tip not merged on this baseline; main dirty docs untouched.
+- This branch already contains landed P3-F01 (camera) via merge from main;
+  main tip is clean (`33cf0c1` at P3-F02 integration). Do not treat P3-F01 as
+  missing on this baseline.
 - Custom C++ EXR/TIFF colour-management edge cases beyond `image` crate decode
   are not claimed bit-identical to `ExrImage.cpp`/`TiffImage.cpp`; fixtures
   cover probe/decode/dtype routing.
+- Third-party `image` decode is not cancelable mid-call (see cancel table).
 - UI mask editor remains P7-F01.
+- C-DATA-07..10 remain **进行中 / HOLD** until independent READY.

@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use spirula_core::{ContextKey, DomainError, ErrorCode};
+use spirula_core::{CancelToken, ContextKey, DomainError, ErrorCode};
+
+use crate::cancel_checkpoint::CancelCheckpoint;
 
 /// Hard cap on decoded / oriented pixel count (`AD-P3-F02-02`).
 pub const MAX_IMAGE_PIXELS: u64 = 16_777_216;
@@ -178,6 +180,20 @@ pub fn orient_pixels(
     transform: ExifTransform,
     dst: &mut [u8],
 ) -> Result<(u32, u32), DomainError> {
+    orient_pixels_cancelable(src, width, height, channels, transform, dst, None)
+}
+
+/// Like [`orient_pixels`], observing cancel at least every 250 ms per output row.
+pub fn orient_pixels_cancelable(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+    transform: ExifTransform,
+    dst: &mut [u8],
+    cancel: Option<&CancelToken>,
+) -> Result<(u32, u32), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
     ensure_pixel_budget(width, height)?;
     if channels == 0 || channels > 4 {
         return Err(err(
@@ -216,6 +232,7 @@ pub fn orient_pixels(
     let dw_i = dw as i32;
     let dh_i = dh as i32;
     for dy in 0..dh_i {
+        cp.poll()?;
         for dx in 0..dw_i {
             let mx = if transform.mirror { dw_i - 1 - dx } else { dx };
             let (sx, sy) = match t {
@@ -242,6 +259,24 @@ pub fn apply_orientation(
     policy: ApplyPolicy,
     dst: &mut [u8],
 ) -> Result<(u32, u32), DomainError> {
+    apply_orientation_cancelable(src, width, height, channels, orientation, policy, dst, None)
+}
+
+/// Like [`apply_orientation`], observing cancel at least every 250 ms in the
+/// pixel bake loop when the transform is non-identity.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_orientation_cancelable(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+    orientation: ExifOrientation,
+    policy: ApplyPolicy,
+    dst: &mut [u8],
+    cancel: Option<&CancelToken>,
+) -> Result<(u32, u32), DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
+    cp.poll_now()?;
     let mut xf = exif_transform(orientation);
     if matches!(policy, ApplyPolicy::TurnsOnly) {
         xf.mirror = false;
@@ -266,7 +301,7 @@ pub fn apply_orientation(
         dst[..n].copy_from_slice(&src[..n]);
         return Ok((width, height));
     }
-    orient_pixels(src, width, height, channels, xf, dst)
+    orient_pixels_cancelable(src, width, height, channels, xf, dst, cancel)
 }
 
 /// Read Orientation from a JPEG byte buffer. Missing / unreadable → 1.
