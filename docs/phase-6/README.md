@@ -9,5 +9,5 @@ P6-F07 tip `82adae0eebbb1f1a0f20ddfec1d7dd824ae7006c` closed the early
 readback→Slint presentation spike (measured copy bytes / host latency; CUA
 window draw). P6-F03 navigation / full shell remains **未开始**. Phase 2 exit
 stays open (surface present unverified; owned by **P2-F08**, 未开始).
-Train/preview unwired. Plan current work on this branch is **P3-F02**
-(P3-F01 complete here; main has not received this branch yet).
+Train/preview unwired. Plan current work is **P3-F02** (P3-F01 landed on
+main).

@@ -5,8 +5,7 @@ Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md),
 [gpu-resources.md](gpu-resources.md), [gpu-pipelines.md](gpu-pipelines.md).
 Headless smoke is P2-F06 (已完成; see [gpu-smoke.md](gpu-smoke.md)); packaging
 is P2-F07 (已完成). Application session wiring of these events stays P6-F01;
-plan current on this branch is **P3-F02**; surface present owned by P2-F08
-(未开始).
+plan current is **P3-F02**; surface present owned by P2-F08 (未开始).
 Phase 2 exit remains open.
 
 ## Reference behavior (C++)

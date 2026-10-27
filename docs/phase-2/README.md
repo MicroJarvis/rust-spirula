@@ -32,8 +32,8 @@ record per-platform unsupported evidence (command, environment, reason);
 that record does **not** mark P2-F08 complete and does **not** automatically
 lower or close the Phase 2 exit — any written exit adjustment needs a
 separate review and must not substitute unsupported, software paint, or
-readback for present verification. Plan current work on this branch is
-**P3-F02** (P3-F01 complete here). Phase 2
+readback for present verification. Plan current work is **P3-F02**
+(P3-F01 landed on main). Phase 2
 diagnose/smoke remain separate from presentation; train/preview/P6-F03 stay
 unwired. P2-F05 diagnostics stay GPU-local (P6-F01 owns application session
 history). Real host OOM remains unsupported; the 60 s stall watchdog stays

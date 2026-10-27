@@ -124,17 +124,14 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
 
-Phase 3 执行要点（2026-10-27 评审；本分支已合入 main `9a818ba` 文档基线）：
+Phase 3 执行要点（2026-10-27 评审；P3-F01 已落地 main）：
 
-- **P3-F01 在本分支为已完成（独立 READY）**：代码 tip
+- **P3-F01 已完成（独立 READY 后落地）**：代码 tip
   `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立审查 READY
-  `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；契约
+  `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；集成 tip `a35a384`；契约
   [phase-3/camera.md](phase-3/camera.md)。`fixtures/camera/cpp-golden/camera_math.json`
-  已连同字节数与 SHA-256 登记进**本分支** `fixtures/manifest.json`。计划当前
-  为 **P3-F02**（未完成；另有 `codex/p3-f02` worktree，**HOLD** 未并入本分支）。
-  **main 尚未接收本分支**：main tip `9a818ba` 仍可能显示 P3-F01 为计划当前 /
-  HOLD-MERGE——那是 main-vs-branch 区别，不是重新打开 READY。落地合并前不得
-  把分支内 golden 误记为 main 已有，也不得在 main 上单独补登记替代合并。
+  已连同字节数与 SHA-256 登记进 `fixtures/manifest.json`。计划当前为
+  **P3-F02**（未完成；`codex/p3-f02` worktree 另线 **HOLD**，不在本收尾范围）。
 - **P3-F03 是数据侧关键路径**，P3-F04、P3-F08、P5-F08、P4-F01 以及 P5/P6 的
   大部分真实流程都经由它。P3-F02 与 P3-F03 应优先并行推进；P3-F05、P3-F06
   不得排在 P3-F03 之前阻塞主线。
@@ -247,10 +244,10 @@ P3-F01；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surf
 2. P2-F01–P2-F07（已完成）：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07（已完成，tip `82adae0eebbb1f1a0f20ddfec1d7dd824ae7006c`）：
    验证 Slint 显示及每帧复制成本；不宣称零复制 / surface present。
-4. P3-F01（本分支已完成，tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；契约
-   [phase-3/camera.md](phase-3/camera.md)）→ **P3-F02（当前，未完成）**–P3-F08：
-   图像方向/mask、微型数据集、格式和有界加载继续各自前置。正交在参考中无
-   `CameraModelType` → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；CPU
+4. P3-F01（已完成并落地，tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；契约
+   [phase-3/camera.md](phase-3/camera.md)）→ **P3-F02（当前，未完成 / HOLD）**–
+   P3-F08：图像方向/mask、微型数据集、格式和有界加载继续各自前置。正交在参考
+   中无 `CameraModelType` → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；CPU
    host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
    original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**：P5-F08、
    P4-F01 以及几乎所有 P3 后续编号都直接或间接依赖它，应与 P3-F02 并行优先
@@ -397,21 +394,19 @@ Linux 同路径实现但本 tip **未**主机实测；Windows publish **unsuppor
 application→gpu 窄边；readback→Slint `Image`；CUA 可见软件绘制；
 app `software_paint` notifier 在 Unsupported 时仍 unverified；复制字节与
 host produce→deliver 已测；**进程 CPU 总峰值未测**；不宣称零复制 /
-wgpu surface present）。**本分支 P3-F01 已完成**（tip
+wgpu surface present）。**P3-F01 已完成并落地 main**（代码 tip
 `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立 READY
-`/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；契约
+`/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；集成 tip `a35a384`；契约
 [phase-3/camera.md](phase-3/camera.md)；C-DATA-11..14；pin `9a24f099…` +
 `tools/camera-golden` / holdout；正交 AD-P3-F01-01 unsupported；active
-source `-1` vs original metadata；golden 已在本分支 manifest 登记）。按原路线
-**当前功能为 P3-F02**（未完成；`codex/p3-f02` 另线 HOLD，不在本提交范围）。
+source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
+登记）。按原路线 **当前功能为 P3-F02**（未完成；`codex/p3-f02` 另线 HOLD）。
 **诚实边界**：P2-F01–P2-F07 与 P6-F07 tip 全部完成 **不** 等于 Phase 2
 出口通过——surface present 仍未验证（**P2-F08 未开始**）；正式 UI /
 train/preview / P6-F03 导航未接入；不声称真实硬件 OOM；60 s watchdog 仍
-deferred。本分支相对 main tip `9a818ba` 仍未落地合并——main 文档可能仍写
-P3-F01 为计划当前 / HOLD-MERGE；那是 main-vs-branch 区别，不是重新打开
-READY。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+deferred。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与正式 UI 实现状态没有因
-P6-F07 tip 而提前完成。
+P6-F07 tip 或 P3-F01 落地而提前完成。
 
 2026-10-27 计划评审新增 **P2-F08（wgpu surface present 验证）**，编号总数
 由 74 增至 75（此前文档中的“74 编号”仅保留该日之前的历史含义）。原因：

@@ -150,19 +150,17 @@ refer to [fixtures.md](fixtures.md).
   application channels (P1-F07), and CLI SIGINT (P1-F09). Actual training
   checkpoints and complete UI integration remain P5-F06/P6-F01, so the row
   stays `进行中`.
-- `C-DATA-11`..`C-DATA-14` are **已完成** under P3-F01 on this branch (code tip
-  `37b7a73…`; READY `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`;
+- `C-DATA-11`..`C-DATA-14` are **已完成** under P3-F01 (code tip `37b7a73…`;
+  READY `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`; landed on main;
   [phase-3/camera.md](../phase-3/camera.md)): four models, three tiers with
   demote/promote, CameraMath (incl. `pixel_ray` / Jacobian / panorama),
   SourceCamera, DistortionFit Chebyshev+LM+Lawson+ladder+auto FOV with
-  pin `9a24f099…` / `tools/camera-golden` holdouts, branch
+  pin `9a24f099…` / `tools/camera-golden` holdouts,
   `fixtures/manifest.json` registration for
   `camera/cpp-golden/camera_math.json`, and active source `-1` vs original
   metadata. Orthographic remains explicitly unsupported
   (AD-P3-F01-01 / `SP-INP-004`). CPU host goldens stay authoritative vs later
-  GPU tolerances. P1 pinhole API/goldens unchanged. Until this branch merges,
-  main tip `9a818ba` still shows those rows as `未开始`/`进行中` — that is
-  the main-vs-branch distinction, not a reopen of the READY tip.
+  GPU tolerances. P1 pinhole API/goldens unchanged.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.

@@ -238,11 +238,9 @@ owner of that remaining condition** (未开始; unsupported host records and
 software paint must not be read as present completion or as an automatic
 lowering of the Phase 2 exit; see
 [phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)).
-Train/preview and P6-F03 navigation remain unwired. On this branch P3-F01 is
-**已完成** (tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`; see
+Train/preview and P6-F03 navigation remain unwired. P3-F01 is **已完成**
+(landed on main; code tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`; see
 [phase-3/camera.md](phase-3/camera.md): four models / three tiers / CameraMath
 goldens / SourceCamera + DistortionFit LM/Lawson/ladder; orthographic
 explicitly unsupported; active source `-1` vs original metadata). Plan
-current work is **P3-F02**. Until this branch lands on main, main tip
-`9a818ba` still records P3-F01 as plan-current / HOLD-MERGE — that is a
-main-vs-branch distinction, not a reopen of the READY tip.
+current work is **P3-F02**.

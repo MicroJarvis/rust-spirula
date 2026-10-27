@@ -5,7 +5,7 @@ Owner: `spirula-gpu`. Builds on [gpu-pipelines.md](gpu-pipelines.md) (affine
 compute), [gpu-diagnostics.md](gpu-diagnostics.md). Packaging is P2-F07
 (已完成; [cli-package.md](cli-package.md)); application session / train / UI
 stay later. Phase 2 exit remains open (surface present owned by P2-F08);
-plan current on this branch is **P3-F02**.
+plan current is **P3-F02**.
 
 **Scope narrowed 2026-10-27:** real surface present verification moved to
 **P2-F08**. This feature's surface deliverable is only the honest unsupported
@@ -92,4 +92,4 @@ reproducible checks; machine `/tmp` logs are sample runs, not the sole evidence.
 - Not real hardware OOM; not 60 s stall watchdog.
 - Not C++ saxpy/iota/sortscan parity; affine proof is the compute smoke kernel.
 - Phase 2 exit is **not** closed (surface present still unverified; owned by
-  P2-F08); plan current on this branch is **P3-F02**.
+  P2-F08); plan current is **P3-F02**.
