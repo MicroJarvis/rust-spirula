@@ -229,5 +229,5 @@ Phase 2 exit stays open while surface present remains unverified — completing
 P2-F01–P2-F07 and the P6-F07 tip does not close that exit. Train/preview and
 P6-F03 navigation remain unwired. Plan current work is **P3-F01** (HOLD-MERGE; see
 [phase-3/camera.md](phase-3/camera.md): four models / three tiers / CameraMath
-goldens / SourceCamera + redistort; DistortionFit LM pending; orthographic
+goldens / SourceCamera + DistortionFit LM/Lawson/ladder; orthographic
 explicitly unsupported).

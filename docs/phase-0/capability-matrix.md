@@ -149,12 +149,13 @@ refer to [fixtures.md](fixtures.md).
   application channels (P1-F07), and CLI SIGINT (P1-F09). Actual training
   checkpoints and complete UI integration remain P5-F06/P6-F01, so the row
   stays `进行中`.
-- `C-DATA-11`..`C-DATA-14` are **进行中** under P3-F01 HOLD
+- `C-DATA-11`..`C-DATA-14` are **进行中** under P3-F01 HOLD-MERGE
   ([phase-3/camera.md](../phase-3/camera.md)): four models, three tiers with
-  demote/promote, C++ CameraMath goldens + Rust holdout, SourceCamera project,
-  redistort decision / source-param preserve. DistortionFit Chebyshev/LM numeric
-  port remains incomplete (typed `SP-INP-004` until goldens match). Orthographic
-  is explicitly unsupported (AD-P3-F01-01). P1 pinhole API/goldens unchanged.
+  demote/promote, CameraMath (incl. `pixel_ray` / Jacobian / panorama),
+  SourceCamera, DistortionFit Chebyshev+LM+Lawson+ladder+auto FOV with
+  holdout goldens and active/original source split. Orthographic remains
+  explicitly unsupported (AD-P3-F01-01 / `SP-INP-004`). Tip stays HOLD until
+  independent READY; P1 pinhole API/goldens unchanged.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.

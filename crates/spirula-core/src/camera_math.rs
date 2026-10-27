@@ -289,7 +289,11 @@ pub fn project_ray(
     }
 }
 
-/// Pixel helpers for panorama wrap (frame-local).
+/// Frame camera (`camhost::Camera`): fitted model + optional true source lens.
+///
+/// When `source_model >= 0`, forward `ray_pixel` uses [`crate::source_project`]
+/// (source is ground truth). Fitted `model`/`tier`/`coeffs` seed
+/// [`Self::pixel_ray`] only.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameCamera {
     pub model: CameraModel,
@@ -301,6 +305,9 @@ pub struct FrameCamera {
     pub cx: f64,
     pub cy: f64,
     pub coeffs: [f64; DISTORTION_PARAMS],
+    /// Active redistort source id; `-1` = exact tier (fitted forward).
+    pub source_model: i32,
+    pub source_params: [f32; 16],
 }
 
 impl FrameCamera {
@@ -315,6 +322,25 @@ impl FrameCamera {
         cx: f64,
         cy: f64,
         coeffs: [f64; DISTORTION_PARAMS],
+    ) -> Result<Self, DomainError> {
+        Self::try_new_with_source(
+            model, tier, width, height, fx, fy, cx, cy, coeffs, -1, [0.0; 16],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new_with_source(
+        model: CameraModel,
+        tier: DistortionTier,
+        width: u32,
+        height: u32,
+        fx: f64,
+        fy: f64,
+        cx: f64,
+        cy: f64,
+        coeffs: [f64; DISTORTION_PARAMS],
+        source_model: i32,
+        source_params: [f32; 16],
     ) -> Result<Self, DomainError> {
         if width == 0 || height == 0 {
             return Err(out_of_range(
@@ -342,11 +368,13 @@ impl FrameCamera {
             cx,
             cy,
             coeffs,
+            source_model,
+            source_params,
         })
     }
 
     pub fn longitude_period(self) -> f64 {
-        if matches!(self.model, CameraModel::Equirectangular) {
+        if matches!(self.model, CameraModel::Equirectangular) && self.fx > 0.0 {
             2.0 * PI * self.fx
         } else {
             0.0
@@ -355,13 +383,14 @@ impl FrameCamera {
 
     pub fn full_longitude(self) -> bool {
         let period = self.longitude_period();
-        if period == 0.0 {
+        if period <= 0.0 || self.width == 0 {
             return false;
         }
         let w = f64::from(self.width);
-        (period - w).abs() <= 1e-5 * w.max(period)
+        (period - w).abs() <= 1e-5 * w
     }
 
+    /// Strict in-frame normalize (no pole slack) — `camhost::normalize_pixel`.
     pub fn normalize_pixel(self, px: f64, py: f64) -> Result<(f64, f64), DomainError> {
         if !(px.is_finite() && py.is_finite()) {
             return Err(out_of_range("pixel", "finite", "nonfinite"));
@@ -378,7 +407,6 @@ impl FrameCamera {
         } else {
             let period = self.longitude_period();
             if period > 0.0 && (x < 0.0 || x > w) {
-                // C++ std::remainder(x - cx, period) + cx
                 x = self.cx + remainder(x - self.cx, period);
             }
         }
@@ -388,6 +416,180 @@ impl FrameCamera {
         Ok((x, y))
     }
 
+    /// Horizontal residual with panorama wrap (`pixel_difference`).
+    pub fn pixel_difference(self, a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+        let mut dx = a.0 - b.0;
+        let dy = a.1 - b.1;
+        let period = self.longitude_period();
+        if period > 0.0 {
+            dx = remainder(dx, period);
+        }
+        (dx, dy)
+    }
+
+    /// Forward ray → pixel. Source lens is truth when `source_model >= 0`.
+    pub fn ray_pixel(self, ray: Vec3) -> Result<(f64, f64), DomainError> {
+        let (px, py) = if self.source_model >= 0 {
+            crate::source_camera::project(
+                self.source_model,
+                &self.source_params,
+                ray.x(),
+                ray.y(),
+                ray.z(),
+            )?
+        } else {
+            let (u, v) = project_ray(ray, self.model, self.tier, &self.coeffs)?;
+            (self.fx * u + self.cx, self.fy * v + self.cy)
+        };
+        if px.is_finite() && py.is_finite() {
+            Ok((px, py))
+        } else {
+            Err(out_of_range("ray_pixel", "finite", "nonfinite"))
+        }
+    }
+
+    /// Visibility with equirect pole ±1 px slack (`ray_in_frame`).
+    pub fn ray_in_frame(self, ray: Vec3) -> Result<(f64, f64), DomainError> {
+        let (mut px, py) = self.ray_pixel(ray)?;
+        let w = f64::from(self.width);
+        let h = f64::from(self.height);
+        if self.full_longitude() {
+            px %= w;
+            if px < 0.0 {
+                px += w;
+            }
+        }
+        let tol = if matches!(self.model, CameraModel::Equirectangular) {
+            1.0
+        } else {
+            0.0
+        };
+        if px >= 0.0 && px <= w && py >= -tol && py <= h + tol {
+            Ok((px, py))
+        } else {
+            Err(out_of_range(
+                "ray_in_frame",
+                "inside frame",
+                format!("{px},{py}"),
+            ))
+        }
+    }
+
+    /// Numerical projection Jacobian 2×3 (`projection_jacobian`).
+    pub fn projection_jacobian(self, ray: Vec3) -> Result<[[f64; 3]; 2], DomainError> {
+        let length = (ray.x().hypot(ray.y())).hypot(ray.z());
+        if !length.is_finite() || length <= 0.0 {
+            return Err(out_of_range("ray", "nonzero finite", format!("{length}")));
+        }
+        let step = f64::EPSILON.cbrt() * length;
+        let base = self.ray_pixel(ray)?;
+        let mut jac = [[0.0; 3]; 2];
+        for c in 0..3 {
+            let mut plus = [ray.x(), ray.y(), ray.z()];
+            let mut minus = plus;
+            plus[c] += step;
+            minus[c] -= step;
+            let pa = self.ray_pixel(Vec3::try_new(plus[0], plus[1], plus[2])?);
+            let pb = self.ray_pixel(Vec3::try_new(minus[0], minus[1], minus[2])?);
+            let (delta, divisor) = match (pa, pb) {
+                (Ok(a), Ok(b)) => (self.pixel_difference(a, b), 2.0 * step),
+                (Ok(a), Err(_)) => (self.pixel_difference(a, base), step),
+                (Err(_), Ok(b)) => (self.pixel_difference(base, b), step),
+                (Err(_), Err(_)) => {
+                    return Err(invalid("projection_jacobian", "both FD steps failed"));
+                }
+            };
+            jac[0][c] = delta.0 / divisor;
+            jac[1][c] = delta.1 / divisor;
+            if !(jac[0][c].is_finite() && jac[1][c].is_finite()) {
+                return Err(out_of_range("jacobian", "finite", "nonfinite"));
+            }
+        }
+        Ok(jac)
+    }
+
+    /// Fitted inverse seed + source-forward refine (`pixel_ray`).
+    pub fn pixel_ray(self, input_px: f64, input_py: f64) -> Result<Vec3, DomainError> {
+        if !(self.fx.is_finite() && self.fx > 0.0 && self.fy.is_finite() && self.fy > 0.0) {
+            return Err(out_of_range("focal", "positive", "invalid"));
+        }
+        let (px, py) = self.normalize_pixel(input_px, input_py)?;
+        let mut ray = generate_ray(
+            (px - self.cx) / self.fx,
+            (py - self.cy) / self.fy,
+            self.model,
+            self.tier,
+            &self.coeffs,
+        )?;
+        const CONVERGED: f64 = 1e-6;
+        const ACCEPTABLE: f64 = 1e-3;
+        for _ in 0..32 {
+            let projected = self.ray_pixel(ray)?;
+            let delta = self.pixel_difference(projected, (px, py));
+            let residual = delta.0.hypot(delta.1);
+            if residual < CONVERGED {
+                break;
+            }
+            let Ok(jac) = self.projection_jacobian(ray) else {
+                break;
+            };
+            let mut xx = 0.0;
+            let mut xy = 0.0;
+            let mut yy = 0.0;
+            for (jx, jy) in jac[0].iter().zip(jac[1].iter()) {
+                xx += jx * jx;
+                xy += jx * jy;
+                yy += jy * jy;
+            }
+            let det = xx * yy - xy * xy;
+            if det <= 1e-12 * xx * yy {
+                break;
+            }
+            let u = (yy * delta.0 - xy * delta.1) / det;
+            let v = (xx * delta.1 - xy * delta.0) / det;
+            let mut improved = false;
+            for trial in 0..12 {
+                let scale = (-(trial as f64)).exp2();
+                let cand = Vec3::try_new(
+                    ray.x() - scale * (jac[0][0] * u + jac[1][0] * v),
+                    ray.y() - scale * (jac[0][1] * u + jac[1][1] * v),
+                    ray.z() - scale * (jac[0][2] * u + jac[1][2] * v),
+                );
+                let Ok(cand) = cand else {
+                    continue;
+                };
+                let mut l = (cand.x().hypot(cand.y())).hypot(cand.z());
+                if l < 1e-12 {
+                    l = 1.0;
+                }
+                let Ok(cand) = Vec3::try_new(cand.x() / l, cand.y() / l, cand.z() / l) else {
+                    continue;
+                };
+                let Ok(next) = self.ray_pixel(cand) else {
+                    continue;
+                };
+                let rem = self.pixel_difference(next, (px, py));
+                if rem.0.hypot(rem.1) >= residual {
+                    continue;
+                }
+                ray = cand;
+                improved = true;
+                break;
+            }
+            if !improved {
+                break;
+            }
+        }
+        let projected = self.ray_pixel(ray)?;
+        let delta = self.pixel_difference(projected, (px, py));
+        if delta.0.hypot(delta.1) >= ACCEPTABLE {
+            return Err(invalid("pixel_ray", "residual above acceptance"));
+        }
+        let _ = self.ray_in_frame(ray)?;
+        Ok(ray)
+    }
+
+    /// Seed-only ray (no source refine) — kept for simple callers.
     pub fn pixel_to_ray(self, px: f64, py: f64) -> Result<Vec3, DomainError> {
         let (x, y) = self.normalize_pixel(px, py)?;
         let u = (x - self.cx) / self.fx;

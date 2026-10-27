@@ -1,9 +1,9 @@
 # P3-F01: camera projection and coordinate conventions
 
-Status: **当前 / HOLD-MERGE** (tip in progress). Owners: `spirula-core`
-(pure `f64` math), `spirula-io` (fixture / serialization only). Builds on
-P1-F04 pinhole + OpenCV prefix. **Not** dataset parsers (P3-F03+), UI, train,
-or GPU projection.
+Status: **当前 / HOLD-MERGE** (implementation tip; await independent READY).
+Owners: `spirula-core` (pure `f64` math), `spirula-io` (fixture /
+serialization only). Builds on P1-F04 pinhole + OpenCV prefix. **Not**
+dataset parsers (P3-F03+), UI, train, or GPU projection.
 
 Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 (`CameraModel.h`, `CameraMath.h/.cpp`, `SourceCamera.h/.cpp`,
@@ -15,8 +15,8 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 |---|---|
 | C-DATA-11 | `CameraModel::{Pinhole,Fisheye,Equisolid,Equirectangular}` |
 | C-DATA-12 | `DistortionTier::{None,OpenCv,ThinPrism}`; 8-wide slots; demote/promote |
-| C-DATA-13 | `SourceCamera` forward project + `kExactFitPx=0.1` redistort decision; `fit_camera` / `fit_camera_auto` port (fixture-backed) |
-| C-DATA-14 | OpenGL c2w (existing pose) + CV +Z rays / normalized coords; distort / undistort Newton / generate_ray / project_ray / panorama wrap helpers |
+| C-DATA-13 | `SourceCamera` forward project; `fit_camera` / `fit_camera_auto` (Chebyshev + LM + Lawson; ladder `FF→3F→33→03→01→00`; auto halfFOV 60°/70°); `kExactFitPx=0.1` redistort; active source `-1` vs original metadata |
+| C-DATA-14 | OpenGL c2w (existing pose) + CV +Z rays / normalized coords; distort / undistort Newton / generate_ray / project_ray; `FrameCamera` panorama wrap, `pixel_ray` / `projection_jacobian` / `ray_pixel` (source = forward truth) |
 
 ## AD-P3-F01-01 — orthographic
 
@@ -30,6 +30,7 @@ projection path.
 request (`SP-INP-004` / typed reject). It is **not** silently dropped from the
 acceptance list and **not** invented as a Rust-only camera without a reference
 numeric contract. Revisit only with a pinned reference behavior + fixtures.
+**74 plan IDs unchanged.**
 
 ## AD-P3-F01-02 — CPU math vs GPU tolerance
 
@@ -48,8 +49,33 @@ goldens to match GPU.
 - Shared test entry: load C++-generated goldens under
   `fixtures/camera/cpp-golden/` and holdout cases; Rust must not self-mint the
   only authority numbers.
-- C++ harness: `tools/camera-golden/` compiles **read-only** reference `.cpp`
-  files; never patches the reference repo; no CUDA / direct Vulkan.
+- C++ harness: `tools/camera-golden/` compiles **git-archive pin export**
+  (repo-relative `../spirula-studio` via `git-common-dir`, or
+  `SPIRULA_REFERENCE_REPO`); never patches the reference repo; no CUDA /
+  direct Vulkan; `bin/` gitignored.
+
+## CameraMath review notes (parity)
+
+- `undistort_lens`: 8 Newton iters, FD step `1e-5`, det break `1e-12`, final
+  residual **`< 0.01`**. Distinct from `valid_distortion` Jacobian bound
+  `0.25 < min(det,j00,j11) < 4` + outward dot ≥ 0.
+- Wide `project_ray` uses `atan2(rxy, z)` (negative Z allowed for fisheye /
+  equisolid past 90°).
+- Panorama: `normalize_pixel` has **no** pole slack; `ray_in_frame` allows
+  ±1 px vertical; full-longitude tol `abs(2πfx−width)≤1e-5·width`;
+  `pixel_difference` wraps by `2πfx` (799↔1 at width 800 → Δx = −2).
+- `pixel_ray`: fitted model is inverse **seed** only; `source_model ≥ 0`
+  makes `ray_pixel` / refine use SourceCamera as ground truth.
+
+## DistortionFit review notes (parity)
+
+- Domain: first growing branch only (128 az, 48 coarse, 40 bisect).
+- Report on independent uniform `(2n+1)` grid + 512 near-rim holdout — not
+  training residual alone.
+- Ladder masks `0xFF → 0x3F → 0x33 → 0x03 → 0x01 → 0x00`; auto picks pinhole
+  iff halfFOV < 60°, fish always, equisolid iff > 70°; stop when max ≤ 0.1 px.
+- Exact fit clears **active** redistort source to `-1` while
+  `FittedWithSource::original_source_model` + `source_params` stay.
 
 ## Coefficient slots (per-tier)
 
@@ -78,5 +104,5 @@ existing `fixtures/golden/camera.json` numbers. New models are additive.
 
 - Not P3 dataset parsers; not redistort GPU kernels; not Slint; not train.
 - Not Phase 2 surface present; not orthographic numeric support.
-- Not marking P3-F01 **已完成** until independent READY + full C-DATA-11..14
-  evidence (this doc stays HOLD meanwhile).
+- Not marking P3-F01 **已完成** until independent READY + firm Validation;
+  this tip stays HOLD-MERGE (no merge / push / pull from this worktree).
