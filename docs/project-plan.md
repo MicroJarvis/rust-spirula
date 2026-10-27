@@ -99,18 +99,20 @@ Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU
 | P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 已完成 |
 | P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F03 | WGSL 版本和 bind/uniform layout；pipeline key/错误；以真实 compute 验证窄资源封装与 shader 接口 | layout/对齐及缓存失效可测；编译失败带位置；与 P2-F03 共同证明 GPU 边界可执行 | 已完成 |
 | P2-F05 | GPU 错误与诊断事件 | `spirula-gpu` | P2-F02–P2-F04 | 包裹 error scope 和提交错误；把 device lost 转成 typed error；发布带资源标签的诊断事件 | error scope、设备丢失和提交失败转为 typed error/event | 已完成 |
-| P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；编写最小 surface smoke test；记录设备、backend 和跳过原因 | 无窗口 compute 测试和最小 surface 测试在支持设备上可复现 | 已完成 |
+| P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；记录设备、backend 和跳过原因；surface 只保留诚实 unsupported 门禁（不伪造窗口），present 验证移交 P2-F08 | 无窗口 compute 测试在支持设备上可复现；surface 不得伪造 present 成功 | 已完成 |
 | P2-F07 | 最小 CLI 包与隔离启动 | workspace/`spirula-xtask` | P2-F06, P1-F09 | 从干净 checkout 构建可携带 CLI 包；记录版本/hash/运行库；在无源码隔离目录运行 help/能力诊断及微型 GPU smoke | 包内入口可启动；真实设备 smoke 或明确硬件缺失；P4-F06/P5-F07 继续加入真实业务样本 | 已完成 |
+| P2-F08 | wgpu surface present 验证 | `spirula-gpu` | P2-F01–P2-F05 | 最小真实窗口 surface；`Surface::get_capabilities(&adapter)` 协商 format/present mode；`get_current_texture`→`CurrentSurfaceTexture`（Success/Suboptimal/Timeout/Occluded/Outdated/Lost/Validation）；`Queue::present` 提交；分层证据：像素校验 ≠ present 调用 ≠ 真实窗口可见性；可见性须可重复已知图案窗口证据或受支持平台合成器反馈（写明限度）；texture readback 不能关闭本编号 | 真实窗口下 Layer C 可见性成立才可关闭本编号；主机无法 present/无法提供可见性证据时必须按平台精确记录 unsupported（命令/环境/原因），但 **unsupported 不得冒充本编号已完成，也不得自动降低 Phase 2 出口标准**；不得用 software paint 或 readback 冒充 present；Phase 2 出口仍以本编号的可见性证据或另行书面决策为准 | 未开始 |
 
-Phase 2 退出条件：P2-F01 至 P2-F07 有真实设备或不可用证据，目标开发机
-compute/surface smoke 通过，窄资源封装与最小 CLI 包可运行；不支持的 adapter、
-shader 错误和 device lost 均有稳定错误。随后提前执行 P6-F07 显示路径验证。
+Phase 2 出口条件：P2-F01 至 P2-F08 有真实设备或不可用证据，目标开发机
+compute smoke 通过、窄资源封装与最小 CLI 包可运行；不支持的 adapter、
+shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 判定**
+（P2-F06 的 unsupported 门禁不计为通过）。随后提前执行 P6-F07 显示路径验证。
 
 ### Phase 3：数据与场景兼容
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P3-F01 | 相机投影与坐标约定 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 实现透视、正交、全景和畸变参数；固定坐标系和单位；对比参考投影数值与边界相机 | 迁移投影、畸变、全景和坐标系；fixture 数值与参考一致 | 已完成 |
+| P3-F01 | 相机投影与坐标约定 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 实现透视、全景和畸变参数；固定坐标系和单位；对比参考投影数值与边界相机。正交在参考 `CameraModelType` 中不存在 → 按 AD-P3-F01-01 显式 unsupported，不发明无参考契约的模型 | 迁移投影、畸变、全景和坐标系；fixture 数值与参考一致；正交返回 `SP-INP-004` 而非静默丢弃 | 已完成 |
 | P3-F02 | 图像方向与 mask | `spirula-io` | P1-F02 | 读取图像尺寸和 EXIF 方向；规范化 mask 尺寸与通道；测试缺失、旋转和非法元数据 | 处理图像元数据、EXIF 方向和 mask；非法元数据有稳定错误 | 当前 |
 | P3-F03 | COLMAP 数据集读取 | `spirula-io` | P0-F02, P0-F04 | 解析 COLMAP 相机和图像表；解析点云与关联关系；用 golden fixture 验证单位和 round-trip | 读取相机、图像和点云；round-trip 或 golden fixture 通过 | 未开始 |
 | P3-F04 | Nerfstudio/Metashape 适配 | `spirula-io` | P3-F03 | 识别 Nerfstudio/Metashape 版本；映射相机和图像字段；记录缺失字段、默认值和格式差异 | 兼容读取并记录格式差异、缺失字段和迁移策略 | 未开始 |
@@ -121,6 +123,23 @@ shader 错误和 device lost 均有稳定错误。随后提前执行 P6-F07 显�
 
 Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
+
+Phase 3 执行要点（2026-10-27 评审；本分支已合入 main `9a818ba` 文档基线）：
+
+- **P3-F01 在本分支为已完成（独立 READY）**：代码 tip
+  `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立审查 READY
+  `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；契约
+  [phase-3/camera.md](phase-3/camera.md)。`fixtures/camera/cpp-golden/camera_math.json`
+  已连同字节数与 SHA-256 登记进**本分支** `fixtures/manifest.json`。计划当前
+  为 **P3-F02**（未完成；另有 `codex/p3-f02` worktree，**HOLD** 未并入本分支）。
+  **main 尚未接收本分支**：main tip `9a818ba` 仍可能显示 P3-F01 为计划当前 /
+  HOLD-MERGE——那是 main-vs-branch 区别，不是重新打开 READY。落地合并前不得
+  把分支内 golden 误记为 main 已有，也不得在 main 上单独补登记替代合并。
+- **P3-F03 是数据侧关键路径**，P3-F04、P3-F08、P5-F08、P4-F01 以及 P5/P6 的
+  大部分真实流程都经由它。P3-F02 与 P3-F03 应优先并行推进；P3-F05、P3-F06
+  不得排在 P3-F03 之前阻塞主线。
+- P3-F01 只交付 CPU `f64` 投影与相机数学；GPU/WGSL 投影和可微投影 Jacobian
+  分别属于 P4-F01/P4-F09，不得用本功能的结果声称渲染或训练已就绪。
 
 ### Phase 4：渲染与可微内核
 
@@ -228,20 +247,30 @@ P3-F01；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surf
 2. P2-F01–P2-F07（已完成）：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07（已完成，tip `82adae0eebbb1f1a0f20ddfec1d7dd824ae7006c`）：
    验证 Slint 显示及每帧复制成本；不宣称零复制 / surface present。
-4. P3-F01（已完成，tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；契约
-   [phase-3/camera.md](phase-3/camera.md)）→ P3-F02–P3-F08：相机已交付；
+4. P3-F01（本分支已完成，tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；契约
+   [phase-3/camera.md](phase-3/camera.md)）→ **P3-F02（当前，未完成）**–P3-F08：
    图像方向/mask、微型数据集、格式和有界加载继续各自前置。正交在参考中无
    `CameraModelType` → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；CPU
    host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
-   original metadata。
+   original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**：P5-F08、
+   P4-F01 以及几乎所有 P3 后续编号都直接或间接依赖它，应与 P3-F02 并行优先
+   推进，不排在 P3-F05/F06 之后。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
 7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。
 8. P5-F05/P5-F06 → P5-F07：完整检查点、新进程恢复与微型训练包。
 9. P6-F01–P6-F06：完善业务集成、完整 CLI 和 Slint，共享同一会话。
-10. P7-F01–P7-F07：编辑、网格、分块 splat 导出和其他导出。
-11. P8-F07 → P8-F01/P8-F05，再按前置推进 P8-F02–P8-F04/P8-F06。
-12. P9-F01–P9-F05：汇总平台、质量/性能与完整发布；各功能的资源/数值测量已在此前执行。
+10. **P2-F08（surface present 验证）**：与第 4–9 步并行，不阻塞数据/渲染/训练
+    主线；它是 Phase 2 出口的唯一剩余条件，越晚验证，P4-F06 和 P6-F03 的显示
+    假设越可能返工。验收须分开像素校验、`Queue::present` 提交与真实窗口
+    可见性；readback 不能关闭本编号。若目标开发机无法提供真实窗口 present
+    或 Layer C 可见性证据，必须按平台记录 unsupported（命令/环境/原因）；
+    **该记录不等于 P2-F08 已完成，也不自动降低或关闭 Phase 2 出口**——任何
+    出口书面调整须另行审查，且不得用 unsupported、software paint 或 readback
+    偷换 present 验收。
+11. P7-F01–P7-F07：编辑、网格、分块 splat 导出和其他导出。
+12. P8-F07 → P8-F01/P8-F05，再按前置推进 P8-F02–P8-F04/P8-F06。
+13. P9-F01–P9-F05：汇总平台、质量/性能与完整发布；各功能的资源/数值测量已在此前执行。
 
 ## 5. 单个功能点的完成标准
 
@@ -368,16 +397,29 @@ Linux 同路径实现但本 tip **未**主机实测；Windows publish **unsuppor
 application→gpu 窄边；readback→Slint `Image`；CUA 可见软件绘制；
 app `software_paint` notifier 在 Unsupported 时仍 unverified；复制字节与
 host produce→deliver 已测；**进程 CPU 总峰值未测**；不宣称零复制 /
-wgpu surface present）。**P3-F01 已完成**（tip
+wgpu surface present）。**本分支 P3-F01 已完成**（tip
 `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立 READY
 `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`；契约
 [phase-3/camera.md](phase-3/camera.md)；C-DATA-11..14；pin `9a24f099…` +
 `tools/camera-golden` / holdout；正交 AD-P3-F01-01 unsupported；active
-source `-1` vs original metadata）。按原路线 **当前功能为 P3-F02**（74
-编号不变）。
+source `-1` vs original metadata；golden 已在本分支 manifest 登记）。按原路线
+**当前功能为 P3-F02**（未完成；`codex/p3-f02` 另线 HOLD，不在本提交范围）。
 **诚实边界**：P2-F01–P2-F07 与 P6-F07 tip 全部完成 **不** 等于 Phase 2
-出口通过——surface present 仍未验证；正式 UI / train/preview / P6-F03 导航
-未接入；不声称真实硬件 OOM；60 s watchdog 仍 deferred。
-2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+出口通过——surface present 仍未验证（**P2-F08 未开始**）；正式 UI /
+train/preview / P6-F03 导航未接入；不声称真实硬件 OOM；60 s watchdog 仍
+deferred。本分支相对 main tip `9a818ba` 仍未落地合并——main 文档可能仍写
+P3-F01 为计划当前 / HOLD-MERGE；那是 main-vs-branch 区别，不是重新打开
+READY。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与正式 UI 实现状态没有因
 P6-F07 tip 而提前完成。
+
+2026-10-27 计划评审新增 **P2-F08（wgpu surface present 验证）**，编号总数
+由 74 增至 75（此前文档中的“74 编号”仅保留该日之前的历史含义）。原因：
+P2-F06 的验收文字要求“最小 surface 测试在支持设备上可复现”，但该功能诚实
+交付的是 unsupported 门禁，没有任何编号负责真正验证 present，导致 Phase 2
+出口缺少负责人而无限期挂起。P2-F08 接手该责任，P2-F06 的验收文字同步收窄。
+既有编号不重排、不复用；P2-F08 追加在 P2 末尾。unsupported 证据不能偷换
+功能完成，也不能自动降低 Phase 2 出口标准。契约钉死 wgpu 30.0.1：
+`Surface::get_capabilities`、`CurrentSurfaceTexture` 全分支、`Queue::present`
+返回 `()`；可见性证据与像素 readback 分离，见
+[phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)。

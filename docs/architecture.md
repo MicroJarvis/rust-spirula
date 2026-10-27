@@ -125,7 +125,14 @@ stable `SP-GPU-*` with a GPU-local bounded diagnostic ring and latched
 post-submit wait failures (not application session history; P6-F01). Surface
 smoke is P2-F06 (已完成): headless affine compute smoke with Fail reclaim, plus
 an honest surface **unsupported** gate that will not forge a window
-(`spirula-gpu-smoke`; present not verified). Packaging is P2-F07 (已完成;
+(`spirula-gpu-smoke`; present not verified). **P2-F08 owns real surface present
+verification** (added 2026-10-27): real-window surface config,
+`Surface::get_capabilities` + format/present-mode negotiation,
+`CurrentSurfaceTexture` policy, and Layer C visibility evidence (readback or
+`Queue::present` alone is not enough; surface vs device loss distinct) — the
+only remaining Phase 2 exit condition
+([phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)).
+Packaging is P2-F07 (已完成;
 [phase-2/cli-package.md](phase-2/cli-package.md)). Presentation (P6-F07) owns a
 transient GPU context for probe frames; diagnose/smoke/train/preview remain
 separate. Real host OOM
@@ -226,10 +233,16 @@ add real workflow samples; P9-F04 covers signed multi-platform installers.
 P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
 versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
 Phase 2 exit stays open while surface present remains unverified — completing
-P2-F01–P2-F07 and the P6-F07 tip does not close that exit. Train/preview and
-P6-F03 navigation remain unwired. P3-F01 is **已完成** (tip
-`37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`; see
+P2-F01–P2-F07 and the P6-F07 tip does not close that exit; **P2-F08 is the
+owner of that remaining condition** (未开始; unsupported host records and
+software paint must not be read as present completion or as an automatic
+lowering of the Phase 2 exit; see
+[phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)).
+Train/preview and P6-F03 navigation remain unwired. On this branch P3-F01 is
+**已完成** (tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`; see
 [phase-3/camera.md](phase-3/camera.md): four models / three tiers / CameraMath
 goldens / SourceCamera + DistortionFit LM/Lawson/ladder; orthographic
 explicitly unsupported; active source `-1` vs original metadata). Plan
-current work is **P3-F02**.
+current work is **P3-F02**. Until this branch lands on main, main tip
+`9a818ba` still records P3-F01 as plan-current / HOLD-MERGE — that is a
+main-vs-branch distinction, not a reopen of the READY tip.

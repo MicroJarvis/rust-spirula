@@ -7,7 +7,7 @@ READY `/tmp/spirula-p6-f07-review/REVIEW-final-82adae0.md`; parent fullverify
 resources, P2-F05 diagnostics, P2-F06 smoke honesty, P1-F07 session ownership,
 P1-F08 measurement vocabulary. **Not** P6-F03 navigation / full shell;
 train/preview remain unwired. Phase 2 exit stays open (surface present still
-unverified). **Software renderer path must not close the wgpu surface present
+unverified; **P2-F08** owns it and is 未开始). **Software renderer path must not close the wgpu surface present
 gate.**
 
 ## Architecture decision (minimal)
@@ -146,7 +146,7 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 | GPU→display present latency / compositor | **Unmeasurable** here — recorded as unavailable |
 | Process-wide CPU total peak | **Not measured** in this tip |
 | Zero-copy / shared texture | **Not claimed** |
-| wgpu surface present | **Unverified** — P2-F06 honest unsupported gate remains open |
+| wgpu surface present | **Unverified** — owned by **P2-F08** (未开始); P2-F06 honest unsupported gate is not a present pass; this tip's readback→Slint path is pixel/host upload only and cannot close P2-F08 |
 
 ## Acceptance
 
@@ -181,7 +181,8 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 
 ### Plan hygiene
 
-10. 74 plan IDs; P6-F03 remains 未开始; Phase 2 exit open. **Met.**
+10. Plan IDs stay unique/unrenumbered (P2-F08 added 2026-10-27 owns surface
+    present); P6-F03 remains 未开始; Phase 2 exit open. **Met.**
 
 ## Window evidence log
 

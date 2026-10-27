@@ -26,9 +26,12 @@ errors / diagnostic events, headless compute smoke, minimal CLI package) are
 complete; early P6-F07 (Slint/wgpu display-path;
 [docs/phase-6/presentation-path.md](docs/phase-6/presentation-path.md)) is
 complete; P3-F01 (camera projection / coordinates;
-[docs/phase-3/camera.md](docs/phase-3/camera.md)) is complete; the current
-feature is **P3-F02**. Phase 2 exit is not closed
-(surface present still unverified). Phase 0 evidence is in
+[docs/phase-3/camera.md](docs/phase-3/camera.md)) is complete on this branch;
+the current feature is **P3-F02**. Phase 2 exit is not closed
+(surface present still unverified) — **P2-F08** owns that remaining condition
+and is the only unstarted Phase 2 ID
+([docs/phase-2/gpu-surface-present.md](docs/phase-2/gpu-surface-present.md)).
+Phase 0 evidence is in
 [docs/phase-0/exit-report.md](docs/phase-0/exit-report.md).
 Phase 1 records are in
 [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
