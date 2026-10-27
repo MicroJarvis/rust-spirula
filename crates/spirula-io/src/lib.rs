@@ -6,12 +6,15 @@
 //! Checkpoint bundle schema and completion markers stay in P5-F05.
 
 pub mod atomic;
+pub mod camera_catalog;
 pub mod config_fs;
 pub mod fixtures;
 pub mod hash;
 pub mod perf;
 pub mod sample_workload;
 pub mod temp_harness;
+
+pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entry};
 
 pub use atomic::{
     PublishLease, PublishOptions, PublishOutcome, acquire_publish_lease, is_publish_temp,

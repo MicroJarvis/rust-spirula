@@ -228,7 +228,10 @@ Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface prese
 2. P2-F01–P2-F07（已完成）：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07（已完成，tip `82adae0eebbb1f1a0f20ddfec1d7dd824ae7006c`）：
    验证 Slint 显示及每帧复制成本；不宣称零复制 / surface present。
-4. P3-F01–P3-F08（P3-F01 当前）：相机、微型数据集、格式和有界加载；先完成各自前置。
+4. P3-F01–P3-F08（P3-F01 当前 / HOLD-MERGE；契约
+   [phase-3/camera.md](phase-3/camera.md)）：相机、微型数据集、格式和有界加载；
+   先完成各自前置。正交在参考中无 `CameraModelType` → AD-P3-F01-01 显式
+   unsupported；DistortionFit LM 未齐前不得标 P3-F01 已完成。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
 7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。

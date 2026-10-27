@@ -28,6 +28,13 @@ pub(crate) fn out_of_range(field: &str, expected: &str, actual: impl Into<String
     .expect("actual")
 }
 
+pub(crate) fn unimplemented_opt(field: &str, message: impl Into<String>) -> DomainError {
+    DomainError::try_new(ErrorCode::UnimplementedOption, message)
+        .expect("message")
+        .with_context(ContextKey::Field, field)
+        .expect("field")
+}
+
 fn finite(value: f64) -> bool {
     value.is_finite()
 }

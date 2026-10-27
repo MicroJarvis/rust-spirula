@@ -64,9 +64,10 @@ Pinned sources: `src/data/CameraMath.h`, `src/core/CameraModel.h`,
   finite base color.
 - Golden camera pixels must match within `1e-9` px.
 
-## Deferred
+## Deferred / moved
 
 Full lens models (fisheye, equisolid, equirectangular, thin-prism, undistort
-Newton, ray generation) stay in P3-F01. Scene JSON, centering modes, and
-georeference stay in P3-F05. Splat PLY layout stays in P3-F06. This slice
-checks values; it does not parse those files.
+Newton, ray generation, source fit) moved to **P3-F01** —
+[phase-3/camera.md](../phase-3/camera.md) (HOLD). Scene JSON, centering modes,
+and georeference stay in P3-F05. Splat PLY layout stays in P3-F06. This P1
+slice keeps the pinhole + OpenCV prefix API and goldens unchanged.

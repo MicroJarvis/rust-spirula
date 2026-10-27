@@ -10,6 +10,7 @@ The format contracts and compatibility notes are in
 fixtures/
   manifest.json                       # size + SHA-256 for every file below
   camera/single_camera.json           # pinhole + OpenCV distortion
+  camera/cpp-golden/camera_math.json  # C++ CameraMath holdout (P3-F01; not in Phase-0 required set)
   config/catalog.json                 # all 251 training-config fields
   config/defaults.json                # current default document
   datasets/tiny-colmap/               # COLMAP text dataset + 64x48 PNG

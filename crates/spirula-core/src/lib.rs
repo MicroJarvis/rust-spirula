@@ -10,15 +10,19 @@
 //! `docs/phase-1/cancellation.md`. P1-F04 owns the CPU math, pinhole camera,
 //! similarity, and splat value checks described in `docs/phase-1/geometry.md`.
 //! P1-F08 owns the versioned resource/performance report contracts in
-//! `docs/phase-1/performance.md`. Full lenses, scene files, and splat files
-//! stay in P3-F01, P3-F05, and P3-F06.
+//! `docs/phase-1/performance.md`. P3-F01 owns full lens models / rays / source
+//! fit surface in `docs/phase-3/camera.md` (HOLD). Scene files and splat files
+//! stay in P3-F05 / P3-F06.
 
 mod camera;
+mod camera_math;
+mod camera_model;
 mod cancel;
 mod config;
 mod config_bind;
 mod config_doc;
 mod config_value;
+mod distortion_fit;
 mod error;
 mod json_doc;
 mod math;
@@ -26,8 +30,17 @@ mod perf;
 mod presentation;
 mod progress;
 mod scene;
+mod source_camera;
 
 pub use camera::{CameraPose, OpenCvDistortion, PinholeCamera};
+pub use camera_math::{
+    FrameCamera, distort_point, generate_ray, project_ray, undistort_lens, undistort_point,
+    valid_distortion,
+};
+pub use camera_model::{
+    CameraModel, DISTORTION_PARAMS, DistortionTier, EXACT_FIT_PX, RedistortDecision,
+    demote_distortion, has_distortion, is_compiled_pair, promote_distortion, redistort_decision,
+};
 pub use cancel::{CancelReason, CancelToken};
 pub use config::{
     ChoiceKind, FieldSpec, FieldType, TRAIN_CONFIG_FIELD_COUNT, TRAIN_CONFIG_FIELDS,
@@ -35,6 +48,10 @@ pub use config::{
 };
 pub use config_doc::{
     LoadedTrainConfig, TRAIN_CONFIG_SCHEMA_VERSION, UnknownField, field_catalog_json,
+};
+pub use distortion_fit::{
+    FitOptions, FitResult, FitTarget, FittedWithSource, K_EXACT_FIT_PX, SourceProject,
+    fallback_fisheye_none, fit_camera, fit_camera_auto,
 };
 pub use error::{
     ContextKey, DomainError, DuplicateContextKey, EXIT_CANCELED, EXIT_FAILURE, EXIT_SUCCESS,
@@ -56,3 +73,9 @@ pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,
 };
 pub use scene::{GaussianSplat, SH_C0, SceneTransform, SplatSet};
+pub use source_camera::{
+    COLMAP_DIVISION, COLMAP_EUCM, COLMAP_FOV, COLMAP_FULL_OPENCV,
+    COLMAP_RAD_TAN_THIN_PRISM_FISHEYE, COLMAP_SIMPLE_DIVISION, MAX_PARAMS, SKEW_BASE_EQUISOLID,
+    SKEW_BASE_FISHEYE, SKEW_BASE_PERSPECTIVE, SKEW_RADIAL_POLYNOMIAL, SKEW_RADIAL_RATIONAL, SKEWED,
+    project as source_project, rescale as source_rescale,
+};

@@ -12,3 +12,4 @@
 # Local development worktrees and cargo home (Phase 0)
 /.worktrees/
 /.cargo-home/
+tools/camera-golden/bin/

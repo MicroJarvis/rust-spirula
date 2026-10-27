@@ -28,9 +28,9 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-08 | masks and alpha | `DataManager.cpp:521-615`, `ImageProbe.cpp:60` | aux files / alpha | binary mask | white keeps, alpha >= 128 keeps, flip/offset optional | P3-F02 fixtures | `spirula-io` | 未开始 |
 | C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth, float maps, size mismatch resized later | P3-F02 | `spirula-io` | 未开始 |
 | C-DATA-10 | EXIF orientation | `DatasetCommon.cpp:45-70`, `ImageOrient.h` | JPEG EXIF | quarter turns | `none/orient/apply`; rotation applies to all aux maps | P3-F02 | `spirula-io` | 未开始 |
-| C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 未开始 |
-| C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 未开始 |
-| C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 未开始 |
+| C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 进行中 |
+| C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 进行中 |
+| C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 进行中 |
 | C-DATA-14 | projection/coordinate conventions | `data/CameraMath.h:1-42`, `core/CameraDistortion.cuh` | camera + point | pixel/ray | OpenGL c2w, CV +Z rays, normalized image coords | P3-F01 fixture numbers | `spirula-core` | 进行中 |
 | C-DATA-15 | scene transform serialization | `data/SceneTransform.cpp:244-331` | centering + similarity | `scene_transform.json` | all matrix/quaternion/Euler spellings; georeference block | `fixtures/scene` + P3-F05 | `spirula-core`/`spirula-io` | 进行中 |
 | C-DATA-16 | scene-center modes | `data/SceneCenter.h`, `DatasetCommon.cpp:523-545` | camera/point statistics | translation | `none/point-median/camera-median/camera-focus/point-mean/camera-mean`, `auto` resolves | P3-F05 unit tests | `spirula-core` | 未开始 |
@@ -149,10 +149,12 @@ refer to [fixtures.md](fixtures.md).
   application channels (P1-F07), and CLI SIGINT (P1-F09). Actual training
   checkpoints and complete UI integration remain P5-F06/P6-F01, so the row
   stays `进行中`.
-- `C-DATA-14` has the P0 pinhole path: OpenGL `c2w`, OpenCV `k1 k2 p1 p2`,
-  and behind-camera rejection (P1-F04). Fisheye, equisolid, equirectangular,
-  thin-prism, and ray generation stay in P3-F01, so the row stays `进行中`.
-  `C-DATA-11` through `C-DATA-13` stay `未开始`.
+- `C-DATA-11`..`C-DATA-14` are **进行中** under P3-F01 HOLD
+  ([phase-3/camera.md](../phase-3/camera.md)): four models, three tiers with
+  demote/promote, C++ CameraMath goldens + Rust holdout, SourceCamera project,
+  redistort decision / source-param preserve. DistortionFit Chebyshev/LM numeric
+  port remains incomplete (typed `SP-INP-004` until goldens match). Orthographic
+  is explicitly unsupported (AD-P3-F01-01). P1 pinhole API/goldens unchanged.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.
