@@ -664,7 +664,26 @@ fn run_image_prepare(
                 Some(&cancel),
             ) {
                 ImageWorkResult::Ready(mask) => {
-                    let kept = mask.samples.iter().filter(|&&v| v == 1).count() as u64;
+                    // Wide masks: count kept with bounded-chunk cancel ticks.
+                    let mut cp = spirula_io::CancelCheckpoint::new(Some(&cancel));
+                    let mut kept = 0u64;
+                    let mut canceled = false;
+                    for &v in &mask.samples {
+                        if cp.tick(1).is_err() {
+                            canceled = true;
+                            break;
+                        }
+                        if v == 1 {
+                            kept = kept.saturating_add(1);
+                        }
+                    }
+                    if canceled {
+                        hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+                        finish_canceled(
+                            result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+                        );
+                        return;
+                    }
                     Ok(ImagePrepareOk::Mask {
                         path,
                         width: mask.width,

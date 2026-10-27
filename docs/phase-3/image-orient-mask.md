@@ -52,18 +52,21 @@ validated at command admission and again before allocation.
 ### Cancel responsiveness (actual limits)
 
 Runtime §5 requires cancel observation at least every **250 ms** inside long
-owned CPU/GPU loops, and `ApplicationService` Drop must join the worker within
-`teardown_deadline`. Stage-boundary-only checks do **not** replace that for
-owned loops.
+owned CPU/GPU loops. Stage-boundary-only checks do **not** replace that.
+`CancelCheckpoint::poll` only observes when *called* after the interval;
+callers must `tick` (or poll) at **bounded work chunks**
+(`CANCEL_WORK_CHUNK`) so a silent wide row or area accumulation cannot
+exceed the gap. Runtime §5 also lists **per-image decode** as a declared
+checkpoint boundary — that is distinct from the owned-loop 250 ms rule.
 
 | Region | Cancel behavior |
 |---|---|
-| `image` crate decode (`load_from_memory` / TGA hinted decode) | **Non-preemptible third-party call.** No mid-decode 250 ms guarantee. Checkpoints surround the call. |
+| `image` crate decode (`load_from_memory` / TGA hinted decode) | **Non-preemptible third-party call.** Runtime §5 per-image decode checkpoint surrounds the call; **no** mid-decode 250 ms guarantee. |
 | Capped file read | One bounded read; checkpoint before/after (not mid-`read`). |
-| Owned CPU on **image prepare** path: `orient_pixels` / mask `nearest_resize_u8` / mask `cpu_resize_u8` (area or bilinear) / mask EDT | `CancelCheckpoint` polls ≥ every 250 ms (per row / column block). Returns `SP-CAN-001`. |
-| C-DATA-09 sync library only: `normalize_normal_rgb8`, `cpu_bilinear_resize_rgb8`, `turn_normal_vectors`, `normalize_depth16`, `cpu_bilinear_resize_u16` | **Not** on admitted/sync `PrepareOrientedImage` / `PrepareNormalizedMask`. No `CancelCheckpoint` today; **not** claimed for the 250 ms loop contract until wired or given cancelable variants. |
+| Owned CPU on **image prepare** path: plane extract / `orient_pixels` / mask nearest + area/bilinear resize (incl. area source accumulation) / threshold / flip / EDT row·column·1d inners / binary validation / worker kept count | `CancelCheckpoint::tick` every `CANCEL_WORK_CHUNK` work units (+ wall-clock ≥250 ms). Returns `SP-CAN-001`. |
+| C-DATA-09 sync library only: `normalize_normal_rgb8`, `cpu_bilinear_resize_rgb8`, `turn_normal_vectors`, `normalize_depth16`, `cpu_bilinear_resize_u16` | **Not** on admitted/sync prepare. No `CancelCheckpoint`; **not** claimed for the 250 ms loop contract. |
 | Worker enqueue + owner apply | Post-work cancel before `ImagePrepareDone`; owner arbitrates queued Ok/Err vs pending Stop/Shutdown under the state lock. |
-| Service Drop | Existing owner/worker `shutdown_join` within `teardown_deadline` (unchanged). |
+| Service Drop / teardown | Owner drain waits up to `teardown_deadline`, then still calls unbounded `JoinHandle::join` / `WorkerHandle::shutdown_join`. A non-preemptible decoder (or other in-flight work) can outlast the drain deadline; **Drop does not prove a hard join within `teardown_deadline`**. Forced terminals may publish after the deadline; actual worker exit is separate from the drain deadline. |
 
 Also: pre-decode StallGate (tests); wrong `ImagePrepareOk` kind vs active
 payload is stale and cannot close the command. Path extension hints are
@@ -72,10 +75,13 @@ preserved for TGA (no reliable magic): cancelable prepare uses
 path-based `decode_rgb8` / hinted mask decode). Sync + admitted TGA coverage:
 `sync_and_admitted_prepare_tga_preserves_ext_hint` and
 `sync_and_admitted_prepare_tga_mask_preserves_ext_hint` in
-`image_ops_e2e.rs`.
+`image_ops_e2e.rs`. Wide-row / downsample after-start cancel regressions live
+in `image_mask` unit tests.
 
 **HOLD:** mid-decode cancel inside the third-party decoder remains unmet
-relative to a strict 250 ms-inside-decode reading of §5; docs do not claim it.
+relative to a strict 250 ms-inside-decode reading of §5; docs do not claim
+it. Drop/join-after-deadline vs true worker exit remains honestly documented
+above — global §5 requirements are not weakened to close the feature.
 
 Events: `ImagePrepared` / `MaskPrepared`. E2E:
 `crates/spirula-application/tests/image_ops_e2e.rs`.

@@ -96,9 +96,21 @@ pub fn extract_nonzero_plane(
     height: u32,
     channels: u32,
 ) -> Result<Vec<u8>, DomainError> {
+    extract_nonzero_plane_cancelable(samples, width, height, channels, None)
+}
+
+fn extract_nonzero_plane_cancelable(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+    cancel: Option<&CancelToken>,
+) -> Result<Vec<u8>, DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
     let (px, ch) = plane_layout(samples, width, height, channels)?;
     let mut plane = vec![0u8; px];
     for (i, out) in plane.iter_mut().enumerate() {
+        cp.tick(1)?;
         let base = i * ch;
         let y = match ch {
             1 => samples[base],
@@ -119,21 +131,35 @@ pub fn extract_alpha_plane(
     height: u32,
     channels: u32,
 ) -> Result<Vec<u8>, DomainError> {
+    extract_alpha_plane_cancelable(samples, width, height, channels, None)
+}
+
+fn extract_alpha_plane_cancelable(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: u32,
+    cancel: Option<&CancelToken>,
+) -> Result<Vec<u8>, DomainError> {
+    let mut cp = CancelCheckpoint::new(cancel);
     let (px, ch) = plane_layout(samples, width, height, channels)?;
     let mut plane = vec![255u8; px];
     match ch {
         2 => {
             for i in 0..px {
+                cp.tick(1)?;
                 plane[i] = samples[i * 2 + 1];
             }
         }
         4 => {
             for i in 0..px {
+                cp.tick(1)?;
                 plane[i] = samples[i * 4 + 3];
             }
         }
         _ => {
             // L / RGB: no alpha → opaque
+            cp.tick(px.max(1))?;
         }
     }
     Ok(plane)
@@ -181,10 +207,10 @@ pub(crate) fn nearest_resize_u8_cancelable(
     let sh = src_h as i32;
     let sw = src_w as i32;
     for y in 0..dst_h {
-        cp.poll()?;
         let v = (y as f32 + 0.5) * sy - 0.5;
         let ys = ((v + 0.5).floor() as i32).clamp(0, sh - 1) as u32;
         for x in 0..dst_w {
+            cp.tick(1)?;
             let u = (x as f32 + 0.5) * sx - 0.5;
             let xs = ((u + 0.5).floor() as i32).clamp(0, sw - 1) as u32;
             dst[(y * dst_w + x) as usize] = src[(ys * src_w + xs) as usize];
@@ -248,13 +274,13 @@ fn cpu_bilinear_resize_u8(
     let sh_i = sh as i32;
     let sw_i = sw as i32;
     for y in 0..dh {
-        cp.poll()?;
         let v = (y as f32 + 0.5) * sy - 0.5;
         let y0 = v.floor() as i32;
         let fy = v - y0 as f32;
         let y0c = y0.clamp(0, sh_i - 1);
         let y1c = (y0 + 1).clamp(0, sh_i - 1);
         for x in 0..dw {
+            cp.tick(1)?;
             let u = (x as f32 + 0.5) * sx - 0.5;
             let x0 = u.floor() as i32;
             let fx = u - x0 as f32;
@@ -288,7 +314,6 @@ fn cpu_area_resize_u8(
     let sy = (sh as f64) / (dh as f64);
     let sx = (sw as f64) / (dw as f64);
     for y in 0..dh {
-        cp.poll()?;
         let v0 = f64::from(y) * sy;
         let v1 = f64::from(y + 1) * sy;
         let y0 = v0 as i32;
@@ -303,6 +328,7 @@ fn cpu_area_resize_u8(
             for yy in y0..y1 {
                 let wy = ((f64::from(yy) + 1.0).min(v1)) - (f64::from(yy).max(v0));
                 for xx in x0..x1 {
+                    cp.tick(1)?;
                     let wx = ((f64::from(xx) + 1.0).min(u1)) - (f64::from(xx).max(u0));
                     let w = wy * wx;
                     let p = src[(yy as u32 * sw + xx as u32) as usize] as f64;
@@ -334,8 +360,9 @@ pub fn normalize_mask(
     )
 }
 
-/// Like [`normalize_mask`], observing `cancel` at least every 250 ms in owned
-/// CPU loops (resize / EDT). Returns `SP-CAN-001` when canceled.
+/// Like [`normalize_mask`], observing `cancel` via bounded-chunk
+/// [`CancelCheckpoint::tick`] in owned CPU loops (extract / orient / resize /
+/// threshold / flip / EDT). Returns `SP-CAN-001` when canceled.
 #[allow(clippy::too_many_arguments)]
 pub fn normalize_mask_cancelable(
     samples: &[u8],
@@ -370,8 +397,12 @@ pub fn normalize_mask_cancelable(
     }
 
     let mut plane = match opts.kind {
-        MaskSourceKind::NonZero => extract_nonzero_plane(samples, width, height, channels)?,
-        MaskSourceKind::AlphaThreshold128 => extract_alpha_plane(samples, width, height, channels)?,
+        MaskSourceKind::NonZero => {
+            extract_nonzero_plane_cancelable(samples, width, height, channels, cancel)?
+        }
+        MaskSourceKind::AlphaThreshold128 => {
+            extract_alpha_plane_cancelable(samples, width, height, channels, cancel)?
+        }
     };
     cp.poll_now()?;
 
@@ -398,6 +429,7 @@ pub fn normalize_mask_cancelable(
         MaskSourceKind::AlphaThreshold128 => {
             cpu_resize_u8_cancelable(&plane, ow, oh, dst_w, dst_h, &mut resized, cancel)?;
             for v in &mut resized {
+                cp.tick(1)?;
                 *v = u8::from(*v >= 128);
             }
         }
@@ -407,6 +439,7 @@ pub fn normalize_mask_cancelable(
     // Flip before boundary offset (DataManager.cpp:547-551).
     if opts.flip {
         for v in &mut resized {
+            cp.tick(1)?;
             *v = u8::from(*v == 0);
         }
     }
@@ -641,6 +674,100 @@ mod tests {
         assert!(
             decode_mask_image_bytes(&b).is_err(),
             "unhinted TGA mask bytes must fail so path/extension hint stays required"
+        );
+    }
+
+    /// Wide single-row bilinear upscale: cancel after work starts must observe
+    /// within [`crate::CANCEL_CHECK_INTERVAL`] (not only at row boundaries).
+    #[test]
+    fn wide_row_bilinear_cancel_after_start_within_250ms() {
+        use std::time::{Duration, Instant};
+
+        use spirula_core::CancelReason;
+
+        use crate::CANCEL_CHECK_INTERVAL;
+
+        let width = 16_777_216u32;
+        let mut dst = vec![0u8; width as usize];
+        let token = CancelToken::new();
+        let signal = token.clone();
+        let start = Instant::now();
+        let requester = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            signal.request(CancelReason::User);
+            Instant::now()
+        });
+        let result = normalize_mask_cancelable(
+            &[255],
+            1,
+            1,
+            1,
+            width,
+            1,
+            MaskNormalizeOptions {
+                kind: MaskSourceKind::AlphaThreshold128,
+                ..MaskNormalizeOptions::default()
+            },
+            &mut dst,
+            Some(&token),
+        );
+        let end = Instant::now();
+        let canceled_at = requester.join().expect("requester");
+        assert_eq!(result.unwrap_err().code(), ErrorCode::Canceled);
+        let observe = end.saturating_duration_since(canceled_at);
+        assert!(
+            observe <= CANCEL_CHECK_INTERVAL,
+            "cancel observation {observe:?} exceeded {CANCEL_CHECK_INTERVAL:?}"
+        );
+        assert!(
+            end.duration_since(start) < Duration::from_secs(2),
+            "total {:?}",
+            end.duration_since(start)
+        );
+    }
+
+    /// Area downsample where one dest pixel accumulates the whole source:
+    /// cancel after start must observe inside the source accumulation loop.
+    #[test]
+    fn area_downsample_cancel_after_start_within_250ms() {
+        use std::time::{Duration, Instant};
+
+        use spirula_core::CancelReason;
+
+        use crate::CANCEL_CHECK_INTERVAL;
+
+        // 4096x4096 → 1x1 area path; source loop is the long owned work.
+        let side = 4096u32;
+        let src = vec![255u8; (side as usize) * (side as usize)];
+        let mut dst = [0u8; 1];
+        let token = CancelToken::new();
+        let signal = token.clone();
+        let requester = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            signal.request(CancelReason::User);
+            Instant::now()
+        });
+        let result = normalize_mask_cancelable(
+            &src,
+            side,
+            side,
+            1,
+            1,
+            1,
+            MaskNormalizeOptions {
+                kind: MaskSourceKind::AlphaThreshold128,
+                ..MaskNormalizeOptions::default()
+            },
+            &mut dst,
+            Some(&token),
+        );
+        let end = Instant::now();
+        let canceled_at = requester.join().expect("requester");
+        assert_eq!(result.unwrap_err().code(), ErrorCode::Canceled);
+        let observe = end.saturating_duration_since(canceled_at);
+        assert!(
+            observe <= CANCEL_CHECK_INTERVAL,
+            "cancel observation {observe:?} exceeded {CANCEL_CHECK_INTERVAL:?}"
         );
     }
 }

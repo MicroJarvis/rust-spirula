@@ -20,9 +20,9 @@ until independent review — full matrix scope is not shrunk in docs.
 
 Cancelable prepare keeps path extension hints for TGA (no reliable magic):
 `decode_rgb8_bytes_hinted` / `decode_mask_image_bytes_hinted`. On the prepare
-path, owned CPU (orient / mask resize / EDT) uses `CancelCheckpoint` (≥250 ms);
-C-DATA-09 normal/depth bilinear helpers are sync library APIs **outside** that
-path and are not claimed for mid-loop cancel — see
-[image-orient-mask.md](image-orient-mask.md). Third-party `image` decode is
-non-preemptible mid-call. Fixture `images/tiny_2x2.tga` is registered in
-`fixtures/manifest.json`. Current plan work is **P3-F02**.
+path, owned CPU uses bounded-chunk `CancelCheckpoint::tick` (≤250 ms gap);
+C-DATA-09 normal/depth helpers stay outside that path. Third-party `image`
+decode is non-preemptible mid-call (runtime §5 per-image decode boundary).
+Drop drain deadline ≠ proven hard worker join — see
+[image-orient-mask.md](image-orient-mask.md). Fixture `images/tiny_2x2.tga`
+is registered in `fixtures/manifest.json`. Current plan work is **P3-F02**.

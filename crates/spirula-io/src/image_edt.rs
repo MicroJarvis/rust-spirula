@@ -18,22 +18,31 @@ fn err(code: ErrorCode, field: &str, msg: impl Into<String>) -> DomainError {
 const COL_BLOCK: usize = 16;
 
 #[allow(clippy::needless_range_loop)] // mirrors DistanceTransform.h indexing
-fn dt_1d_squared(f: &[f32], d: &mut [f32], n: usize, v: &mut [i32], z: &mut [f64]) {
+fn dt_1d_squared(
+    f: &[f32],
+    d: &mut [f32],
+    n: usize,
+    v: &mut [i32],
+    z: &mut [f64],
+    cp: &mut CancelCheckpoint<'_>,
+) -> Result<(), DomainError> {
     let inf_f = f32::INFINITY;
     let inf_d = f64::INFINITY;
     let mut first = 0usize;
     while first < n && !f[first].is_finite() {
+        cp.tick(1)?;
         first += 1;
     }
     if first >= n {
         d[..n].fill(inf_f);
-        return;
+        return Ok(());
     }
     let mut k = 0usize;
     v[0] = first as i32;
     z[0] = -inf_d;
     z[1] = inf_d;
     for q in (first + 1)..n {
+        cp.tick(1)?;
         if !f[q].is_finite() {
             continue;
         }
@@ -55,18 +64,27 @@ fn dt_1d_squared(f: &[f32], d: &mut [f32], n: usize, v: &mut [i32], z: &mut [f64
     let kmax = k;
     k = 0;
     for q in 0..n {
+        cp.tick(1)?;
         while k < kmax && z[k + 1] < q as f64 {
             k += 1;
         }
         let dq = q as f64 - f64::from(v[k]);
         d[q] = (dq * dq + f64::from(f[v[k] as usize])) as f32;
     }
+    Ok(())
 }
 
-fn dt_row_squared(m: &[u8], w: usize, src_value: u8, d: &mut [f32]) {
+fn dt_row_squared(
+    m: &[u8],
+    w: usize,
+    src_value: u8,
+    d: &mut [f32],
+    cp: &mut CancelCheckpoint<'_>,
+) -> Result<(), DomainError> {
     let inf_f = f32::INFINITY;
     let mut last: i32 = -1;
     for x in 0..w {
+        cp.tick(1)?;
         if m[x] == src_value {
             last = x as i32;
         }
@@ -78,6 +96,7 @@ fn dt_row_squared(m: &[u8], w: usize, src_value: u8, d: &mut [f32]) {
     }
     let mut next: i32 = -1;
     for x in (0..w).rev() {
+        cp.tick(1)?;
         if m[x] == src_value {
             next = x as i32;
         }
@@ -89,6 +108,7 @@ fn dt_row_squared(m: &[u8], w: usize, src_value: u8, d: &mut [f32]) {
         let best = if d[x] < back { d[x] } else { back };
         d[x] = best * best;
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // separable DT scratch matches C++ signature
@@ -105,15 +125,14 @@ fn dt2d_squared(
     cp: &mut CancelCheckpoint<'_>,
 ) -> Result<(), DomainError> {
     for y in 0..h {
-        cp.poll()?;
-        dt_row_squared(&mask[y * w..], w, src_value, &mut d2_out[y * w..]);
+        dt_row_squared(&mask[y * w..], w, src_value, &mut d2_out[y * w..], cp)?;
     }
     let mut x0 = 0usize;
     while x0 < w {
-        cp.poll()?;
         let nc = COL_BLOCK.min(w - x0);
         for y in 0..h {
             for c in 0..nc {
+                cp.tick(1)?;
                 cols[c * h + y] = d2_out[y * w + x0 + c];
             }
         }
@@ -123,11 +142,12 @@ fn dt2d_squared(
             let mut col = vec![0.0f32; h];
             col.copy_from_slice(&cols[off..off + h]);
             let mut dout = vec![0.0f32; h];
-            dt_1d_squared(&col, &mut dout, h, v_buf, z_buf);
+            dt_1d_squared(&col, &mut dout, h, v_buf, z_buf, cp)?;
             cols_out[off..off + h].copy_from_slice(&dout);
         }
         for y in 0..h {
             for c in 0..nc {
+                cp.tick(1)?;
                 d2_out[y * w + x0 + c] = cols_out[c * h + y];
             }
         }
@@ -172,6 +192,7 @@ pub fn apply_mask_boundary_offset_px_cancelable(
         return Err(err(ErrorCode::MalformedRecord, "mask", "buffer short"));
     }
     for v in &mask[..need] {
+        cp.tick(1)?;
         if *v > 1 {
             return Err(err(
                 ErrorCode::InvalidArgument,
@@ -216,9 +237,7 @@ pub fn apply_mask_boundary_offset_px_cancelable(
         &mut cp,
     )?;
     for i in 0..need {
-        if i % 4096 == 0 {
-            cp.poll()?;
-        }
+        cp.tick(1)?;
         let sd = d2_fg[i].sqrt() - d2_bg[i].sqrt();
         mask[i] = u8::from(sd <= offset_px);
     }

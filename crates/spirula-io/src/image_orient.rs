@@ -183,7 +183,8 @@ pub fn orient_pixels(
     orient_pixels_cancelable(src, width, height, channels, transform, dst, None)
 }
 
-/// Like [`orient_pixels`], observing cancel at least every 250 ms per output row.
+/// Like [`orient_pixels`], observing cancel via bounded-chunk ticks on each
+/// output pixel (wide rows included).
 pub fn orient_pixels_cancelable(
     src: &[u8],
     width: u32,
@@ -232,8 +233,8 @@ pub fn orient_pixels_cancelable(
     let dw_i = dw as i32;
     let dh_i = dh as i32;
     for dy in 0..dh_i {
-        cp.poll()?;
         for dx in 0..dw_i {
+            cp.tick(1)?;
             let mx = if transform.mirror { dw_i - 1 - dx } else { dx };
             let (sx, sy) = match t {
                 1 => (dy, h - 1 - mx),
@@ -262,7 +263,7 @@ pub fn apply_orientation(
     apply_orientation_cancelable(src, width, height, channels, orientation, policy, dst, None)
 }
 
-/// Like [`apply_orientation`], observing cancel at least every 250 ms in the
+/// Like [`apply_orientation`], observing cancel via bounded-chunk ticks in the
 /// pixel bake loop when the transform is non-identity.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_orientation_cancelable(

@@ -24,7 +24,7 @@ pub mod sample_workload;
 pub mod temp_harness;
 
 pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entry};
-pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CancelCheckpoint};
+pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CANCEL_WORK_CHUNK, CancelCheckpoint};
 
 pub use atomic::{
     PublishLease, PublishOptions, PublishOutcome, acquire_publish_lease, is_publish_temp,
