@@ -1,6 +1,7 @@
 # P2-F07: minimal CLI package / isolated launch
 
-Status: **当前 / 未批准** (integrity fix in progress; not merge-ready).
+Status: **当前 / HOLD-MERGE** (integrity + one-shot no-replace publish; pending
+independent delta review).
 Owner: workspace / `spirula-xtask`. Builds on [cli.md](../phase-1/cli.md)
 (P1-F09), [gpu-smoke.md](gpu-smoke.md) (P2-F06). Does **not** wire
 application/train/UI GPU ownership. Phase 2 exit remains open (surface present
@@ -86,18 +87,22 @@ or dangling links fail with `layout:`. This is execution/integrity consistency,
 
 ### Atomic publish
 
-Directory analog of `spirula-io` file no-clobber (`create_new` / `hard_link`):
+Complete staging → **one** no-replace directory rename (not child-by-child):
 
 1. Fast-fail if the destination entry already exists (`symlink_metadata`).
-2. Write a sibling staging directory `.spirula-pkg-tmp.*` and verify it.
-3. Claim the destination with `create_dir(out)` — if anything appeared
-   meanwhile (including an empty directory), **refuse**, delete staging, and
-   **preserve** the existing destination (never `rename`-over).
-4. Move staging children into the claimed empty directory; on a mid-move
-   failure roll back the claimed destination and staging (no torn success).
-5. Concurrent publishers to the same `out`: exactly one `create_dir` winner;
-   losers fail without overwrite; no staging residue.
+2. Write a sibling staging directory `.spirula-pkg-tmp.*` and verify the full
+   package there. Until rename succeeds, `out` does not exist; interrupting
+   leaves only staging (deletable) and no partial destination.
+3. Publish with `rustix::fs::renameat_with(..., RenameFlags::NOREPLACE)` on
+   macOS (`RENAME_EXCL`) / Linux (`RENAME_NOREPLACE`). Other hosts return a
+   typed unsupported error without creating `out`.
+4. If the destination appeared meanwhile (`EEXIST`), **refuse**, delete
+   staging only, and **preserve** the existing destination (never delete or
+   overwrite another publisher's target).
+5. Concurrent publishers to the same `out`: exactly one rename winner; losers
+   fail without overwrite; no staging residue.
 6. Paths with spaces are supported for `--out` and isolation dirs.
+7. No signing / installer / multi-platform matrix in this slice.
 
 ### Isolated launch
 
@@ -148,12 +153,12 @@ Optional: `--from-ref <sha>`, `--profile release|dev`.
 
 | Check | Command | Sample result |
 |---|---|---|
-| Unit (canonical path/symlink/NOTICE/metadata/no-clobber/…) | `cargo test -p spirula-xtask --lib package::` | **17/17** |
-| Host assemble + isolate + deterministic race | `cargo test -p spirula-xtask --test package_host` | **3/3** |
+| Unit (canonical path + one-shot NOREPLACE rename) | `cargo test -p spirula-xtask --lib package::` | see focused log |
+| Host assemble / isolate / race / interrupt-retry | `cargo test -p spirula-xtask --test package_host` | see focused log |
 | Docs consistency (74 IDs) | `cargo test -p spirula-xtask --test docs` | **ok** |
-| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** `/tmp/spirula-cursor-p2-f07-atomic-full-verify.log` |
-| Focused host race | `/tmp/spirula-cursor-p2-f07-atomic-host.log` | preserve mid-assemble dest + 1 concurrent winner |
-| Review probes (reject) | manifest-path / empty-metadata / missing-notice / symlink / missing-canonical / atomic-race | typed fail; no-clobber preserves concurrent dest |
+| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** `/tmp/spirula-cursor-p2-f07-noreplace-full-verify.log` |
+| Focused | `/tmp/spirula-cursor-p2-f07-noreplace-focused.log` | unit+host+docs |
+| Review probes (reject) | manifest-path / empty-metadata / missing-notice / symlink / missing-canonical | still typed fail; NOREPLACE preserves concurrent dest |
 
 ## Non-claims
 

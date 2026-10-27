@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -22,6 +22,7 @@ const NOTICE_NAME: &str = "NOTICE";
 const BIN_DIR: &str = "bin";
 const SCHEMA_VERSION: u32 = 1;
 const STAGING_PREFIX: &str = ".spirula-pkg-tmp.";
+static PATH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Options for [`build_package`].
 #[derive(Clone, Debug)]
@@ -97,10 +98,10 @@ pub fn build_package(opts: &PackageOptions) -> Result<PackageOutcome, String> {
 /// Assemble a package from an existing Cargo target bin directory.
 ///
 /// Used by host tests (dirty trees) and by [`build_package`] after a locked
-/// build. Publication uses an exclusive `create_dir(out)` claim (directory
-/// analog of file `create_new` / no-clobber in `spirula-io`), then moves
-/// staging children into that empty directory — never `rename`-over an
-/// existing destination. A concurrently created destination is preserved.
+/// build. Publication is one atomic no-replace rename of the complete staging
+/// directory onto `out` (`rustix::fs::renameat_with` + `RenameFlags::NOREPLACE`
+/// on macOS/Linux). The destination is invisible until the full package lands;
+/// a concurrently created destination is preserved (single winner).
 pub fn assemble_package_from_bin_dir(
     bin_dir: &Path,
     out: &Path,
@@ -110,9 +111,9 @@ pub fn assemble_package_from_bin_dir(
 }
 
 /// Like [`assemble_package_from_bin_dir`], but runs `before_publish(out)` after
-/// staging is fully assembled and verified, immediately before the exclusive
-/// destination claim. Tests use this for a deterministic schedule (create the
-/// destination in the hook) instead of a probabilistic race.
+/// staging is fully assembled and verified, immediately before the no-replace
+/// rename. Tests use this for a deterministic schedule (create the destination
+/// or simulate interrupt in the hook) instead of a probabilistic race.
 pub fn assemble_package_from_bin_dir_with_before_publish(
     bin_dir: &Path,
     out: &Path,
@@ -137,7 +138,9 @@ pub fn assemble_package_from_bin_dir_with_before_publish(
     let assembled = fill_staging(&staging, bin_dir, meta);
     match assembled {
         Ok(()) => {
-            // Deterministic injection point for concurrency / mid-publish probes.
+            // Deterministic injection point for concurrency / pre-rename probes.
+            // At this moment `out` must still be absent; staging holds the full
+            // package and can be deleted without leaving a partial destination.
             if let Err(err) = before_publish(out) {
                 let _ = remove_path_best_effort(&staging);
                 return Err(err);
@@ -234,66 +237,91 @@ fn destination_entry_present(out: &Path) -> Result<bool, String> {
     }
 }
 
-/// Exclusive directory publish: `create_dir(out)` claims the name (fails if
-/// anything is already there, including an empty dir created mid-assemble),
-/// then children are moved from staging. Never rename-over the destination.
-/// On claim failure, staging is removed and the existing destination is left
-/// untouched. On a failed child move after a successful claim, the claimed
-/// (incomplete) destination and staging are both removed.
+/// One-shot no-replace publish: rename the complete staging directory onto
+/// `out`. Until this returns Ok, `out` does not exist as a package path.
+///
+/// macOS/Linux use `rustix::fs::renameat_with(..., RenameFlags::NOREPLACE)`
+/// (`RENAME_EXCL` / `RENAME_NOREPLACE`). Other hosts return a typed unsupported
+/// error without creating `out`. On `EEXIST`, staging is removed and any
+/// existing destination is left untouched (never deleted).
 fn publish_staging_no_clobber(staging: &Path, out: &Path) -> Result<(), String> {
-    match fs::create_dir(out) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use rustix::fs::{Mode, OFlags, RenameFlags, open, renameat_with};
+        use rustix::io::Errno;
+
+        let staging_parent = staging
+            .parent()
+            .ok_or_else(|| format!("staging has no parent: {}", staging.display()))?;
+        let out_parent = out
+            .parent()
+            .ok_or_else(|| format!("destination has no parent: {}", out.display()))?;
+        if staging_parent != out_parent {
             let _ = remove_path_best_effort(staging);
             return Err(format!(
-                "package destination already exists (refusing overwrite): {}",
-                out.display()
+                "staging and destination must share a parent ({} vs {})",
+                staging_parent.display(),
+                out_parent.display()
             ));
         }
-        Err(error) => {
-            let _ = remove_path_best_effort(staging);
-            return Err(format!(
-                "package destination claim create_dir {}: {error}",
-                out.display()
-            ));
+        let staging_name = staging
+            .file_name()
+            .ok_or_else(|| format!("staging has no file name: {}", staging.display()))?;
+        let out_name = out
+            .file_name()
+            .ok_or_else(|| format!("destination has no file name: {}", out.display()))?;
+
+        let dirfd = match open(
+            staging_parent,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(error) => {
+                let _ = remove_path_best_effort(staging);
+                return Err(format!(
+                    "open package parent {}: {error}",
+                    staging_parent.display()
+                ));
+            }
+        };
+
+        match renameat_with(
+            &dirfd,
+            staging_name,
+            &dirfd,
+            out_name,
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) if error == Errno::EXIST => {
+                // Destination appeared (or already existed). Preserve it.
+                let _ = remove_path_best_effort(staging);
+                Err(format!(
+                    "package destination already exists (refusing overwrite): {}",
+                    out.display()
+                ))
+            }
+            Err(error) => {
+                // Rename did not install `out`. Do not delete any existing
+                // destination that might belong to another publisher.
+                let _ = remove_path_best_effort(staging);
+                Err(format!(
+                    "no-replace rename {} → {}: {error}",
+                    staging.display(),
+                    out.display()
+                ))
+            }
         }
     }
-
-    let moved = (|| {
-        for entry in
-            fs::read_dir(staging).map_err(|e| format!("read staging {}: {e}", staging.display()))?
-        {
-            let entry = entry.map_err(|e| format!("staging entry: {e}"))?;
-            let from = entry.path();
-            let to = out.join(entry.file_name());
-            // Child rename into the empty claimed directory; destination child
-            // must not exist yet (we just created out empty).
-            fs::rename(&from, &to)
-                .map_err(|e| format!("move {} → {}: {e}", from.display(), to.display()))?;
-        }
-        Ok(())
-    })();
-
-    match moved {
-        Ok(()) => {
-            if let Err(error) = fs::remove_dir(staging) {
-                // Staging should be empty; fall back so no residue remains.
-                let _ = remove_path_best_effort(staging);
-                if staging.exists() {
-                    return Err(format!(
-                        "could not remove empty staging {}: {error}",
-                        staging.display()
-                    ));
-                }
-            }
-            Ok(())
-        }
-        Err(err) => {
-            // We created `out`; roll it back. Do not leave a torn package.
-            let _ = remove_path_best_effort(out);
-            let _ = remove_path_best_effort(staging);
-            Err(err)
-        }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = remove_path_best_effort(staging);
+        Err(format!(
+            "package publish unsupported on this host (need macOS/Linux rename NOREPLACE); \
+             destination left untouched: {}",
+            out.display()
+        ))
     }
 }
 
@@ -1159,19 +1187,24 @@ fn unique_isolate(parent: &Path) -> Result<PathBuf, String> {
 }
 
 fn unique_path(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("clock: {e}"))?
-        .as_nanos();
-    let path = parent.join(format!("{prefix}{nanos}"));
-    if path.exists() {
-        return Err(format!(
-            "staging path unexpectedly exists: {}",
-            path.display()
-        ));
+    // Exclusive create (retry on collision) so concurrent publishers never share
+    // a staging directory — nanos alone is not unique across threads.
+    let pid = std::process::id();
+    for _ in 0..10_000 {
+        let seq = PATH_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!("{prefix}{pid}.{seq}"));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("mkdir {}: {error}", path.display()));
+            }
+        }
     }
-    fs::create_dir_all(&path).map_err(|e| format!("mkdir {}: {e}", path.display()))?;
-    Ok(path)
+    Err(format!(
+        "could not allocate unique path under {} with prefix `{prefix}`",
+        parent.display()
+    ))
 }
 
 fn remove_path_best_effort(path: &Path) -> io::Result<()> {
@@ -1526,18 +1559,24 @@ mod tests {
         assert!(err.contains("already exists"), "{err}");
         assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"keep");
         assert!(!staging.exists(), "staging must be cleaned on refuse");
+        // Must not delete or replace someone else's destination contents.
+        assert!(!out.join("payload").exists());
         let _ = remove_path_best_effort(&parent);
     }
 
     #[test]
-    fn publish_staging_no_clobber_claims_empty_destination() {
-        let parent = temp_dir("claim");
+    fn publish_one_shot_out_absent_until_rename_then_checks() {
+        let parent = temp_dir("oneshot");
         let staging = unique_staging(&parent).unwrap();
-        fs::write(staging.join("payload"), b"new").unwrap();
+        fake_manifest(&staging);
         let out = parent.join("out");
-        publish_staging_no_clobber(&staging, &out).expect("claim");
-        assert_eq!(fs::read(out.join("payload")).unwrap(), b"new");
-        assert!(!staging.exists());
+        assert!(
+            !destination_entry_present(&out).unwrap(),
+            "out must not exist before no-replace rename"
+        );
+        publish_staging_no_clobber(&staging, &out).expect("rename");
+        assert!(!staging.exists(), "staging consumed by rename");
+        check_package(&out).expect("full package after one-shot publish");
         let _ = remove_path_best_effort(&parent);
     }
 

@@ -202,7 +202,7 @@ The C++ checkout remains the compatibility authority.
 
 P6-F07 is an early presentation spike after Phase 2 packaging, measuring
 renderer/backend, texture/thread ownership, readback fallback and bytes copied
-per frame. P2-F07 (未批准) packages the minimal CLI + GPU diagnose/smoke
+per frame. P2-F07 (HOLD-MERGE) packages the minimal CLI + GPU diagnose/smoke
 binaries via `spirula-xtask` without adding a CLI→GPU dependency edge; see
 [phase-2/cli-package.md](phase-2/cli-package.md). P4-F06/P5-F07 add real
 workflow samples; P9-F04 covers signed multi-platform installers. P5-F05 saves

@@ -134,7 +134,8 @@ fn host_assemble_check_and_isolated_run() {
 #[test]
 fn publish_preserves_destination_created_during_assemble() {
     // Deterministic schedule of REVIEW atomic-race: after staging is ready,
-    // create a destination with a sentinel; publish must refuse and preserve it.
+    // create a destination with a sentinel; no-replace rename must refuse and
+    // preserve it (never delete someone else's target).
     let bin_dir = ensure_package_bins();
     let parent = unique_parent("race-det");
     let out = parent.join("out");
@@ -147,6 +148,10 @@ fn publish_preserves_destination_created_during_assemble() {
             profile: "dev".into(),
         },
         |dest| {
+            assert!(
+                !dest.exists(),
+                "out must still be absent before no-replace rename"
+            );
             std::fs::create_dir(dest).unwrap();
             std::fs::write(dest.join("sentinel"), b"keep").unwrap();
             Ok(())
@@ -164,6 +169,45 @@ fn publish_preserves_destination_created_during_assemble() {
         "must not publish over the concurrent destination"
     );
     no_staging_residue(&parent);
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn interrupt_before_rename_leaves_no_destination() {
+    // Simulated crash after full staging, before no-replace rename: staging is
+    // cleaned; out must not exist (no empty/partial package blocking retry).
+    let bin_dir = ensure_package_bins();
+    let parent = unique_parent("interrupt");
+    let out = parent.join("out");
+    let err = assemble_package_from_bin_dir_with_before_publish(
+        &bin_dir,
+        &out,
+        &AssembleMeta {
+            revision: "interrupt".into(),
+            version: "0.1.0".into(),
+            profile: "dev".into(),
+        },
+        |dest| {
+            assert!(!dest.exists(), "out absent before rename");
+            Err("simulated interrupt before rename".into())
+        },
+    )
+    .expect_err("interrupt");
+    assert!(err.contains("simulated interrupt"), "{err}");
+    assert!(!out.exists(), "interrupt must not leave destination");
+    no_staging_residue(&parent);
+    // Retry after interrupt must be able to claim the same out.
+    let outcome = assemble_package_from_bin_dir(
+        &bin_dir,
+        &out,
+        &AssembleMeta {
+            revision: "retry".into(),
+            version: "0.1.0".into(),
+            profile: "dev".into(),
+        },
+    )
+    .expect("retry after interrupt");
+    check_package(&outcome.package_dir).expect("retry package");
     let _ = std::fs::remove_dir_all(&parent);
 }
 

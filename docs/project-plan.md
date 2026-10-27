@@ -345,14 +345,15 @@ reclaim、最小 surface 诚实 **unsupported**/不伪造窗口且**不**声称 
 与 host 5/5 + synthetic 6/6 见该契约（样本
 `/tmp/spirula-codex-p2-f06-e66af3d-independent-verify.log`、
 `/tmp/spirula-codex-p2-f06-e66af3d-focused.log`）。P2-F07（最小 CLI 包与隔离
-启动）为 **当前 / 未批准**：`spirula-xtask package` /
+启动）为 **当前 / HOLD-MERGE**：`spirula-xtask package` /
 `package-check` / `package-run` 从干净 checkout 或 `--from-ref` 以
 `--locked` 组装 `spirula` + GPU diagnose/smoke；MANIFEST 强制
 revision/version/host/toolchain/profile/feature/package_kind/licenses/claims
 与恰好三个 `bin/<name>`（hash/size 对 run 实际执行的唯一路径）；NOTICE 与
-allowlist 布局；隔离目录跑 help/capabilities/fake-probe 与 compute smoke
-（pass⇒cpu_exact+current0，adapter 不可用⇒精确 skip 不计 pass）；CLI 不新增
-GPU 边；无签名/三平台/P9 安装包。契约
+allowlist 布局；完整 staging 一次 `renameat_with(NOREPLACE)` 发布（macOS/
+Linux；中断不留 partial out）；隔离目录跑 help/capabilities/fake-probe 与
+compute smoke（pass⇒cpu_exact+current0，adapter 不可用⇒精确 skip 不计 pass）；
+CLI 不新增 GPU 边；无签名/三平台/P9 安装包。契约
 [phase-2/cli-package.md](phase-2/cli-package.md)。
 **诚实边界**：application/train/UI/P6-F01 未接入；不声称真实硬件 OOM；不声称
 surface present pass；60 s watchdog 仍 deferred；Phase 2 退出条件仍未满足

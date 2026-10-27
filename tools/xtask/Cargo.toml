@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 sha2.workspace = true
+# Safe NOREPLACE directory rename (macOS RENAME_EXCL / Linux RENAME_NOREPLACE).
+rustix = { version = "1.1", default-features = false, features = ["fs", "std"] }
 spirula-io = { path = "../../crates/spirula-io" }
 
 [dev-dependencies]

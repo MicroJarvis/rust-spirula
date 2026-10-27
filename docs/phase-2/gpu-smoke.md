@@ -3,7 +3,7 @@
 Status: **已完成** (code tip `e66af3d6e5ecdd4b6ecaac90759fad0079489a95`).
 Owner: `spirula-gpu`. Builds on [gpu-pipelines.md](gpu-pipelines.md) (affine
 compute), [gpu-diagnostics.md](gpu-diagnostics.md). Packaging is P2-F07
-(当前 / 未批准; [cli-package.md](cli-package.md)); application session /
+(当前 / HOLD-MERGE; [cli-package.md](cli-package.md)); application session /
 train / UI stay later. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
