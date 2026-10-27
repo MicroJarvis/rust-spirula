@@ -3,8 +3,8 @@
 Status: **已完成** (code tip `e66af3d6e5ecdd4b6ecaac90759fad0079489a95`).
 Owner: `spirula-gpu`. Builds on [gpu-pipelines.md](gpu-pipelines.md) (affine
 compute), [gpu-diagnostics.md](gpu-diagnostics.md). Packaging is P2-F07
-(当前 / HOLD-MERGE; [cli-package.md](cli-package.md)); application session /
-train / UI stay later. Phase 2 exit remains open.
+(已完成; [cli-package.md](cli-package.md)); application session / train / UI
+stay later. Phase 2 exit remains open; plan current is early P6-F07.
 
 ## Reference behavior (C++)
 
@@ -85,4 +85,5 @@ reproducible checks; machine `/tmp` logs are sample runs, not the sole evidence.
 - Not application/train/UI readiness; not P9 aggregation.
 - Not real hardware OOM; not 60 s stall watchdog.
 - Not C++ saxpy/iota/sortscan parity; affine proof is the compute smoke kernel.
-- Phase 2 exit is **not** closed; P2-F07 is current.
+- Phase 2 exit is **not** closed (surface present still unverified); plan
+  current is early P6-F07.

@@ -115,10 +115,10 @@ stable `SP-GPU-*` with a GPU-local bounded diagnostic ring and latched
 post-submit wait failures (not application session history; P6-F01). Surface
 smoke is P2-F06 (已完成): headless affine compute smoke with Fail reclaim, plus
 an honest surface **unsupported** gate that will not forge a window
-(`spirula-gpu-smoke`; present not verified). Packaging is P2-F07 (当前).
-Application does not own GPU resources yet; diagnose/smoke are not
-train/preview/UI readiness. Real host OOM remains unsupported; the 60 s stall
-watchdog stays deferred. Bindings:
+(`spirula-gpu-smoke`; present not verified). Packaging is P2-F07 (已完成;
+[phase-2/cli-package.md](phase-2/cli-package.md)). Application does not own GPU
+resources yet; diagnose/smoke are not train/preview/UI readiness. Real host OOM
+remains unsupported; the 60 s stall watchdog stays deferred. Bindings:
 [phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md),
 [phase-2/gpu-diagnostics.md](phase-2/gpu-diagnostics.md),
 [phase-2/gpu-smoke.md](phase-2/gpu-smoke.md).
@@ -200,12 +200,16 @@ records the pinned sources and accepted lessons. The stack remains Rust /
 Slint / wgpu / WGSL; Brush is a development reference, not a runtime engine.
 The C++ checkout remains the compatibility authority.
 
-P6-F07 is an early presentation spike after Phase 2 packaging, measuring
-renderer/backend, texture/thread ownership, readback fallback and bytes copied
-per frame. P2-F07 (HOLD-MERGE) packages the minimal CLI + GPU diagnose/smoke
-binaries via `spirula-xtask` without adding a CLI→GPU dependency edge; see
-[phase-2/cli-package.md](phase-2/cli-package.md). P4-F06/P5-F07 add real
-workflow samples; P9-F04 covers signed multi-platform installers. P5-F05 saves
-full optimizer/scheduler/RNG/sampler/refinement state through versioned
-immutable checkpoint generations; P5-F07 verifies new-process resume. Phase 2
-exit stays open while surface present remains unverified.
+P6-F07 is the current early presentation spike after Phase 2 packaging,
+measuring renderer/backend, texture/thread ownership, readback fallback and
+bytes copied per frame. P2-F07 (已完成, tip
+`17c1202a6a2b70183192a1367d96ffbb0e992e67`) packages the minimal CLI + GPU
+diagnose/smoke binaries via `spirula-xtask` without adding a CLI→GPU edge; see
+[phase-2/cli-package.md](phase-2/cli-package.md) (macOS tested; Linux path
+implemented but not host-tested; Windows publish unsupported). P4-F06/P5-F07
+add real workflow samples; P9-F04 covers signed multi-platform installers.
+P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
+versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
+Phase 2 exit stays open while surface present remains unverified — completing
+P2-F01–P2-F07 does not close that exit. Train/preview and formal UI remain
+unwired.

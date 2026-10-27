@@ -1,11 +1,10 @@
 # P2-F07: minimal CLI package / isolated launch
 
-Status: **当前 / HOLD-MERGE** (integrity + one-shot no-replace publish; pending
-independent delta review).
-Owner: workspace / `spirula-xtask`. Builds on [cli.md](../phase-1/cli.md)
+Status: **已完成** (code tip `17c1202a6a2b70183192a1367d96ffbb0e992e67`).
+Owner: `spirula-xtask` (workspace tooling). Builds on [cli.md](../phase-1/cli.md)
 (P1-F09), [gpu-smoke.md](gpu-smoke.md) (P2-F06). Does **not** wire
 application/train/UI GPU ownership. Phase 2 exit remains open (surface present
-still unverified from F06). Next planned early spike after merge: P6-F07.
+still unverified from F06). Next planned early spike: P6-F07 (**当前**).
 
 ## Reference behavior (C++)
 
@@ -16,8 +15,8 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 | `docs/build.md` Packaging | macOS `.app`/`.dmg` via `tools/package_macos.sh`; Linux/Windows are single binaries | **Deviation**: no `.app`/DMG/signed installer (P9-F04). Portable directory + manifest only |
 | `SsMacBundle.cmake` / `ss_mac_prefer_static()` | Prefer static archives so the Mac bundle is one file | Record dylib deps honestly (`otool -L` / `ldd`); fail package if non-system dylibs appear on macOS |
 | `package_macos.sh` otool gate | Reject anything outside `/usr/lib` or `/System/Library` | Same macOS system-path check for packaged binaries; no claim of three-platform matrix |
-| Windows CRT note | Dynamic MSVC runtime redistributable required | Record host target + runtime dependency list; Windows not claimed tested here |
-| Signing / notarization | Ad-hoc or Developer ID + notarize | **Out of scope** — no signing, notarization, or publish |
+| Windows CRT note | Dynamic MSVC runtime redistributable required | Record host target + runtime dependency list; **Windows package publish is unsupported** in this tip |
+| Signing / notarization | Ad-hoc or Developer ID + notarize | **Out of scope** — no signing, notarization, or store publish |
 | Build scripts `build_develop.bash` | Configure+build in-tree with backend switches | Clean `git archive` (or clean HEAD) + `cargo build --locked`; no C++/CUDA/Vulkan runtime path |
 
 The C++ reference has **no** portable CLI package manifest that pins revision,
@@ -94,11 +93,10 @@ Complete staging → **one** no-replace directory rename (not child-by-child):
    package there. Until rename succeeds, `out` does not exist; interrupting
    leaves only staging (deletable) and no partial destination.
 3. Publish with `rustix::fs::renameat_with(..., RenameFlags::NOREPLACE)` on
-   macOS (`RENAME_EXCL`) / Linux (`RENAME_NOREPLACE`). Other hosts return a
-   typed unsupported error without creating `out`.
+   macOS (`RENAME_EXCL`) / Linux (`RENAME_NOREPLACE`). **Windows and other
+   hosts return a typed unsupported error** without creating `out`.
 4. If the destination appeared meanwhile (`EEXIST`), **refuse**, delete
-   staging only, and **preserve** the existing destination (never delete or
-   overwrite another publisher's target).
+   staging only, and **preserve** the existing destination.
 5. Concurrent publishers to the same `out`: exactly one rename winner; losers
    fail without overwrite; no staging residue.
 6. Paths with spaces are supported for `--out` and isolation dirs.
@@ -120,24 +118,33 @@ Complete staging → **one** no-replace directory rename (not child-by-child):
      - `status=pass` **and** `match=cpu_exact` **and** `after_drop current=0`, or
      - `status=skip` with an explicit open/adapter reason (**not** counted as pass)
 
+### Platform honesty
+
+| Host | Publish (`NOREPLACE` rename) | Isolated package-run / Metal-or-GPU smoke |
+|---|---|---|
+| macOS | **Implemented and host-tested** (this tip) | **Tested**: real M5 Metal compute smoke pass / `cpu_exact` / `current=0` |
+| Linux | **Implemented** (same rustix path) | **Not host-tested** in this tip — no Linux claim |
+| Windows / other | **Unsupported** (typed failure; no `out`) | Not claimed |
+
 ### Non-goals (this slice)
 
 - No P9-F04 full installer / three-platform matrix / code signing / notarization.
 - No train / preview / UI / application GPU session wiring.
-- No download of release artifacts; no git push/pull.
 - No claim that surface present smoke is verified (F06 surface remains
   unsupported).
-- Phase 2 exit **not** closed by this feature alone.
+- Phase 2 exit **not** closed by completing P2-F01–P2-F07 alone (surface
+  present still unverified).
 
-## Acceptance (for clean candidate; not approved)
+## Acceptance (met)
 
-1. Reproducible package command from clean HEAD or `--from-ref`.
-2. Manifest hashes verify; missing/tampered binaries fail check.
-3. Destination-exists / failure-residue / spaces / isolated no-source covered.
+1. Reproducible package from clean HEAD or `--from-ref` with `--locked`.
+2. Manifest hashes bind to unique canonical `bin/<name>`; missing/tampered /
+   path-alias / symlink / outside-root fail typed checks.
+3. Destination-exists / NOREPLACE race / interrupt-before-rename / spaces /
+   isolated no-source covered; concurrent same-`out` → single winner.
 4. Isolated help/capabilities/fake-probe + compute smoke pass or precise skip.
 5. macOS non-system dylibs rejected; system frameworks recorded honestly.
-6. Docs keep 74 plan IDs; Phase 2 exit open; C-X-06 stays in progress until
-   independent READY + docs closure.
+6. Docs keep 74 plan IDs; Phase 2 exit open; train/preview/UI not claimed.
 
 ## Commands
 
@@ -149,22 +156,27 @@ cargo run -p spirula-xtask -- package-run --package /tmp/spirula-cli-pkg
 
 Optional: `--from-ref <sha>`, `--profile release|dev`.
 
-## Tested evidence (candidate tip)
+## Tested evidence (approved tip)
 
-| Check | Command | Sample result |
-|---|---|---|
-| Unit (canonical path + one-shot NOREPLACE rename) | `cargo test -p spirula-xtask --lib package::` | see focused log |
-| Host assemble / isolate / race / interrupt-retry | `cargo test -p spirula-xtask --test package_host` | see focused log |
-| Docs consistency (74 IDs) | `cargo test -p spirula-xtask --test docs` | **ok** |
-| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** `/tmp/spirula-cursor-p2-f07-noreplace-full-verify.log` |
-| Focused | `/tmp/spirula-cursor-p2-f07-noreplace-focused.log` | unit+host+docs |
-| Review probes (reject) | manifest-path / empty-metadata / missing-notice / symlink / missing-canonical | still typed fail; NOREPLACE preserves concurrent dest |
+Code tip: `17c1202a6a2b70183192a1367d96ffbb0e992e67`. Independent READY:
+`/tmp/spirula-p2-f07-review/REVIEW-final-17c1202.md`. Parent exact-SHA
+evidence (sample logs):
+
+| Check | Sample result |
+|---|---|
+| Independent READY | `/tmp/spirula-p2-f07-review/REVIEW-final-17c1202.md` (3 P2 closed) |
+| Parent fresh full verify | **8/8** |
+| Host package tests | **4/4** |
+| Exact `git archive` release package | `/tmp/spirula-codex-cli-pkg-17c1202` |
+| package-check + source-free package-run | M5 Metal smoke **pass** / `cpu_exact` / `current=0` |
 
 ## Non-claims
 
 - Not a signed / notarized / store-ready installer.
-- Not three-platform release evidence (host under test only).
+- Not three-platform release evidence (macOS tested; Linux code path untested
+  on host; Windows publish unsupported).
 - Not surface present verification; not train/preview/UI readiness.
 - Not bit-for-bit reproducible across machines (locked deps + recorded hashes
   only).
-- Phase 2 exit remains open until surface and remaining exit evidence land.
+- Completing all Phase 2 feature IDs does **not** close Phase 2 exit while
+  surface present remains unverified.

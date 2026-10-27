@@ -20,11 +20,11 @@ pinned commit, toolchain and build/test entry points are recorded in
 [docs/phase-0/reference-baseline.md](docs/phase-0/reference-baseline.md); set
 `SPIRULA_REFERENCE_REPO` to locate the checkout (default `../spirula-studio`).
 
-Phase 0 and Phase 1 are complete. P2-F01–P2-F06 (adapter negotiate, device/
+Phase 0 and Phase 1 are complete. P2-F01–P2-F07 (adapter negotiate, device/
 queue/context, buffer/texture/readback, shader/pipeline/affine compute, GPU
-errors / diagnostic events, headless compute smoke) are complete; the current
-feature is P2-F07 (minimal CLI package / isolated launch). Phase 2 exit is not
-closed. Phase 0 evidence is in
+errors / diagnostic events, headless compute smoke, minimal CLI package) are
+complete; the current feature is early P6-F07 (Slint/wgpu display-path spike).
+Phase 2 exit is not closed (surface present still unverified). Phase 0 evidence is in
 [docs/phase-0/exit-report.md](docs/phase-0/exit-report.md).
 Phase 1 records are in
 [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
@@ -44,7 +44,7 @@ P2-F05 bindings are
 P2-F06 bindings are
 [docs/phase-2/gpu-smoke.md](docs/phase-2/gpu-smoke.md);
 P2-F07 bindings are
-[docs/phase-2/cli-package.md](docs/phase-2/cli-package.md) (HOLD-MERGE).
+[docs/phase-2/cli-package.md](docs/phase-2/cli-package.md).
 The single local verification entry is:
 
 ```bash
@@ -66,12 +66,13 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Phase 2 current work is P2-F07
-(HOLD-MERGE) in [docs/project-plan.md](docs/project-plan.md). GPU diagnose
-(enumerate, `--device`, `--resources`, or `--compute`) and smoke
-(`spirula-gpu-smoke`; not application/train/UI readiness; surface remains honest
-unsupported / not a present-pass claim). Minimal portable package (no signed
-installer; CLI does not gain a GPU edge):
+real train/preview stay later features. Plan current work is early P6-F07 in
+[docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
+`--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
+not application/train/UI readiness; surface remains honest unsupported / not a
+present-pass claim). Minimal portable package (owner `spirula-xtask`; no signed
+installer; CLI does not gain a GPU edge; macOS tested, Linux untested on host,
+Windows publish unsupported):
 `cargo run -p spirula-xtask -- package --out /tmp/spirula-cli-pkg` then
 `package-check` / `package-run`. Smoke alone:
 `cargo run -p spirula-gpu --bin spirula-gpu-smoke -- --all`.

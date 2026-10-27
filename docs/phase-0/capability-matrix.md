@@ -120,7 +120,7 @@ refer to [fixtures.md](fixtures.md).
 | C-X-03 | catalog versioning | none in reference config/checkpoint | file | version + migration | add versions; keep unversioned readers | P1-F02/P3-F07 | `spirula-core`/`spirula-io` | 进行中 |
 | C-X-04 | performance baseline | `docs/testing.md` (reference) | workload | metrics | per-slice resource/time records, quality/convergence and resume | P1-F08/P9-F02 | workspace | 进行中（P1-F08 报告格式/CPU 样本已完成；逐功能基线与 P9 汇总未开始） |
 | C-X-05 | cross-platform adapter coverage | CI matrix | platform | report | macOS/Linux/Windows records, skip reasons | P9-F01 | `spirula-gpu` | 未开始 |
-| C-X-06 | minimal CLI package | (new) | clean checkout | isolated runnable package | CLI/GPU smoke early via `spirula-xtask package` (P2-F07 HOLD-MERGE); real preview/train samples added later (P4-F06/P5-F07); no signed installer (P9-F04) | P2-F07/P4-F06/P5-F07 | workspace/CI | 进行中 |
+| C-X-06 | minimal CLI package | (new) | clean checkout | isolated runnable package | `spirula-xtask package`/`check`/`run`: locked archive build, MANIFEST+NOTICE+allowlist, canonical `bin/<name>`, one-shot NOREPLACE rename; macOS tested (Metal smoke); Linux implemented untested; Windows publish unsupported; no signed installer (P9-F04); preview/train samples later (P4-F06/P5-F07) | P2-F07/P4-F06/P5-F07 | `spirula-xtask` | 已完成 |
 | C-X-07 | pinned tool/process management | reference auxiliary commands; OOOSplat engine/process policies as secondary reference | versioned runtime artifact/request | verified installation + validated output | existing stack rules remain; bounded logs, process-tree cancel and rollback | P8-F07 isolated tests + platform acceptance | `spirula-io`/`spirula-application` | 未开始 |
 
 ## Owners and phases summary
@@ -135,7 +135,7 @@ refer to [fixtures.md](fixtures.md).
 | `spirula-ui` | C-UI-01..06, C-UI-08 | P6-F07 early, P6-F03..F06 |
 | `spirula-cli` | C-CLI-01..07 | P1-F09 early, P6-F02 |
 | `spirula-application` | C-APP-01..02, C-TRN-09, C-UI-07..08, C-X-02, C-X-07 | P1-F07 early, P6-F01 |
-| workspace/CI | C-X-04, C-X-06 | P1-F08/P2-F07 early, P9-F02/P9-F04 |
+| workspace/`spirula-xtask` | C-X-04, C-X-06 | P1-F08/P2-F07, P9-F02/P9-F04 |
 
 ## Gaps recorded by this matrix
 
@@ -167,8 +167,8 @@ refer to [fixtures.md](fixtures.md).
 - The workspace verify gate is implemented by `spirula-xtask` (P1-F06):
   inherited lints, architecture edges, declared feature combinations, and
   compile steps pinned to the rustc host via `--target`. That gate is not
-  `C-X-06` (minimal CLI package; P2-F07 HOLD-MERGE → `进行中`). Multi-platform
-  matrices remain `C-X-05` / P9-F01.
+  `C-X-06` (minimal CLI package; P2-F07 → `已完成`, owner `spirula-xtask`).
+  Multi-platform matrices remain `C-X-05` / P9-F01.
 - The reference's `config.json` and checkpoint have no validated version
   field. Config now adds `schema_version` and keeps an unversioned reader.
   Checkpoint validation is unchanged.
