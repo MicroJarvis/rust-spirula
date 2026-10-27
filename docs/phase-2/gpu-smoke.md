@@ -1,10 +1,9 @@
 # P2-F06: headless GPU smoke
 
-Status: **当前 / 进行中** (HOLD-MERGE pending independent review; not approved —
-do not treat as 已完成 / do not advance P2-F07). Owner: `spirula-gpu`.
-Builds on [gpu-pipelines.md](gpu-pipelines.md) (affine compute),
-[gpu-diagnostics.md](gpu-diagnostics.md). Packaging stays P2-F07; application
-session / train / UI stay later. Phase 2 exit remains open.
+Status: **已完成** (code tip `e66af3d6e5ecdd4b6ecaac90759fad0079489a95`).
+Owner: `spirula-gpu`. Builds on [gpu-pipelines.md](gpu-pipelines.md) (affine
+compute), [gpu-diagnostics.md](gpu-diagnostics.md). Packaging is P2-F07
+(当前); application session / train / UI stay later. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 
@@ -16,7 +15,7 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 | `vk_pipeline_smoke.cpp` | Embedded SPIR-V saxpy/iota dispatch + CPU exact check; unknown entry sticky error | Reuse P2-F04 **affine-u32** WGSL upload→dispatch→readback vs `cpu_affine_u32` (not saxpy/iota; not SPIR-V) |
 | `vk_sortscan_test.cpp` | Sort/scan parity vs CPU | **Out of scope** (no sort/scan in P2); not claimed |
 | Process exit 0/1 | Failures counted; ALL PASSED line | Structured `SmokeReport` + exit 0 for pass\|skip\|unsupported, 1 for fail, 2 usage |
-| (no surface binary in these three) | — | Honest surface gate: **no forged window**; unsupported unless a safe present target exists (not wired here) |
+| (no surface binary in these three) | — | Honest surface gate: **no forged window**; remains `unsupported` (present not verified in this slice) |
 
 ## Binding decisions
 
@@ -45,7 +44,8 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 - `SPIRULA_GPU_SURFACE=1`: still `unsupported` if no safe present target is
   wired in this crate (honest; present path stays later / P6-F07). Open failure
   → `skip`.
-- Never claims a synthetic/offscreen window as a present success.
+- **Not verified as present success** on any host in this feature — do not claim
+  surface smoke passed; only the honest unsupported/skip gate is complete.
 
 ### Non-goals (this slice)
 
@@ -54,29 +54,34 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 - No P9 perf baselines; no application/train/UI session ownership.
 - No sort/scan; no Vulkan/CUDA runtime path.
 
-## Acceptance (pending independent review)
+## Acceptance (met)
 
 1. Host compute smoke: pass with cpu_exact + current 0, or precise skip.
 2. Repeat runs stable; device missing → skip (not fail-as-pass).
 3. Validation / lost / timeout fail probes return typed codes + reclaim where
-   applicable.
-4. Surface: unsupported without forged window; opt-in still honest.
+   applicable; Fail report bytes match live context.
+4. Surface: unsupported without forged window; opt-in still honest (**not** a
+   present-pass claim).
 5. Docs list device/backend/features/limits, skip/pass, exit, cleanup.
 6. No F07 / app / train / UI claims; Phase 2 exit still open; 74 plan IDs kept.
 
-## Evidence (candidate; HOLD-MERGE)
+## Tested evidence (approved tip)
 
-| Check | Command / artifact |
-|---|---|
-| Synthetic smoke | `cargo test -p spirula-gpu --test smoke_lifecycle_synthetic` |
-| Host smoke | `cargo test -p spirula-gpu --test host_smoke -- --nocapture` |
-| Smoke binary | `cargo run -p spirula-gpu --bin spirula-gpu-smoke -- --all --repeat 2` |
-| Focused | `/tmp/spirula-cursor-p2-f06-focused-smoke.log` |
-| Fresh full gate | `/tmp/spirula-cursor-p2-f06-verify.log` |
+Code tip: `e66af3d6e5ecdd4b6ecaac90759fad0079489a95`. Independent review READY:
+`/tmp/spirula-p2-f06-review/REVIEW-final-e66af3d.md`. Commands below are the
+reproducible checks; machine `/tmp` logs are sample runs, not the sole evidence.
+
+| Check | Command | Sample result |
+|---|---|---|
+| Fresh full gate | parent independent verify | **8/8** (sample: `/tmp/spirula-codex-p2-f06-e66af3d-independent-verify.log`) |
+| Focused host+synthetic | `cargo test -p spirula-gpu --test host_smoke --test smoke_lifecycle_synthetic` | host **5/5**, synthetic **6/6** (sample: `/tmp/spirula-codex-p2-f06-e66af3d-focused.log`) |
+| Smoke binary | `cargo run -p spirula-gpu --bin spirula-gpu-smoke -- --all --repeat 2` | compute pass×2 / surface unsupported |
 
 ## Non-claims
 
-- Not independently approved / docs-closure complete.
-- Not real window present success; not P2-F07 packaging.
+- Not a verified surface present pass (surface remains unsupported/honest gate).
+- Not P2-F07 packaging / isolated checkout.
 - Not application/train/UI readiness; not P9 aggregation.
+- Not real hardware OOM; not 60 s stall watchdog.
 - Not C++ saxpy/iota/sortscan parity; affine proof is the compute smoke kernel.
+- Phase 2 exit is **not** closed; P2-F07 is current.

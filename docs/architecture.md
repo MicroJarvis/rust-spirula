@@ -113,11 +113,12 @@ proof on top of P2-F03 staging (layout epochs v1/v2 same ABI for key
 invalidation only). P2-F05 (已完成) maps wgpu error scopes / submit / lost to
 stable `SP-GPU-*` with a GPU-local bounded diagnostic ring and latched
 post-submit wait failures (not application session history; P6-F01). Surface
-smoke is P2-F06 (当前 / HOLD): headless affine compute smoke plus an honest
-surface gate that will not forge a window (`spirula-gpu-smoke`). Application
-does not own GPU resources yet; diagnose/smoke are not train/preview/UI
-readiness. Real host OOM remains unsupported; the 60 s stall watchdog stays
-deferred; P2-F07 packaging is not started. Bindings:
+smoke is P2-F06 (已完成): headless affine compute smoke with Fail reclaim, plus
+an honest surface **unsupported** gate that will not forge a window
+(`spirula-gpu-smoke`; present not verified). Packaging is P2-F07 (当前).
+Application does not own GPU resources yet; diagnose/smoke are not
+train/preview/UI readiness. Real host OOM remains unsupported; the 60 s stall
+watchdog stays deferred. Bindings:
 [phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md),
 [phase-2/gpu-diagnostics.md](phase-2/gpu-diagnostics.md),
 [phase-2/gpu-smoke.md](phase-2/gpu-smoke.md).

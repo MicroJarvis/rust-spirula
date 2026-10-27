@@ -5,8 +5,9 @@ Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md)
 (P2-F02) and P1-F08 [performance.md](../phase-1/performance.md)
 accounted-byte tracking. Shaders/pipelines/compute are P2-F04 (已完成;
 [gpu-pipelines.md](gpu-pipelines.md)). GPU diagnostics are P2-F05 (已完成;
-[gpu-diagnostics.md](gpu-diagnostics.md)). Headless smoke is P2-F06
-(当前 / HOLD; [gpu-smoke.md](gpu-smoke.md)). Phase 2 exit remains open.
+[gpu-diagnostics.md](gpu-diagnostics.md)). Headless smoke is P2-F06 (已完成;
+[gpu-smoke.md](gpu-smoke.md)). Packaging is P2-F07 (当前). Phase 2 exit
+remains open.
 
 ## Reference behavior (C++)
 

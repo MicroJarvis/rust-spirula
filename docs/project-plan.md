@@ -99,8 +99,8 @@ Phase 1 退出条件：P1-F01 至 P1-F09 通过 workspace 检查，具备无 GPU
 | P2-F03 | buffer、texture 与 readback | `spirula-gpu` | P2-F02, P1-F08 | 窄类型封装与资源标签；staging/同步/字节预算；真实 upload/readback，compute 在 P2-F04 接入；跨 context 和 in-flight drop | round-trip 正确；超预算拒绝；释放和峰值字节可核算；不预建通用 wgpu 镜像 API | 已完成 |
 | P2-F04 | shader 与 pipeline 契约 | `spirula-gpu` | P2-F03 | WGSL 版本和 bind/uniform layout；pipeline key/错误；以真实 compute 验证窄资源封装与 shader 接口 | layout/对齐及缓存失效可测；编译失败带位置；与 P2-F03 共同证明 GPU 边界可执行 | 已完成 |
 | P2-F05 | GPU 错误与诊断事件 | `spirula-gpu` | P2-F02–P2-F04 | 包裹 error scope 和提交错误；把 device lost 转成 typed error；发布带资源标签的诊断事件 | error scope、设备丢失和提交失败转为 typed error/event | 已完成 |
-| P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；编写最小 surface smoke test；记录设备、backend 和跳过原因 | 无窗口 compute 测试和最小 surface 测试在支持设备上可复现 | 当前 |
-| P2-F07 | 最小 CLI 包与隔离启动 | workspace/CI | P2-F06, P1-F09 | 从干净 checkout 构建可携带 CLI 包；记录版本/hash/运行库；在无源码隔离目录运行 help/能力诊断及微型 GPU smoke | 包内入口可启动；真实设备 smoke 或明确硬件缺失；P4-F06/P5-F07 继续加入真实业务样本 | 未开始 |
+| P2-F06 | headless GPU smoke test | `spirula-gpu` | P2-F01–P2-F05 | 编写无窗口 compute smoke test；编写最小 surface smoke test；记录设备、backend 和跳过原因 | 无窗口 compute 测试和最小 surface 测试在支持设备上可复现 | 已完成 |
+| P2-F07 | 最小 CLI 包与隔离启动 | workspace/CI | P2-F06, P1-F09 | 从干净 checkout 构建可携带 CLI 包；记录版本/hash/运行库；在无源码隔离目录运行 help/能力诊断及微型 GPU smoke | 包内入口可启动；真实设备 smoke 或明确硬件缺失；P4-F06/P5-F07 继续加入真实业务样本 | 当前 |
 
 Phase 2 退出条件：P2-F01 至 P2-F07 有真实设备或不可用证据，目标开发机
 compute/surface smoke 通过，窄资源封装与最小 CLI 包可运行；不支持的 adapter、
@@ -218,13 +218,13 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 
 ## 4. 首批功能顺序
 
-已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F05；Phase 1 退出条件已满足，
-Phase 2 退出条件尚未满足。P2-F06 为当前功能。后续按依赖推进，每个编号独立
+已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F06；Phase 1 退出条件已满足，
+Phase 2 退出条件尚未满足。P2-F07 为当前功能。后续按依赖推进，每个编号独立
 worktree、实现和验收；下列分组只是执行顺序，不会把组内多个编号合并成一个
 已完成功能：
 
 1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
-2. P2-F01–P2-F05（已完成）与 P2-F06（当前）→ P2-F07：GPU 能力、真实窄资源路径与最小可运行包。
+2. P2-F01–P2-F06（已完成）与 P2-F07（当前）：GPU 能力、真实窄资源路径与最小可运行包。
 3. 提前执行 P6-F07：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
@@ -326,23 +326,28 @@ name/version/entry/spec/bind_layout_version、affine v1/v2 同 ABI 仅作 epoch
 失效验证、SP-GPU-005、pending 命令↔staging 所有权、`--compute`）。代码 tip
 `2bd98deae866da09a3c14f694d9d2028f8b17f35`；parent full verify 8/8 与
 M5 Max/Metal host 3/3、`match=cpu_exact` / `after_drop` current 0 见该契约
-（可复现命令优先；`/tmp` 日志为样本）。**诚实边界**：surface smoke 仍 P2-F06；
-application/train/UI 未接入；不声称 P9-F03 缓存性能优化。
+（可复现命令优先；`/tmp` 日志为样本）。**诚实边界**：application/train/UI 未
+接入；不声称 P9-F03 缓存性能优化。
 P2-F05（GPU 错误与诊断事件）已在 `spirula-gpu` 落地并独立批准，契约见
 `docs/phase-2/gpu-diagnostics.md`（error scope→`SP-GPU-001..005`、Lost+旧
 handle 拒绝、有界 diagnostic ring、upload/readback/map 元数据、post-submit
 scope 返回可 wait handle 且 wait 在 reclaim 后返回 latched typed Err；真实
 OOM **unsupported**；60 s stall watchdog deferred；不接 application
 session）。代码 tip `31b6087695fcf54322bca822b2de36f1f906b6fe`；独立 READY
-`/tmp/spirula-p2-f05-review/REVIEW-final-31b6087.md`；focused
-diagnostics/host 15/15+6/6 与 workspace gate 样本见该契约。**诚实边界**：
-P2-F06（headless GPU smoke）为**当前**（HOLD-MERGE 待独立审查；契约见
-`docs/phase-2/gpu-smoke.md`：无窗口 affine compute smoke 复用 P2-F04/P2-F05、
-adapter/device unavailable 精确 skip、validation/lost/timeout fail 探针、
-最小 surface 诚实 unsupported/不伪造窗口；记录设备/backend/features/limits
-与 cleanup current0）。**诚实边界**：P2-F07 packaging 未开始；application/
-train/UI/P6-F01 未接入；非通用 logging/P9 汇总；不声称真实硬件 OOM；不声称
-伪造窗口的 surface pass。Phase 2 退出条件仍未满足。
+`/tmp/spirula-p2-f05-review/REVIEW-final-31b6087.md`。
+P2-F06（headless GPU smoke）已在 `spirula-gpu` 落地并独立批准，契约见
+`docs/phase-2/gpu-smoke.md`（无窗口 affine compute smoke 复用 P2-F04/P2-F05、
+adapter/device unavailable 精确 skip、validation/lost/timeout fail + Fail
+reclaim、最小 surface 诚实 **unsupported**/不伪造窗口且**不**声称 present
+已验证；记录设备/backend/features/limits 与 cleanup current0）。代码 tip
+`e66af3d6e5ecdd4b6ecaac90759fad0079489a95`；独立 READY
+`/tmp/spirula-p2-f06-review/REVIEW-final-e66af3d.md`；parent full verify 8/8
+与 host 5/5 + synthetic 6/6 见该契约（样本
+`/tmp/spirula-codex-p2-f06-e66af3d-independent-verify.log`、
+`/tmp/spirula-codex-p2-f06-e66af3d-focused.log`）。**诚实边界**：P2-F07 为
+**当前**（packaging 未开始）；application/train/UI/P6-F01 未接入；非通用
+logging/P9 汇总；不声称真实硬件 OOM；不声称 surface present pass；60 s
+watchdog 仍 deferred。Phase 2 退出条件仍未满足。
 2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。
