@@ -28,10 +28,10 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-08 | masks and alpha | `DataManager.cpp:521-615`, `ImageProbe.cpp:60` | aux files / alpha | binary mask | white keeps, alpha >= 128 keeps, flip/offset optional | P3-F02 fixtures | `spirula-io` | 进行中 |
 | C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth, float maps, size mismatch resized later | P3-F02 | `spirula-io` | 进行中 |
 | C-DATA-10 | EXIF orientation | `DatasetCommon.cpp:45-70`, `ImageOrient.h` | JPEG EXIF | quarter turns | `none/orient/apply`; rotation applies to all aux maps | P3-F02 | `spirula-io` | 进行中 |
-| C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 未开始 |
-| C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 未开始 |
-| C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 未开始 |
-| C-DATA-14 | projection/coordinate conventions | `data/CameraMath.h:1-42`, `core/CameraDistortion.cuh` | camera + point | pixel/ray | OpenGL c2w, CV +Z rays, normalized image coords | P3-F01 fixture numbers | `spirula-core` | 进行中 |
+| C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 已完成 |
+| C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 已完成 |
+| C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 已完成 |
+| C-DATA-14 | projection/coordinate conventions | `data/CameraMath.h:1-42`, `core/CameraDistortion.cuh` | camera + point | pixel/ray | OpenGL c2w, CV +Z rays, normalized image coords | P3-F01 fixture numbers | `spirula-core` | 已完成 |
 | C-DATA-15 | scene transform serialization | `data/SceneTransform.cpp:244-331` | centering + similarity | `scene_transform.json` | all matrix/quaternion/Euler spellings; georeference block | `fixtures/scene` + P3-F05 | `spirula-core`/`spirula-io` | 进行中 |
 | C-DATA-16 | scene-center modes | `data/SceneCenter.h`, `DatasetCommon.cpp:523-545` | camera/point statistics | translation | `none/point-median/camera-median/camera-focus/point-mean/camera-mean`, `auto` resolves | P3-F05 unit tests | `spirula-core` | 未开始 |
 | C-DATA-17 | seed point cloud PLY | `NerfstudioParser.cpp:235-276` | PLY | points + RGB | requires x/y/z + RGB, ascii/BE; double coordinates | `fixtures/splats/points.ply` + P3-F05 | `spirula-io` | 未开始 |
@@ -69,6 +69,7 @@ refer to [fixtures.md](fixtures.md).
 | C-GPU-04 | shader pipeline contract | `backend/vulkan/VulkanPipelines.*` | WGSL/shader entry | pipeline | stable key (name+version+entry+spec+bind_layout_version); affine v1/v2 same-ABI epochs; SP-GPU-005 path=`shaders/<name>.wgsl`; diagnose `--compute` | P2-F04 | `spirula-gpu` | 已完成 |
 | C-GPU-05 | GPU errors and device loss | `VulkanContext.cpp:694-742`, `TrainerCore.cpp:1633-1636` | submit/wait | typed error + GPU-local diagnostics | error scopes→SP-GPU-001..005; Lost+reject; bounded ring; upload/readback/map metadata; post-submit waitable handle + latched wait Err; real OOM unsupported; no app session; stall watchdog deferred | P2-F05 | `spirula-gpu` | 已完成 |
 | C-GPU-06 | headless smoke test | `backend/vulkan/tests/vk_*` | device | pass/fail/skip/unsupported | affine compute smoke (reuse F04/F05) + Fail reclaim; honest surface unsupported gate (present not verified); device/backend/features/limits + cleanup current0; packaging P2-F07 | P2-F06 | `spirula-gpu` | 已完成 |
+| C-GPU-07 | window surface present | reference viewer/window swapchain path (behavior input only) | configured surface + frame | presented + visible frame | `Surface::get_capabilities(&adapter)` + format/present-mode negotiation; `CurrentSurfaceTexture` policy; Layer A pixel check ≠ Layer B `Queue::present` ≠ Layer C real-window visibility or supported compositor feedback (limits documented); readback alone cannot close; surface vs device loss distinct; software paint never counts as present | P2-F08 | `spirula-gpu` | 未开始 |
 
 ## Training
 
@@ -129,7 +130,7 @@ refer to [fixtures.md](fixtures.md).
 |---|---|---|
 | `spirula-core` | C-DATA-11..16, C-DATA-22, C-CLI-02, C-APP-02, C-X-01, C-X-03 | P1-F01, P3-F01 |
 | `spirula-io` | C-DATA-01..10, C-DATA-17..26, C-X-03, C-X-07 | P1-F05, P3-F02..F07 |
-| `spirula-gpu` | C-GPU-01..06, C-REN-14, C-UI-08, C-CLI-05, C-X-05 | P2-F01..F06 |
+| `spirula-gpu` | C-GPU-01..07, C-REN-14, C-UI-08, C-CLI-05, C-X-05 | P2-F01..F06, P2-F08 |
 | `spirula-render` | C-REN-01..14 | P4-F01..F10 |
 | `spirula-train` | C-TRN-01..09 | P5-F08 validation first, P5-F01..F07 |
 | `spirula-ui` | C-UI-01..06, C-UI-08 | P6-F07 early, P6-F03..F06 |
@@ -149,11 +150,17 @@ refer to [fixtures.md](fixtures.md).
   application channels (P1-F07), and CLI SIGINT (P1-F09). Actual training
   checkpoints and complete UI integration remain P5-F06/P6-F01, so the row
   stays `进行中`.
-- `C-DATA-14` has the P0 pinhole path: OpenGL `c2w`, OpenCV `k1 k2 p1 p2`,
-  and behind-camera rejection (P1-F04). Fisheye, equisolid, equirectangular,
-  thin-prism, and ray generation stay in P3-F01 (unmerged tip), so the row
-  stays `进行中`. `C-DATA-11` through `C-DATA-13` stay `未开始` on this
-  baseline.
+- `C-DATA-11`..`C-DATA-14` are **已完成** under P3-F01 (code tip `37b7a73…`;
+  READY `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`; landed on main;
+  [phase-3/camera.md](../phase-3/camera.md)): four models, three tiers with
+  demote/promote, CameraMath (incl. `pixel_ray` / Jacobian / panorama),
+  SourceCamera, DistortionFit Chebyshev+LM+Lawson+ladder+auto FOV with
+  pin `9a24f099…` / `tools/camera-golden` holdouts,
+  `fixtures/manifest.json` registration for
+  `camera/cpp-golden/camera_math.json`, and active source `-1` vs original
+  metadata. Orthographic remains explicitly unsupported
+  (AD-P3-F01-01 / `SP-INP-004`). CPU host goldens stay authoritative vs later
+  GPU tolerances. P1 pinhole API/goldens unchanged.
 - `C-DATA-07` / `C-DATA-08` / `C-DATA-09` / `C-DATA-10` are **进行中** under
   P3-F02 ([phase-3/image-orient-mask.md](../phase-3/image-orient-mask.md)):
   PNG/JPEG/BMP/TGA/TIFF/EXR probe+decode with encoded/pixel budgets; JPEG EXIF

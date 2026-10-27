@@ -4,7 +4,12 @@ Status: **已完成** (code tip `e66af3d6e5ecdd4b6ecaac90759fad0079489a95`).
 Owner: `spirula-gpu`. Builds on [gpu-pipelines.md](gpu-pipelines.md) (affine
 compute), [gpu-diagnostics.md](gpu-diagnostics.md). Packaging is P2-F07
 (已完成; [cli-package.md](cli-package.md)); application session / train / UI
-stay later. Phase 2 exit remains open; plan current is early P6-F07.
+stay later. Phase 2 exit remains open (surface present owned by P2-F08);
+plan current is **P3-F02**.
+
+**Scope narrowed 2026-10-27:** real surface present verification moved to
+**P2-F08**. This feature's surface deliverable is only the honest unsupported
+gate; it was never a present-pass and must not be cited as one.
 
 ## Reference behavior (C++)
 
@@ -64,7 +69,8 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 4. Surface: unsupported without forged window; opt-in still honest (**not** a
    present-pass claim).
 5. Docs list device/backend/features/limits, skip/pass, exit, cleanup.
-6. No F07 / app / train / UI claims; Phase 2 exit still open; 74 plan IDs kept.
+6. No F07 / app / train / UI claims; Phase 2 exit still open (surface present
+   owned by P2-F08); plan IDs remain unique and are not renumbered.
 
 ## Tested evidence (approved tip)
 
@@ -85,5 +91,5 @@ reproducible checks; machine `/tmp` logs are sample runs, not the sole evidence.
 - Not application/train/UI readiness; not P9 aggregation.
 - Not real hardware OOM; not 60 s stall watchdog.
 - Not C++ saxpy/iota/sortscan parity; affine proof is the compute smoke kernel.
-- Phase 2 exit is **not** closed (surface present still unverified); plan
-  current is early P6-F07.
+- Phase 2 exit is **not** closed (surface present still unverified; owned by
+  P2-F08); plan current is **P3-F02**.

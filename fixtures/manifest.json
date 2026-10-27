@@ -4,6 +4,11 @@
   "description": "Phase 0 minimal compatibility fixtures",
   "files": [
     {
+      "path": "camera/cpp-golden/camera_math.json",
+      "bytes": 27378,
+      "sha256": "9c587e52ddf3ee3b64e2ce2cf233008775a1d3cbf81876b6cdea1a09d42caef2"
+    },
+    {
       "path": "camera/single_camera.json",
       "bytes": 1144,
       "sha256": "65e09b22b9958afbd9523267caaa71c57ad3c589d06635a0f1057293f6c53792"

@@ -3933,6 +3933,9 @@ dependencies = [
 [[package]]
 name = "spirula-core"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "spirula-gpu"

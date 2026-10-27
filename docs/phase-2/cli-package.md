@@ -144,7 +144,8 @@ Complete staging → **one** no-replace directory rename (not child-by-child):
    isolated no-source covered; concurrent same-`out` → single winner.
 4. Isolated help/capabilities/fake-probe + compute smoke pass or precise skip.
 5. macOS non-system dylibs rejected; system frameworks recorded honestly.
-6. Docs keep 74 plan IDs; Phase 2 exit open; train/preview/UI not claimed.
+6. Docs keep plan IDs unique and unrenumbered (P2-F08 owns surface present);
+   Phase 2 exit open; train/preview/UI not claimed.
 
 ## Commands
 

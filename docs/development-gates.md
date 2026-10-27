@@ -84,7 +84,24 @@ readback→host→Slint `Image` 上传；已记录每帧复制字节、同步点
 software paint ≠ wgpu surface present；不能宣称零复制；Phase 2 出口仍 open。
 正式 UI / train/preview / P6-F03 未接入。契约
 [phase-6/presentation-path.md](phase-6/presentation-path.md)。计划当前为
-P3-F01。
+P3-F02（P3-F01 已落地 main）。
+
+P2-F08（2026-10-27 评审新增）是 Phase 2 出口唯一剩余条件的负责人。
+P2-F06 交付的是 unsupported 门禁，不是 present 通过；不得因为 P2-F06
+验收文字里的“最小 surface 测试”而回溯宣称 present 已验证。P2-F08 必须
+提交：真实窗口 surface 配置；经 `Surface::get_capabilities(&adapter)` 的
+format/present mode 协商；`CurrentSurfaceTexture` 全分支策略；以及**分层
+证据**——（A）像素校验、（B）present API 提交、（C）真实窗口可见性或受支持
+平台合成器反馈（写明限度）。**texture readback（即使在 `Queue::present`
+之后）只证明像素，不证明窗口/合成器已显示**；单独 readback 不能关闭
+P2-F08。`Queue::present` 在 wgpu 30.0.1 返回 `()`，不得发明不可观察的
+present 成功返回值；surface lost 与 device lost 必须区分。若目标主机无法
+提供真实窗口或 Layer C 可见性证据，按平台记录 unsupported 的具体命令、
+环境和原因；**该记录不等于 P2-F08 已完成，也不自动降低或关闭 Phase 2
+出口**。software paint / Slint `renderer-software` 永远不算 present。任何
+出口书面调整须另行审查，不得用 unsupported 或 readback 偷换 present 验收，
+也不允许“功能点全标完成但出口永久 open”且无人负责。契约见
+[phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)。
 
 ## 5. 资源预算、背压与逐阶段测量
 

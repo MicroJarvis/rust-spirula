@@ -1,7 +1,8 @@
-//! Pinhole projection with the OpenCV `k1 k2 p1 p2` prefix.
+//! Pinhole projection with the OpenCV `k1 k2 p1 p2` prefix (P1-F04 API).
 //!
-//! Wider models, undistortion, and ray generation stay in P3-F01. See
-//! `docs/phase-1/geometry.md`.
+//! Wider models, Newton undistort, and ray generation live in
+//! [`crate::camera_math`] / [`crate::camera_model`] (P3-F01). See
+//! `docs/phase-1/geometry.md` and `docs/phase-3/camera.md`.
 
 use crate::DomainError;
 use crate::math::{Mat3, Vec2, Vec3, invalid, out_of_range};
