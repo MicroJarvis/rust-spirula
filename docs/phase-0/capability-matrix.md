@@ -68,7 +68,7 @@ refer to [fixtures.md](fixtures.md).
 | C-GPU-03 | buffer/texture/readback | `backend/api/BackendRuntime.h:1-140` | bytes/images | GPU + back | staging+explicit wait; RGBA8 pitch; accounted scoped bytes (not VRAM); labels; pending/inflight hold; ticket RAII; submission reap | P2-F03 host+synthetic round trip / diagnose --resources | `spirula-gpu` | 已完成 |
 | C-GPU-04 | shader pipeline contract | `backend/vulkan/VulkanPipelines.*` | WGSL/shader entry | pipeline | stable key (name+version+entry+spec+bind_layout_version); affine v1/v2 same-ABI epochs; SP-GPU-005 path=`shaders/<name>.wgsl`; diagnose `--compute` | P2-F04 | `spirula-gpu` | 已完成 |
 | C-GPU-05 | GPU errors and device loss | `VulkanContext.cpp:694-742`, `TrainerCore.cpp:1633-1636` | submit/wait | typed error + GPU-local diagnostics | error scopes→SP-GPU-001..005; Lost+reject; bounded ring; upload/readback/map metadata; post-submit waitable handle + latched wait Err; real OOM unsupported; no app session; stall watchdog deferred | P2-F05 | `spirula-gpu` | 已完成 |
-| C-GPU-06 | headless smoke test | `backend/vulkan/tests/vk_*` | device | pass/fail | compute smoke + minimal surface; skip reason recorded | P2-F06 | `spirula-gpu` | 未开始 |
+| C-GPU-06 | headless smoke test | `backend/vulkan/tests/vk_*` | device | pass/fail/skip/unsupported | affine compute smoke (reuse F04/F05) + honest surface gate (no forged window); device/backend/features/limits + cleanup current0; packaging P2-F07 | P2-F06 (HOLD pending review) | `spirula-gpu` | 进行中 |
 
 ## Training
 

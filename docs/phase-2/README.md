@@ -7,10 +7,11 @@
 | P2-F03 buffer / texture / readback | [gpu-resources.md](gpu-resources.md) | 已完成 |
 | P2-F04 shader / pipeline contract | [gpu-pipelines.md](gpu-pipelines.md) | 已完成 |
 | P2-F05 GPU errors / diagnostic events | [gpu-diagnostics.md](gpu-diagnostics.md) | 已完成 |
-| P2-F06 headless GPU smoke | (not started) | 当前 |
+| P2-F06 headless GPU smoke | [gpu-smoke.md](gpu-smoke.md) | 当前 |
 
-P2-F06 is current after P2-F05 docs-closure. Phase 2 exit conditions remain
-open. Application / train / UI are not wired through this phase’s diagnose-only
-GPU boundary (`--compute` is not readiness). P2-F05 diagnostics stay GPU-local
-(P6-F01 owns application session history). Real host OOM remains unsupported;
-the 60 s stall watchdog stays deferred.
+P2-F06 is **当前** (HOLD-MERGE pending independent review). Phase 2 exit
+conditions remain open; P2-F07 packaging is not started. Application / train /
+UI are not wired through this phase’s diagnose/smoke GPU boundary. P2-F05
+diagnostics stay GPU-local (P6-F01 owns application session history). Real host
+OOM remains unsupported; the 60 s stall watchdog stays deferred. Surface smoke
+does not forge a window.

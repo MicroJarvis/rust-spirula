@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "spirula-gpu-diagnose"
 path = "src/bin/spirula_gpu_diagnose.rs"
 
+[[bin]]
+name = "spirula-gpu-smoke"
+path = "src/bin/spirula_gpu_smoke.rs"
+
 [dependencies]
 spirula-core = { path = "../spirula-core" }
 # Pinned for P2-F01; MSRV 1.87 ≤ workspace rust-version 1.99.

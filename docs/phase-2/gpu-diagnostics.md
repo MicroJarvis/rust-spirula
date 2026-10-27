@@ -3,8 +3,8 @@
 Status: **已完成** (code tip `31b6087695fcf54322bca822b2de36f1f906b6fe`).
 Owner: `spirula-gpu`. Builds on [device-context.md](device-context.md),
 [gpu-resources.md](gpu-resources.md), [gpu-pipelines.md](gpu-pipelines.md).
-Surface smoke stays P2-F06 (当前); application session wiring of these events
-stays P6-F01. Phase 2 exit remains open.
+Surface / headless smoke stays P2-F06 (当前 / HOLD; see [gpu-smoke.md](gpu-smoke.md));
+application session wiring of these events stays P6-F01. Phase 2 exit remains open.
 
 ## Reference behavior (C++)
 

@@ -336,8 +336,13 @@ OOM **unsupported**；60 s stall watchdog deferred；不接 application
 session）。代码 tip `31b6087695fcf54322bca822b2de36f1f906b6fe`；独立 READY
 `/tmp/spirula-p2-f05-review/REVIEW-final-31b6087.md`；focused
 diagnostics/host 15/15+6/6 与 workspace gate 样本见该契约。**诚实边界**：
-P2-F06 为**当前**（surface smoke 未开始）；application/train/UI/P6-F01 未
-接入；非通用 logging/P9 汇总；不声称真实硬件 OOM。Phase 2 退出条件仍未满足。
+P2-F06（headless GPU smoke）为**当前**（HOLD-MERGE 待独立审查；契约见
+`docs/phase-2/gpu-smoke.md`：无窗口 affine compute smoke 复用 P2-F04/P2-F05、
+adapter/device unavailable 精确 skip、validation/lost/timeout fail 探针、
+最小 surface 诚实 unsupported/不伪造窗口；记录设备/backend/features/limits
+与 cleanup current0）。**诚实边界**：P2-F07 packaging 未开始；application/
+train/UI/P6-F01 未接入；非通用 logging/P9 汇总；不声称真实硬件 OOM；不声称
+伪造窗口的 surface pass。Phase 2 退出条件仍未满足。
 2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。

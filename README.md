@@ -22,8 +22,8 @@ pinned commit, toolchain and build/test entry points are recorded in
 
 Phase 0 and Phase 1 are complete. P2-F01–P2-F05 (adapter negotiate, device/
 queue/context, buffer/texture/readback, shader/pipeline/affine compute, GPU
-errors / diagnostic events) are complete; the next feature is P2-F06
-(headless GPU smoke). Phase 2 exit is not closed. Phase 0 evidence is in
+errors / diagnostic events) are complete; the current feature is P2-F06
+(headless GPU smoke; HOLD pending review). Phase 2 exit is not closed. Phase 0 evidence is in
 [docs/phase-0/exit-report.md](docs/phase-0/exit-report.md).
 Phase 1 records are in
 [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
@@ -39,7 +39,9 @@ P2-F03 bindings are
 P2-F04 bindings are
 [docs/phase-2/gpu-pipelines.md](docs/phase-2/gpu-pipelines.md);
 P2-F05 bindings are
-[docs/phase-2/gpu-diagnostics.md](docs/phase-2/gpu-diagnostics.md).
+[docs/phase-2/gpu-diagnostics.md](docs/phase-2/gpu-diagnostics.md);
+P2-F06 bindings are
+[docs/phase-2/gpu-smoke.md](docs/phase-2/gpu-smoke.md).
 The single local verification entry is:
 
 ```bash
@@ -63,8 +65,9 @@ binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
 real train/preview stay later features. Phase 2 current work is P2-F06 in
 [docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
-`--device`, `--resources`, or `--compute`; not application/train/UI readiness):
-`cargo run -p spirula-gpu --bin spirula-gpu-diagnose -- --compute`.
+`--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
+not application/train/UI readiness; not P2-F07 packaging):
+`cargo run -p spirula-gpu --bin spirula-gpu-smoke -- --all`.
 
 The [OOOSplat / Brush review](docs/research/ooosplat-brush-review.md) informs
 planned early session/CLI delivery, differentiable rendering, resource budgets,

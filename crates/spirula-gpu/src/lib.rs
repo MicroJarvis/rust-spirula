@@ -5,6 +5,7 @@
 //! P2-F03: buffer/texture staging upload/readback ([`resource`]).
 //! P2-F04: compute shader/pipeline key/cache ([`pipeline`]).
 //! P2-F05: GPU errors and diagnostic events ([`diagnostics`]).
+//! P2-F06: headless compute / honest surface smoke ([`smoke`]).
 //! Public `wgpu` types do not leave this crate's implementation modules.
 
 #![forbid(unsafe_code)]
@@ -15,6 +16,7 @@ pub mod diagnostics;
 mod enumerate;
 pub mod pipeline;
 pub mod resource;
+pub mod smoke;
 
 pub use adapter::{
     AdapterCapabilities, AdapterClass, AdapterIdentity, AdapterLimits, AdapterSelection,
@@ -44,4 +46,10 @@ pub use resource::{
     PendingResourceCounts, RESOURCE_ACCOUNT_SOURCE, ReadbackTicket, ResourceAccountingSnapshot,
     ResourceLabel, SubmissionHandle, Texture2dDesc, TextureFormat, TextureHandle, TextureUsage,
     rgba8_bytes_per_row, rgba8_logical_bytes, rgba8_padded_bytes,
+};
+pub use smoke::{
+    SURFACE_SMOKE_ENV, SmokeKind, SmokeReport, SmokeStatus, format_smoke_report,
+    probe_smoke_lost_fail, probe_smoke_timeout_fail, probe_smoke_validation_fail,
+    run_compute_smoke, run_compute_smoke_on_context, run_compute_smoke_repeat, run_surface_smoke,
+    run_surface_smoke_gated, smoke_exit_code,
 };
