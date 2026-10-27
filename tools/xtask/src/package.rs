@@ -97,13 +97,29 @@ pub fn build_package(opts: &PackageOptions) -> Result<PackageOutcome, String> {
 /// Assemble a package from an existing Cargo target bin directory.
 ///
 /// Used by host tests (dirty trees) and by [`build_package`] after a locked
-/// build. Still refuses an existing destination and publishes atomically.
+/// build. Publication uses an exclusive `create_dir(out)` claim (directory
+/// analog of file `create_new` / no-clobber in `spirula-io`), then moves
+/// staging children into that empty directory — never `rename`-over an
+/// existing destination. A concurrently created destination is preserved.
 pub fn assemble_package_from_bin_dir(
     bin_dir: &Path,
     out: &Path,
     meta: &AssembleMeta,
 ) -> Result<PackageOutcome, String> {
-    if out.exists() {
+    assemble_package_from_bin_dir_with_before_publish(bin_dir, out, meta, |_| Ok(()))
+}
+
+/// Like [`assemble_package_from_bin_dir`], but runs `before_publish(out)` after
+/// staging is fully assembled and verified, immediately before the exclusive
+/// destination claim. Tests use this for a deterministic schedule (create the
+/// destination in the hook) instead of a probabilistic race.
+pub fn assemble_package_from_bin_dir_with_before_publish(
+    bin_dir: &Path,
+    out: &Path,
+    meta: &AssembleMeta,
+    before_publish: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<PackageOutcome, String> {
+    if destination_entry_present(out)? {
         return Err(format!(
             "package destination already exists: {}",
             out.display()
@@ -118,87 +134,15 @@ pub fn assemble_package_from_bin_dir(
     fs::create_dir_all(parent).map_err(|e| format!("creating parent {}: {e}", parent.display()))?;
 
     let staging = unique_staging(parent)?;
-    let assembled = (|| {
-        fs::create_dir_all(staging.join(BIN_DIR))
-            .map_err(|e| format!("creating staging bin: {e}"))?;
-        let mut binaries = Vec::new();
-        for name in PACKAGE_BINARIES {
-            let src = bin_dir.join(name);
-            if !src.is_file() {
-                return Err(format!("built binary missing: {}", src.display()));
-            }
-            let dest = staging.join(BIN_DIR).join(name);
-            fs::copy(&src, &dest)
-                .map_err(|e| format!("copy {} → {}: {e}", src.display(), dest.display()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = fs::metadata(&dest)
-                    .map_err(|e| format!("stat {}: {e}", dest.display()))?
-                    .permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&dest, perms)
-                    .map_err(|e| format!("chmod {}: {e}", dest.display()))?;
-            }
-            let sha = sha256_file(&dest)?;
-            let size = fs::metadata(&dest)
-                .map_err(|e| format!("stat {}: {e}", dest.display()))?
-                .len();
-            let deps = runtime_dependencies(&dest)?;
-            reject_nonsystem_dylibs(name, &deps)?;
-            binaries.push(json!({
-                "name": name,
-                "path": format!("{BIN_DIR}/{name}"),
-                "sha256": sha,
-                "size_bytes": size,
-                "runtime_dependencies": deps,
-            }));
-        }
-        write_notice(&staging)?;
-        let host = rustc_host()?;
-        let toolchain = rustc_toolchain()?;
-        let manifest = json!({
-            "schema_version": SCHEMA_VERSION,
-            "feature": "P2-F07",
-            "package_kind": "minimal-cli",
-            "revision": meta.revision,
-            "version": meta.version,
-            "host_target": host,
-            "toolchain": toolchain,
-            "profile": meta.profile,
-            "locked": true,
-            "binaries": binaries,
-            "licenses": ["GPL-3.0-or-later"],
-            "claims": {
-                "signed_release": false,
-                "three_platform_matrix": false,
-                "surface_present_verified": false,
-                "train_preview_ui_wired": false,
-                "phase2_exit_closed": false,
-                "bit_for_bit_reproducible": false
-            }
-        });
-        let body = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("serialize manifest: {e}"))?
-            + "\n";
-        fs::write(staging.join(MANIFEST_NAME), body).map_err(|e| format!("write manifest: {e}"))?;
-        verify_package_root_layout(&staging)?;
-        verify_manifest_contract(&manifest)?;
-        verify_manifest_binaries(&staging, &manifest)?;
-        verify_package_allowlist(&staging)?;
-        Ok(())
-    })();
-
+    let assembled = fill_staging(&staging, bin_dir, meta);
     match assembled {
         Ok(()) => {
-            fs::rename(&staging, out).map_err(|e| {
+            // Deterministic injection point for concurrency / mid-publish probes.
+            if let Err(err) = before_publish(out) {
                 let _ = remove_path_best_effort(&staging);
-                format!(
-                    "atomic publish {} → {}: {e}",
-                    staging.display(),
-                    out.display()
-                )
-            })?;
+                return Err(err);
+            }
+            publish_staging_no_clobber(&staging, out)?;
             Ok(PackageOutcome {
                 package_dir: out.to_path_buf(),
                 revision: meta.revision.clone(),
@@ -207,6 +151,147 @@ pub fn assemble_package_from_bin_dir(
         }
         Err(err) => {
             let _ = remove_path_best_effort(&staging);
+            Err(err)
+        }
+    }
+}
+
+fn fill_staging(staging: &Path, bin_dir: &Path, meta: &AssembleMeta) -> Result<(), String> {
+    fs::create_dir_all(staging.join(BIN_DIR)).map_err(|e| format!("creating staging bin: {e}"))?;
+    let mut binaries = Vec::new();
+    for name in PACKAGE_BINARIES {
+        let src = bin_dir.join(name);
+        if !src.is_file() {
+            return Err(format!("built binary missing: {}", src.display()));
+        }
+        let dest = staging.join(BIN_DIR).join(name);
+        fs::copy(&src, &dest)
+            .map_err(|e| format!("copy {} → {}: {e}", src.display(), dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)
+                .map_err(|e| format!("stat {}: {e}", dest.display()))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)
+                .map_err(|e| format!("chmod {}: {e}", dest.display()))?;
+        }
+        let sha = sha256_file(&dest)?;
+        let size = fs::metadata(&dest)
+            .map_err(|e| format!("stat {}: {e}", dest.display()))?
+            .len();
+        let deps = runtime_dependencies(&dest)?;
+        reject_nonsystem_dylibs(name, &deps)?;
+        binaries.push(json!({
+            "name": name,
+            "path": format!("{BIN_DIR}/{name}"),
+            "sha256": sha,
+            "size_bytes": size,
+            "runtime_dependencies": deps,
+        }));
+    }
+    write_notice(staging)?;
+    let host = rustc_host()?;
+    let toolchain = rustc_toolchain()?;
+    let manifest = json!({
+        "schema_version": SCHEMA_VERSION,
+        "feature": "P2-F07",
+        "package_kind": "minimal-cli",
+        "revision": meta.revision,
+        "version": meta.version,
+        "host_target": host,
+        "toolchain": toolchain,
+        "profile": meta.profile,
+        "locked": true,
+        "binaries": binaries,
+        "licenses": ["GPL-3.0-or-later"],
+        "claims": {
+            "signed_release": false,
+            "three_platform_matrix": false,
+            "surface_present_verified": false,
+            "train_preview_ui_wired": false,
+            "phase2_exit_closed": false,
+            "bit_for_bit_reproducible": false
+        }
+    });
+    let body = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("serialize manifest: {e}"))?
+        + "\n";
+    fs::write(staging.join(MANIFEST_NAME), body).map_err(|e| format!("write manifest: {e}"))?;
+    verify_package_root_layout(staging)?;
+    verify_manifest_contract(&manifest)?;
+    verify_manifest_binaries(staging, &manifest)?;
+    verify_package_allowlist(staging)?;
+    Ok(())
+}
+
+fn destination_entry_present(out: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(out) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("stat destination {}: {error}", out.display())),
+    }
+}
+
+/// Exclusive directory publish: `create_dir(out)` claims the name (fails if
+/// anything is already there, including an empty dir created mid-assemble),
+/// then children are moved from staging. Never rename-over the destination.
+/// On claim failure, staging is removed and the existing destination is left
+/// untouched. On a failed child move after a successful claim, the claimed
+/// (incomplete) destination and staging are both removed.
+fn publish_staging_no_clobber(staging: &Path, out: &Path) -> Result<(), String> {
+    match fs::create_dir(out) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = remove_path_best_effort(staging);
+            return Err(format!(
+                "package destination already exists (refusing overwrite): {}",
+                out.display()
+            ));
+        }
+        Err(error) => {
+            let _ = remove_path_best_effort(staging);
+            return Err(format!(
+                "package destination claim create_dir {}: {error}",
+                out.display()
+            ));
+        }
+    }
+
+    let moved = (|| {
+        for entry in
+            fs::read_dir(staging).map_err(|e| format!("read staging {}: {e}", staging.display()))?
+        {
+            let entry = entry.map_err(|e| format!("staging entry: {e}"))?;
+            let from = entry.path();
+            let to = out.join(entry.file_name());
+            // Child rename into the empty claimed directory; destination child
+            // must not exist yet (we just created out empty).
+            fs::rename(&from, &to)
+                .map_err(|e| format!("move {} → {}: {e}", from.display(), to.display()))?;
+        }
+        Ok(())
+    })();
+
+    match moved {
+        Ok(()) => {
+            if let Err(error) = fs::remove_dir(staging) {
+                // Staging should be empty; fall back so no residue remains.
+                let _ = remove_path_best_effort(staging);
+                if staging.exists() {
+                    return Err(format!(
+                        "could not remove empty staging {}: {error}",
+                        staging.display()
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Err(err) => {
+            // We created `out`; roll it back. Do not leave a torn package.
+            let _ = remove_path_best_effort(out);
+            let _ = remove_path_best_effort(staging);
             Err(err)
         }
     }
@@ -1301,6 +1386,35 @@ mod tests {
     }
 
     #[test]
+    fn check_rejects_outside_root_path_when_canonical_missing() {
+        // Review probe: delete bin/spirula, retarget path to
+        // ../baseline/bin/spirula-gpu-smoke with matching hash.
+        let dir = temp_dir("outside");
+        fake_manifest(&dir);
+        let smoke = dir.join(BIN_DIR).join("spirula-gpu-smoke");
+        let smoke_sha = sha256_file(&smoke).unwrap();
+        let smoke_size = fs::metadata(&smoke).unwrap().len();
+        fs::remove_file(dir.join(BIN_DIR).join("spirula")).unwrap();
+        rewrite_manifest(&dir, |m| {
+            for entry in m["binaries"].as_array_mut().unwrap() {
+                if entry["name"] == "spirula" {
+                    entry["path"] = json!("../baseline/bin/spirula-gpu-smoke");
+                    entry["sha256"] = json!(smoke_sha);
+                    entry["size_bytes"] = json!(smoke_size);
+                }
+            }
+        });
+        let err = check_package(&dir).expect_err("outside");
+        assert!(
+            err.contains("bin/spirula")
+                || err.contains("path must be exactly")
+                || err.contains("`..`"),
+            "{err}"
+        );
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
     fn check_rejects_symlink_binary() {
         let dir = temp_dir("symlink");
         fake_manifest(&dir);
@@ -1397,6 +1511,33 @@ mod tests {
             let name = entry.unwrap().file_name().to_string_lossy().into_owned();
             assert!(!name.starts_with(STAGING_PREFIX), "leftover staging {name}");
         }
+        let _ = remove_path_best_effort(&parent);
+    }
+
+    #[test]
+    fn publish_staging_no_clobber_preserves_existing_destination() {
+        let parent = temp_dir("noclobber");
+        let staging = unique_staging(&parent).unwrap();
+        fs::write(staging.join("payload"), b"new").unwrap();
+        let out = parent.join("out");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("sentinel"), b"keep").unwrap();
+        let err = publish_staging_no_clobber(&staging, &out).expect_err("exists");
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"keep");
+        assert!(!staging.exists(), "staging must be cleaned on refuse");
+        let _ = remove_path_best_effort(&parent);
+    }
+
+    #[test]
+    fn publish_staging_no_clobber_claims_empty_destination() {
+        let parent = temp_dir("claim");
+        let staging = unique_staging(&parent).unwrap();
+        fs::write(staging.join("payload"), b"new").unwrap();
+        let out = parent.join("out");
+        publish_staging_no_clobber(&staging, &out).expect("claim");
+        assert_eq!(fs::read(out.join("payload")).unwrap(), b"new");
+        assert!(!staging.exists());
         let _ = remove_path_best_effort(&parent);
     }
 

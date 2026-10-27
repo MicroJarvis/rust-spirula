@@ -86,11 +86,18 @@ or dangling links fail with `layout:`. This is execution/integrity consistency,
 
 ### Atomic publish
 
-1. Refuse if the destination path already exists.
-2. Write a sibling staging directory `.spirula-pkg-tmp.*`.
-3. On success, rename staging → destination (same parent).
-4. On failure, delete staging residue so a retry is clean.
-5. Paths with spaces are supported for `--out` and isolation dirs.
+Directory analog of `spirula-io` file no-clobber (`create_new` / `hard_link`):
+
+1. Fast-fail if the destination entry already exists (`symlink_metadata`).
+2. Write a sibling staging directory `.spirula-pkg-tmp.*` and verify it.
+3. Claim the destination with `create_dir(out)` — if anything appeared
+   meanwhile (including an empty directory), **refuse**, delete staging, and
+   **preserve** the existing destination (never `rename`-over).
+4. Move staging children into the claimed empty directory; on a mid-move
+   failure roll back the claimed destination and staging (no torn success).
+5. Concurrent publishers to the same `out`: exactly one `create_dir` winner;
+   losers fail without overwrite; no staging residue.
+6. Paths with spaces are supported for `--out` and isolation dirs.
 
 ### Isolated launch
 
@@ -141,12 +148,12 @@ Optional: `--from-ref <sha>`, `--profile release|dev`.
 
 | Check | Command | Sample result |
 |---|---|---|
-| Unit (canonical path/symlink/NOTICE/metadata/…) | `cargo test -p spirula-xtask --lib package::` | **14/14** |
-| Host assemble + isolated run | `cargo test -p spirula-xtask --test package_host` | **1/1** |
+| Unit (canonical path/symlink/NOTICE/metadata/no-clobber/…) | `cargo test -p spirula-xtask --lib package::` | **17/17** |
+| Host assemble + isolate + deterministic race | `cargo test -p spirula-xtask --test package_host` | **3/3** |
 | Docs consistency (74 IDs) | `cargo test -p spirula-xtask --test docs` | **ok** |
-| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** `/tmp/spirula-cursor-p2-f07-integrity-full-verify.log` |
-| Focused aggregate | unit+host+docs | `/tmp/spirula-cursor-p2-f07-integrity-focused.log` |
-| Review probes (reject) | manifest-path / empty-metadata / missing-notice / symlink / missing-canonical | package-check fails as typed `manifest:`/`layout:` |
+| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** `/tmp/spirula-cursor-p2-f07-atomic-full-verify.log` |
+| Focused host race | `/tmp/spirula-cursor-p2-f07-atomic-host.log` | preserve mid-assemble dest + 1 concurrent winner |
+| Review probes (reject) | manifest-path / empty-metadata / missing-notice / symlink / missing-canonical / atomic-race | typed fail; no-clobber preserves concurrent dest |
 
 ## Non-claims
 
