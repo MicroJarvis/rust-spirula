@@ -1,9 +1,10 @@
 # P3-F01: camera projection and coordinate conventions
 
-Status: **当前 / HOLD-MERGE** (implementation tip; await independent READY).
-Owners: `spirula-core` (pure `f64` math), `spirula-io` (fixture /
-serialization only). Builds on P1-F04 pinhole + OpenCV prefix. **Not**
-dataset parsers (P3-F03+), UI, train, or GPU projection.
+Status: **已完成**. Code tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`;
+independent READY `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`. Owners:
+`spirula-core` (pure `f64` math), `spirula-io` (fixture / serialization only).
+Builds on P1-F04 pinhole + OpenCV prefix. **Not** dataset parsers (P3-F03+),
+UI, train, or GPU projection.
 
 Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 (`CameraModel.h`, `CameraMath.h/.cpp`, `SourceCamera.h/.cpp`,
@@ -11,7 +12,7 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 
 ## Capability binding
 
-| Matrix | Scope in this tip |
+| Matrix | Scope delivered |
 |---|---|
 | C-DATA-11 | `CameraModel::{Pinhole,Fisheye,Equisolid,Equirectangular}` |
 | C-DATA-12 | `DistortionTier::{None,OpenCv,ThinPrism}`; 8-wide slots; demote/promote |
@@ -26,8 +27,8 @@ orthographic model (search of `CameraModel.h` / `CameraMath.*` /
 Orthographic appears only as GUI/viewer viewport emulation, not a training
 projection path.
 
-**Decision for this tip:** orthographic is an **explicit unsupported** model
-request (`SP-INP-004` / typed reject). It is **not** silently dropped from the
+**Decision:** orthographic is an **explicit unsupported** model request
+(`SP-INP-004` / typed reject). It is **not** silently dropped from the
 acceptance list and **not** invented as a Rust-only camera without a reference
 numeric contract. Revisit only with a pinned reference behavior + fixtures.
 **74 plan IDs unchanged.**
@@ -44,8 +45,8 @@ goldens to match GPU.
 
 - `spirula-core`: models, tiers, lens math, rays, source project, fit, pose.
   No IO/GPU/Slint.
-- `spirula-io`: read/write camera fixture JSON and preserve source params for
-  rollback; no silent rewrite of original coefficients.
+- `spirula-io`: camera catalog JSON with typed validation; preserve original
+  source params for rollback; no silent rewrite of original coefficients.
 - Shared test entry: load C++-generated goldens under
   `fixtures/camera/cpp-golden/` and holdout cases; Rust must not self-mint the
   only authority numbers.
@@ -58,7 +59,8 @@ goldens to match GPU.
 
 - `undistort_lens`: 8 Newton iters, FD step `1e-5`, det break `1e-12`, final
   residual **`< 0.01`**. Distinct from `valid_distortion` Jacobian bound
-  `0.25 < min(det,j00,j11) < 4` + outward dot ≥ 0.
+  `0.25 < min(det,j00,j11) < 4` + outward dot ≥ 0. Finite u/v and coeff rows
+  are checked before any identity short-circuit.
 - Wide `project_ray` uses `atan2(rxy, z)` (negative Z allowed for fisheye /
   equisolid past 90°).
 - Panorama: `normalize_pixel` has **no** pole slack; `ray_in_frame` allows
@@ -93,7 +95,9 @@ rejected by `is_compiled_pair` when asked for engine-ready cameras.
 
 Non-finite, overflow, zero-length rays, Newton non-convergence, folded
 Jacobian, behind-camera / out-of-domain → typed `DomainError` (`SP-INP-003` or
-`SP-INP-001`). Never return NaN pixels/rays or pretend success.
+`SP-INP-001`). Never return NaN pixels/rays or pretend success. Catalog load
+rejects zero/overflow size, non-positive/nonfinite focals, wrapped/unknown
+source ids, and `source_params` that are not exactly 16 finite `f32` values.
 
 ## Compatibility
 
@@ -104,5 +108,3 @@ existing `fixtures/golden/camera.json` numbers. New models are additive.
 
 - Not P3 dataset parsers; not redistort GPU kernels; not Slint; not train.
 - Not Phase 2 surface present; not orthographic numeric support.
-- Not marking P3-F01 **已完成** until independent READY + firm Validation;
-  this tip stays HOLD-MERGE (no merge / push / pull from this worktree).
