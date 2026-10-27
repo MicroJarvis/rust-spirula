@@ -596,6 +596,7 @@ fn run_image_prepare(
         return;
     }
 
+    use crate::image_ops::ImageWorkResult;
     let outcome = match request {
         ImagePrepareRequest::Oriented {
             path,
@@ -607,19 +608,27 @@ fn run_image_prepare(
             } else {
                 spirula_io::ApplyPolicy::FullTransform
             };
-            match crate::image_ops::run_prepare_oriented_rgb(
+            match crate::image_ops::run_prepare_oriented_rgb_cancelable(
                 std::path::Path::new(&path),
                 orientation,
                 policy,
+                Some(&cancel),
             ) {
-                Ok(img) => Ok(ImagePrepareOk::Oriented {
+                ImageWorkResult::Ready(img) => Ok(ImagePrepareOk::Oriented {
                     path,
                     width: img.width,
                     height: img.height,
                     orientation: img.orientation,
                     turns_only,
                 }),
-                Err(e) => Err(e),
+                ImageWorkResult::Failed(e) => Err(e),
+                ImageWorkResult::Canceled => {
+                    hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+                    finish_canceled(
+                        result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+                    );
+                    return;
+                }
             }
         }
         ImagePrepareRequest::Mask {
@@ -649,8 +658,12 @@ fn run_image_prepare(
                 flip,
                 boundary_offset_frac: (boundary_offset_milli as f32) / 1000.0,
             };
-            match crate::image_ops::run_prepare_normalized_mask(std::path::Path::new(&path), args) {
-                Ok(mask) => {
+            match crate::image_ops::run_prepare_normalized_mask_cancelable(
+                std::path::Path::new(&path),
+                args,
+                Some(&cancel),
+            ) {
+                ImageWorkResult::Ready(mask) => {
                     let kept = mask.samples.iter().filter(|&&v| v == 1).count() as u64;
                     Ok(ImagePrepareOk::Mask {
                         path,
@@ -660,11 +673,20 @@ fn run_image_prepare(
                         alpha,
                     })
                 }
-                Err(e) => Err(e),
+                ImageWorkResult::Failed(e) => Err(e),
+                ImageWorkResult::Canceled => {
+                    hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+                    finish_canceled(
+                        result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+                    );
+                    return;
+                }
             }
         }
     };
 
+    // Final gate before enqueue: cancel admitted during the last stage still
+    // wins (owner also arbitrates queued ImagePrepareDone vs pending cancel).
     if cancel.is_cancelled() {
         hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
         finish_canceled(

@@ -364,9 +364,18 @@ fn parse_jpeg_orientation(bytes: &[u8]) -> Result<ExifOrientation, DomainError> 
 }
 
 fn orientation_from_exif_app1(seg: &[u8]) -> Result<Option<ExifOrientation>, DomainError> {
-    // "Exif\0\0" + TIFF
-    if seg.len() < 14 || &seg[0..6] != b"Exif\0\0" {
+    // Unrelated / non-EXIF APP1 → absent (caller keeps scanning / identity).
+    if seg.len() < 6 || &seg[0..6] != b"Exif\0\0" {
         return Ok(None);
+    }
+    // Recognized Exif signature: require a full TIFF header (8 bytes). Truncation
+    // here is malformed metadata, not "missing EXIF".
+    if seg.len() < 14 {
+        return Err(err(
+            ErrorCode::MalformedRecord,
+            "exif",
+            "truncated EXIF TIFF header after Exif signature",
+        ));
     }
     let tiff = &seg[6..];
     let le = if tiff.starts_with(b"II") {
@@ -529,6 +538,62 @@ mod tests {
             read_jpeg_exif_orientation(&jpeg).unwrap(),
             ExifOrientation::IDENTITY
         );
+    }
+
+    #[test]
+    fn exif_signature_truncated_tiff_is_malformed_not_identity() {
+        // APP1 payload is exactly "Exif\0\0" (no TIFF header).
+        let jpeg = [
+            0xFFu8, 0xD8, 0xFF, 0xE1, 0x00, 0x08, b'E', b'x', b'i', b'f', 0, 0, 0xFF, 0xD9,
+        ];
+        let e = read_jpeg_exif_orientation(&jpeg).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::MalformedRecord);
+    }
+
+    #[test]
+    fn unrelated_app1_without_exif_signature_is_identity() {
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x08];
+        jpeg.extend_from_slice(b"Hello!");
+        jpeg.extend_from_slice(&[0xFF, 0xD9]);
+        assert_eq!(
+            read_jpeg_exif_orientation(&jpeg).unwrap(),
+            ExifOrientation::IDENTITY
+        );
+    }
+
+    #[test]
+    fn exif_truncation_boundaries_le_and_be() {
+        for le in [true, false] {
+            // Endian only (2 bytes) after Exif\0\0 → still short of 8-byte TIFF hdr.
+            let mut short = Vec::from(if le {
+                b"II".as_slice()
+            } else {
+                b"MM".as_slice()
+            });
+            let jpeg = wrap_app1_jpeg(&short);
+            // wrap adds Exif\0\0 + tiff; total after signature < 8 when tiff is 2 bytes
+            // → seg len = 6+2 = 8 < 14 → truncated header error.
+            let e = read_jpeg_exif_orientation(&jpeg).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::MalformedRecord, "le={le} short endian");
+
+            // Full endian+magic but truncated IFD offset field.
+            short.clear();
+            if le {
+                short.extend_from_slice(b"II");
+                short.extend_from_slice(&42u16.to_le_bytes());
+                short.extend_from_slice(&[1, 2]); // incomplete u32 IFD offset
+            } else {
+                short.extend_from_slice(b"MM");
+                short.extend_from_slice(&42u16.to_be_bytes());
+                short.extend_from_slice(&[1, 2]);
+            }
+            let e = read_jpeg_exif_orientation(&wrap_app1_jpeg(&short)).unwrap_err();
+            assert_eq!(
+                e.code(),
+                ErrorCode::MalformedRecord,
+                "le={le} trunc IFD off"
+            );
+        }
     }
 
     #[test]

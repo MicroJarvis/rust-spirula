@@ -39,4 +39,4 @@ pub use presentation::{
 };
 pub use session::{ApplicationService, SubscribeHandoffError};
 pub use state::SessionState;
-pub use worker::{FakeWorkerBehavior, StallGate, WorkerEvent};
+pub use worker::{FakeWorkerBehavior, ImagePrepareOk, StallGate, WorkerEvent};

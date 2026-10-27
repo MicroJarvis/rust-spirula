@@ -505,7 +505,9 @@ impl ApplicationService {
         };
         let is_result = matches!(
             event,
-            WorkerEvent::LoadDone { .. } | WorkerEvent::RunTerminal { .. }
+            WorkerEvent::LoadDone { .. }
+                | WorkerEvent::ImagePrepareDone { .. }
+                | WorkerEvent::RunTerminal { .. }
         );
         let tx = if is_result {
             &self.result_inject_tx
@@ -1144,6 +1146,55 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             );
             if !is_image {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Result kind must match the active image command; wrong Ok type
+            // cannot close the command (defense vs late/confused worker events).
+            let kind_matches = match &result {
+                Ok(ImagePrepareOk::Oriented { .. }) => {
+                    matches!(
+                        st.active_payload,
+                        Some(CommandPayload::PrepareOrientedImage { .. })
+                    )
+                }
+                Ok(ImagePrepareOk::Mask { .. }) => {
+                    matches!(
+                        st.active_payload,
+                        Some(CommandPayload::PrepareNormalizedMask { .. })
+                    )
+                }
+                Err(_) => true, // Err is valid for either image command
+            };
+            if !kind_matches {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Owner-side arbitration: Stop/Shutdown can win after the worker
+            // checked cancel but before this result is consumed. Under the
+            // state lock, cancel always beats Prepared/Completed/Failed.
+            if st.cancel.is_cancelled()
+                || st.pending_stop.is_some()
+                || st.pending_shutdown.is_some()
+            {
+                let reason = st.cancel.reason().unwrap_or_else(|| {
+                    if st.pending_shutdown.is_some() {
+                        CancelReason::Shutdown
+                    } else {
+                        CancelReason::User
+                    }
+                });
+                finish_active(
+                    &mut st,
+                    &shared.notifier,
+                    command_id,
+                    RunOutcome::Canceled {
+                        step: 0,
+                        reason,
+                        saved_checkpoint: None,
+                    },
+                    Some(run_id),
+                );
+                complete_pending_stop(&mut st, &shared.notifier);
                 return;
             }
             match result {

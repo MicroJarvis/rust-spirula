@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use spirula_application::{
-    ApplicationService, Command, CommandPayload, CommandResult, Event, PrepareMaskArgs,
-    SessionLimits, SubmitOutcome,
+    ApplicationService, Command, CommandPayload, CommandResult, Event, ImagePrepareOk,
+    PrepareMaskArgs, SessionLimits, SubmitOutcome, WorkerEvent,
 };
 use spirula_core::{ErrorCode, OutcomeView};
 use spirula_io::{ApplyPolicy, MaskSourceKind};
@@ -353,6 +353,202 @@ fn slow_subscriber_does_not_block_image_cancel_recovery() {
             outcome: OutcomeView::Completed { .. }
         }
     ));
+}
+
+fn assert_no_prepared(app: &ApplicationService, id: spirula_application::CommandId) {
+    let snap = app.snapshot();
+    let replay = app
+        .replay(spirula_application::EventCursor::new(snap.session_id, 0))
+        .expect("replay");
+    let spirula_application::ReplayOutcome::ControlEvents(events) = replay else {
+        panic!("resync");
+    };
+    assert!(
+        !events.iter().any(|e| {
+            e.command_id == Some(id)
+                && matches!(
+                    e.event,
+                    Event::ImagePrepared { .. } | Event::MaskPrepared { .. }
+                )
+        }),
+        "Prepared must not publish after cancel"
+    );
+}
+
+fn assert_canceled(app: &ApplicationService, id: spirula_application::CommandId) {
+    match app.command_result(id) {
+        CommandResult::Ready(env) => match env.event {
+            Event::Completed {
+                outcome: OutcomeView::Canceled { .. },
+            } => {}
+            other => panic!("expected Canceled, got {other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn owner_arbitrates_stop_over_queued_image_prepare_err() {
+    // Independent cancel_race harness: Stop wins, then a late ImagePrepareDone
+    // Err must not become Failed — owner cancels under the state lock.
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let gate = app.stall_gate();
+    gate.set_stalled(true);
+    let id = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path: fixtures()
+            .join("nonsquare_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(1), |s| {
+        s.active_command == Some(id) && s.active_run.is_some()
+    }));
+    let rid = app.snapshot().active_run.expect("active_run");
+    let _ = app.submit(Command::new(CommandPayload::Stop { save: false }));
+    app.inject_worker_event(WorkerEvent::ImagePrepareDone {
+        run_id: rid,
+        command_id: id,
+        result: Err(spirula_core::DomainError::try_new(
+            ErrorCode::ReadFailed,
+            "queued result after stop",
+        )
+        .expect("msg")),
+    })
+    .expect("inject result mailbox");
+    assert!(app.wait_until(Duration::from_secs(2), |_| {
+        matches!(app.command_result(id), CommandResult::Ready(_))
+    }));
+    assert_canceled(&app, id);
+    assert_no_prepared(&app, id);
+    gate.set_stalled(false);
+    // Late duplicate result after terminal is ignored.
+    let _ = app.inject_worker_event(WorkerEvent::ImagePrepareDone {
+        run_id: rid,
+        command_id: id,
+        result: Ok(ImagePrepareOk::Oriented {
+            path: "late".into(),
+            width: 1,
+            height: 1,
+            orientation: 1,
+            turns_only: true,
+        }),
+    });
+    assert_canceled(&app, id);
+    assert_no_prepared(&app, id);
+    // Recovery: fresh prepare completes.
+    let id2 = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path: fixtures()
+            .join("nonsquare_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    let terminal = wait_terminal(&app, id2);
+    assert!(matches!(
+        terminal.event,
+        Event::Completed {
+            outcome: OutcomeView::Completed { .. }
+        }
+    ));
+}
+
+#[test]
+fn owner_arbitrates_shutdown_over_queued_image_prepare_ok() {
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let gate = app.stall_gate();
+    gate.set_stalled(true);
+    let id = match app.submit(Command::new(CommandPayload::PrepareNormalizedMask {
+        path: fixtures()
+            .join("mask_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        dst_w: 2,
+        dst_h: 2,
+        orientation: 1,
+        turns_only: true,
+        flip: false,
+        alpha: false,
+        boundary_offset_milli: 0,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(1), |s| {
+        s.active_command == Some(id) && s.active_run.is_some()
+    }));
+    let rid = app.snapshot().active_run.expect("active_run");
+    let _ = app.submit(Command::new(CommandPayload::Shutdown));
+    app.inject_worker_event(WorkerEvent::ImagePrepareDone {
+        run_id: rid,
+        command_id: id,
+        result: Ok(ImagePrepareOk::Mask {
+            path: "should-not-publish".into(),
+            width: 2,
+            height: 2,
+            kept: 4,
+            alpha: false,
+        }),
+    })
+    .expect("inject");
+    assert!(app.wait_until(Duration::from_secs(2), |_| {
+        matches!(app.command_result(id), CommandResult::Ready(_))
+    }));
+    assert_canceled(&app, id);
+    assert_no_prepared(&app, id);
+    gate.set_stalled(false);
+}
+
+#[test]
+fn wrong_image_prepare_ok_kind_does_not_close_command() {
+    let app = ApplicationService::start(SessionLimits::for_test());
+    let gate = app.stall_gate();
+    gate.set_stalled(true);
+    let id = match app.submit(Command::new(CommandPayload::PrepareOrientedImage {
+        path: fixtures()
+            .join("nonsquare_4x2.png")
+            .to_string_lossy()
+            .into_owned(),
+        orientation: Some(1),
+        turns_only: true,
+    })) {
+        SubmitOutcome::Accepted { id } => id,
+        SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
+    };
+    assert!(app.wait_until(Duration::from_secs(1), |s| {
+        s.active_command == Some(id) && s.active_run.is_some()
+    }));
+    let rid = app.snapshot().active_run.expect("active_run");
+    // Mask Ok while Oriented is active must be dropped as stale.
+    app.inject_worker_event(WorkerEvent::ImagePrepareDone {
+        run_id: rid,
+        command_id: id,
+        result: Ok(ImagePrepareOk::Mask {
+            path: "wrong-kind".into(),
+            width: 1,
+            height: 1,
+            kept: 0,
+            alpha: false,
+        }),
+    })
+    .expect("inject");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(matches!(app.command_result(id), CommandResult::Pending));
+    let _ = app.submit(Command::new(CommandPayload::Stop { save: false }));
+    assert!(app.wait_until(Duration::from_secs(2), |_| {
+        matches!(app.command_result(id), CommandResult::Ready(_))
+    }));
+    assert_canceled(&app, id);
+    assert_no_prepared(&app, id);
+    gate.set_stalled(false);
 }
 
 #[test]

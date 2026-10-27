@@ -49,6 +49,23 @@ emits exactly one `Canceled` terminal and **never** `ImagePrepared` /
 `MaskPrepared` or a silent `Completed`. Destination dims and options are
 validated at command admission and again before allocation.
 
+### Cancel responsiveness (actual limits)
+
+Image prepare is **not** preemptible inside a single `image` crate
+`load_from_memory` / decode call. Cancel is observed cooperatively at:
+
+1. pre-decode StallGate / poll (tests can hold here);
+2. between application stages (path/EXIF → read bytes → decode → bake /
+   normalize);
+3. after the worker finishes, before enqueueing `ImagePrepareDone`;
+4. on the **owner**, under the state lock, when applying
+   `ImagePrepareDone` if Stop/Shutdown already won (queued Ok/Err cannot
+   become Prepared/Completed/Failed after cancel).
+
+There is **no** claim that image prepare meets probe-run
+`cancel_poll_interval` mid-decode latency. Wrong `ImagePrepareOk` kind vs
+active payload is dropped as stale and cannot close the command.
+
 Events: `ImagePrepared` / `MaskPrepared`. E2E:
 `crates/spirula-application/tests/image_ops_e2e.rs`.
 
@@ -74,6 +91,7 @@ consumed by orient/mask/format/offset tests.
 | Alpha `[0,255]` 2→1 | bin `1` (area/bilinear → 128) |
 | `apply_orientation` identity `channels=0` | `Err` |
 | EXIF SHORT `262` | `Err` (not truncate to 6) |
+| APP1 `Exif\0\0` without TIFF header | `MalformedRecord` (not identity) |
 
 ## Errors
 
