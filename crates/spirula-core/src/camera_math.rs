@@ -78,6 +78,13 @@ pub fn undistort_lens(
     tier: DistortionTier,
     d: &[f64; DISTORTION_PARAMS],
 ) -> Result<(f64, f64), DomainError> {
+    // Finite check before any identity short-circuit (None / zero coeffs).
+    if !(u.is_finite() && v.is_finite()) {
+        return Err(out_of_range("undistort", "finite", "nonfinite"));
+    }
+    if !d.iter().all(|c| c.is_finite()) {
+        return Err(out_of_range("distortion", "finite", "nonfinite"));
+    }
     if matches!(tier, DistortionTier::None) || !has_distortion(tier, d) {
         return Ok((u, v));
     }
@@ -600,5 +607,22 @@ impl FrameCamera {
     pub fn ray_to_pixel(self, ray: Vec3) -> Result<Vec2, DomainError> {
         let (u, v) = project_ray(ray, self.model, self.tier, &self.coeffs)?;
         Vec2::new_finite(self.fx * u + self.cx, self.fy * v + self.cy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn undistort_lens_rejects_nonfinite_before_identity() {
+        let zero = [0.0; DISTORTION_PARAMS];
+        assert!(undistort_lens(f64::NAN, 0.0, DistortionTier::None, &zero).is_err());
+        assert!(undistort_lens(0.0, f64::INFINITY, DistortionTier::None, &zero).is_err());
+        assert!(undistort_lens(0.1, 0.2, DistortionTier::OpenCv, &zero).is_ok());
+        let mut bad = zero;
+        bad[0] = f64::NAN;
+        assert!(undistort_lens(0.1, 0.2, DistortionTier::OpenCv, &bad).is_err());
+        assert!(undistort_lens(0.1, 0.2, DistortionTier::None, &bad).is_err());
     }
 }

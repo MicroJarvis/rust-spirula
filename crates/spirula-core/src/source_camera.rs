@@ -360,9 +360,28 @@ pub fn project(
     Ok((u, v))
 }
 
+/// Whether `model_id` is a projectable SourceCamera id (not `-1` exact-fit).
+pub fn is_supported_source_model(model_id: i32) -> bool {
+    matches!(
+        model_id,
+        COLMAP_FULL_OPENCV
+            | COLMAP_FOV
+            | COLMAP_RAD_TAN_THIN_PRISM_FISHEYE
+            | COLMAP_SIMPLE_DIVISION
+            | COLMAP_DIVISION
+            | COLMAP_EUCM
+            | SKEWED
+    )
+}
+
 /// Scale pixel-valued intrinsics by resolution factors (in-place).
+///
+/// Mirrors C++ `if (!(sx > 0.0) || !(sy > 0.0)) return` plus finite: NaN,
+/// ±Infinity, and non-positive scales are no-ops (do not poison params).
 pub fn rescale(model_id: i32, params: &mut [f32; MAX_PARAMS], sx: f64, sy: f64) {
-    if sx <= 0.0 || sy <= 0.0 || (sx == 1.0 && sy == 1.0) {
+    // C++ uses negated `> 0`; NaN makes that true. Also reject Infinity so
+    // scaled slots cannot become Inf.
+    if !(sx.is_finite() && sx > 0.0) || !(sy.is_finite() && sy > 0.0) || (sx == 1.0 && sy == 1.0) {
         return;
     }
     if model_id == COLMAP_SIMPLE_DIVISION {
@@ -403,6 +422,35 @@ mod tests {
         assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
         let err_neg = project(COLMAP_FOV, &p, 0.0, 0.0, -1.0).unwrap_err();
         assert_eq!(err_neg.code(), ErrorCode::ValueOutOfRange);
+    }
+
+    #[test]
+    fn rescale_nan_infinity_nonpositive_are_noop() {
+        let mut params = [0.0f32; MAX_PARAMS];
+        params[0] = 100.0;
+        params[1] = 100.0;
+        params[2] = 50.0;
+        params[3] = 50.0;
+        let before = params;
+        for (sx, sy) in [
+            (f64::NAN, 1.0),
+            (1.0, f64::NAN),
+            (f64::INFINITY, 1.0),
+            (1.0, f64::NEG_INFINITY),
+            (0.0, 1.0),
+            (-1.0, 2.0),
+            (2.0, 0.0),
+        ] {
+            let mut p = before;
+            rescale(COLMAP_FOV, &mut p, sx, sy);
+            assert_eq!(p, before, "sx={sx} sy={sy} must no-op");
+        }
+        let mut p = before;
+        rescale(COLMAP_FOV, &mut p, 2.0, 2.0);
+        assert_eq!(p[0], 200.0);
+        assert_eq!(p[1], 200.0);
+        assert_eq!(p[2], 100.0);
+        assert_eq!(p[3], 100.0);
     }
 
     #[test]

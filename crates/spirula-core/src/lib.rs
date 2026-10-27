@@ -77,5 +77,5 @@ pub use source_camera::{
     COLMAP_DIVISION, COLMAP_EUCM, COLMAP_FOV, COLMAP_FULL_OPENCV,
     COLMAP_RAD_TAN_THIN_PRISM_FISHEYE, COLMAP_SIMPLE_DIVISION, MAX_PARAMS, SKEW_BASE_EQUISOLID,
     SKEW_BASE_FISHEYE, SKEW_BASE_PERSPECTIVE, SKEW_RADIAL_POLYNOMIAL, SKEW_RADIAL_RATIONAL, SKEWED,
-    project as source_project, rescale as source_rescale,
+    is_supported_source_model, project as source_project, rescale as source_rescale,
 };

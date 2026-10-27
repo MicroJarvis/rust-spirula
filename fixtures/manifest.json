@@ -4,19 +4,14 @@
   "description": "Phase 0 minimal compatibility fixtures",
   "files": [
     {
+      "path": "camera/cpp-golden/camera_math.json",
+      "bytes": 27378,
+      "sha256": "9c587e52ddf3ee3b64e2ce2cf233008775a1d3cbf81876b6cdea1a09d42caef2"
+    },
+    {
       "path": "camera/single_camera.json",
       "bytes": 1144,
       "sha256": "65e09b22b9958afbd9523267caaa71c57ad3c589d06635a0f1057293f6c53792"
-    },
-    {
-      "path": "config/catalog.json",
-      "bytes": 41905,
-      "sha256": "4dd0aaecf8dcc78bced12a60d11a6182e026b010ac167a6749f08791b4955f05"
-    },
-    {
-      "path": "config/defaults.json",
-      "bytes": 6530,
-      "sha256": "50259f7b2d854bcb681474153f727b0f95466a24a77881a49cfc33b8deb04a74"
     },
     {
       "path": "checkpoints/tiny-run/config.json",
@@ -32,6 +27,16 @@
       "path": "checkpoints/tiny-run/step-000000001.ckpt/state.tar",
       "bytes": 10240,
       "sha256": "13936c09989920c5dbaec539b950bf119c195faf3d66def03675bdc337ac0c78"
+    },
+    {
+      "path": "config/catalog.json",
+      "bytes": 41905,
+      "sha256": "4dd0aaecf8dcc78bced12a60d11a6182e026b010ac167a6749f08791b4955f05"
+    },
+    {
+      "path": "config/defaults.json",
+      "bytes": 6530,
+      "sha256": "50259f7b2d854bcb681474153f727b0f95466a24a77881a49cfc33b8deb04a74"
     },
     {
       "path": "datasets/tiny-colmap/cameras.txt",
