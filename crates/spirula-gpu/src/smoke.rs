@@ -15,7 +15,10 @@ use crate::context::{
 };
 use crate::diagnostics::DiagnosticKind;
 use crate::pipeline::{AffineU32Params, cpu_affine_u32};
-use crate::resource::{BufferDesc, BufferUsage, RESOURCE_ACCOUNT_SOURCE, ResourceLabel};
+use crate::resource::{
+    BufferDesc, BufferHandle, BufferUsage, RESOURCE_ACCOUNT_SOURCE, ReadbackTicket, ResourceLabel,
+    SubmissionHandle,
+};
 
 /// Which smoke path was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,7 +288,57 @@ pub fn run_compute_smoke_repeat(request: &CapabilityRequest, repeat_index: u32) 
     }
 }
 
+/// Locals held across the compute smoke path so Fail exits can reclaim.
+struct SmokeLocals {
+    params: Option<BufferHandle>,
+    in_buf: Option<BufferHandle>,
+    out_buf: Option<BufferHandle>,
+    ticket: Option<ReadbackTicket>,
+    submission: Option<SubmissionHandle>,
+}
+
+impl SmokeLocals {
+    fn new() -> Self {
+        Self {
+            params: None,
+            in_buf: None,
+            out_buf: None,
+            ticket: None,
+            submission: None,
+        }
+    }
+
+    /// Drop ticket (pending readback / abandon-on-complete), abandon
+    /// **unsubmitted** pending encodes, wait any accepted submission, then drop
+    /// handles. Never frees in-flight GPU work without wait.
+    fn reclaim(&mut self, ctx: &mut GpuContext) {
+        self.ticket = None;
+        ctx.abandon_unsubmitted_pending();
+        if let Some(h) = self.submission.take() {
+            let _ = ctx.wait(h, Some(Duration::from_secs(5)));
+        }
+        self.params = None;
+        self.in_buf = None;
+        self.out_buf = None;
+        // Holds cleared → destroy_pending buffers reclaim; clear leftover encodes.
+        ctx.abandon_unsubmitted_pending();
+    }
+
+    fn fail(
+        &mut self,
+        ctx: &mut GpuContext,
+        err: &DomainError,
+        reason: impl Into<String>,
+    ) -> SmokeReport {
+        self.reclaim(ctx);
+        fail_report(SmokeKind::Compute, err, reason, Some(ctx))
+    }
+}
+
 /// Compute smoke against an already-open context (host or synthetic).
+///
+/// On every Fail path, unsubmitted pending is abandoned and accepted work is
+/// waited so the context is reusable (`current=0`, `retained=0`) when still Live.
 #[allow(clippy::result_large_err)]
 pub fn run_compute_smoke_on_context(ctx: &mut GpuContext) -> Result<SmokeReport, SmokeReport> {
     let device = ctx.report().cloned().ok_or_else(|| {
@@ -306,72 +359,109 @@ pub fn run_compute_smoke_on_context(ctx: &mut GpuContext) -> Result<SmokeReport,
     let bias = 11u32;
     let mode = 2u32;
 
-    let params = ctx
-        .create_buffer(BufferDesc {
-            label: label("spirula:gpu:buffer:smoke-params"),
-            size: 16,
-            usage: BufferUsage::UNIFORM_UPLOAD,
-        })
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "create params failed", Some(ctx)))?;
-    let in_buf = ctx
-        .create_buffer(BufferDesc {
-            label: label("spirula:gpu:buffer:smoke-in"),
-            size: u64::from(count) * 4,
-            usage: BufferUsage::STORAGE_COPY,
-        })
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "create input failed", Some(ctx)))?;
-    let out_buf = ctx
-        .create_buffer(BufferDesc {
-            label: label("spirula:gpu:buffer:smoke-out"),
-            size: u64::from(count) * 4,
-            usage: BufferUsage::STORAGE_COPY,
-        })
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "create output failed", Some(ctx)))?;
+    let mut locals = SmokeLocals::new();
 
-    ctx.upload_buffer(
-        &params,
+    match ctx.create_buffer(BufferDesc {
+        label: label("spirula:gpu:buffer:smoke-params"),
+        size: 16,
+        usage: BufferUsage::UNIFORM_UPLOAD,
+    }) {
+        Ok(b) => locals.params = Some(b),
+        Err(e) => return Err(locals.fail(ctx, &e, "create params failed")),
+    }
+    match ctx.create_buffer(BufferDesc {
+        label: label("spirula:gpu:buffer:smoke-in"),
+        size: u64::from(count) * 4,
+        usage: BufferUsage::STORAGE_COPY,
+    }) {
+        Ok(b) => locals.in_buf = Some(b),
+        Err(e) => return Err(locals.fail(ctx, &e, "create input failed")),
+    }
+    match ctx.create_buffer(BufferDesc {
+        label: label("spirula:gpu:buffer:smoke-out"),
+        size: u64::from(count) * 4,
+        usage: BufferUsage::STORAGE_COPY,
+    }) {
+        Ok(b) => locals.out_buf = Some(b),
+        Err(e) => return Err(locals.fail(ctx, &e, "create output failed")),
+    }
+
+    if let Err(e) = ctx.upload_buffer(
+        locals.params.as_ref().expect("params"),
         0,
         &AffineU32Params::new(scale, bias, count).as_bytes(),
-    )
-    .map_err(|e| fail_report(SmokeKind::Compute, &e, "upload params failed", Some(ctx)))?;
-    ctx.upload_buffer(&in_buf, 0, &words_to_bytes(&input))
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "upload input failed", Some(ctx)))?;
-    let sub = ctx
-        .submit()
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "upload submit failed", Some(ctx)))?;
-    ctx.wait(sub, Some(Duration::from_secs(5)))
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "upload wait failed", Some(ctx)))?;
+    ) {
+        return Err(locals.fail(ctx, &e, "upload params failed"));
+    }
+    if let Err(e) = ctx.upload_buffer(
+        locals.in_buf.as_ref().expect("in"),
+        0,
+        &words_to_bytes(&input),
+    ) {
+        return Err(locals.fail(ctx, &e, "upload input failed"));
+    }
+    match ctx.submit() {
+        Ok(h) => locals.submission = Some(h),
+        Err(e) => return Err(locals.fail(ctx, &e, "upload submit failed")),
+    }
+    let h = locals.submission.take().expect("submission");
+    if let Err(e) = ctx.wait(h, Some(Duration::from_secs(5))) {
+        locals.submission = Some(h);
+        return Err(locals.fail(ctx, &e, "upload wait failed"));
+    }
 
-    let pipe = ctx
-        .obtain_affine_u32_pipeline(mode)
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "pipeline obtain failed", Some(ctx)))?;
-    ctx.dispatch_affine_u32(&pipe, &params, &in_buf, &out_buf, count)
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "dispatch failed", Some(ctx)))?;
-    let sub = ctx
-        .submit()
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "dispatch submit failed", Some(ctx)))?;
-    ctx.wait(sub, Some(Duration::from_secs(5)))
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "dispatch wait failed", Some(ctx)))?;
+    let pipe = match ctx.obtain_affine_u32_pipeline(mode) {
+        Ok(p) => p,
+        Err(e) => return Err(locals.fail(ctx, &e, "pipeline obtain failed")),
+    };
+    if let Err(e) = ctx.dispatch_affine_u32(
+        &pipe,
+        locals.params.as_ref().expect("params"),
+        locals.in_buf.as_ref().expect("in"),
+        locals.out_buf.as_ref().expect("out"),
+        count,
+    ) {
+        return Err(locals.fail(ctx, &e, "dispatch failed"));
+    }
+    match ctx.submit() {
+        Ok(h) => locals.submission = Some(h),
+        Err(e) => return Err(locals.fail(ctx, &e, "dispatch submit failed")),
+    }
+    let h = locals.submission.take().expect("submission");
+    if let Err(e) = ctx.wait(h, Some(Duration::from_secs(5))) {
+        locals.submission = Some(h);
+        return Err(locals.fail(ctx, &e, "dispatch wait failed"));
+    }
 
-    let ticket = ctx
-        .readback_buffer(&out_buf, 0, u64::from(count) * 4)
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "readback encode failed", Some(ctx)))?;
-    let sub = ctx
-        .submit()
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "readback submit failed", Some(ctx)))?;
-    ctx.wait(sub, Some(Duration::from_secs(5)))
-        .map_err(|e| fail_report(SmokeKind::Compute, &e, "readback wait failed", Some(ctx)))?;
-    let got = bytes_to_words(
-        &ctx.map_readback(&ticket)
-            .map_err(|e| fail_report(SmokeKind::Compute, &e, "map failed", Some(ctx)))?,
-    );
+    match ctx.readback_buffer(
+        locals.out_buf.as_ref().expect("out"),
+        0,
+        u64::from(count) * 4,
+    ) {
+        Ok(t) => locals.ticket = Some(t),
+        Err(e) => return Err(locals.fail(ctx, &e, "readback encode failed")),
+    }
+    match ctx.submit() {
+        Ok(h) => locals.submission = Some(h),
+        Err(e) => return Err(locals.fail(ctx, &e, "readback submit failed")),
+    }
+    let h = locals.submission.take().expect("submission");
+    if let Err(e) = ctx.wait(h, Some(Duration::from_secs(5))) {
+        locals.submission = Some(h);
+        return Err(locals.fail(ctx, &e, "readback wait failed"));
+    }
+    let got = match ctx.map_readback(locals.ticket.as_ref().expect("ticket")) {
+        Ok(bytes) => bytes_to_words(&bytes),
+        Err(e) => return Err(locals.fail(ctx, &e, "map failed")),
+    };
     let expect = cpu_affine_u32(&input, scale, bias, mode);
     let match_cpu = got == expect;
 
-    drop(params);
-    drop(in_buf);
-    drop(out_buf);
-    drop(ticket);
+    // Success path: drop locals (map already consumed ticket staging).
+    locals.ticket = None;
+    locals.params = None;
+    locals.in_buf = None;
+    locals.out_buf = None;
 
     let after = ctx.resource_accounting().current_bytes;
     let retained = ctx.retained_submission_count();
@@ -381,28 +471,25 @@ pub fn run_compute_smoke_on_context(ctx: &mut GpuContext) -> Result<SmokeReport,
     let status = ctx.status();
 
     if !match_cpu {
-        return Err(fail_report(
-            SmokeKind::Compute,
+        return Err(locals.fail(
+            ctx,
             &DomainError::try_new(ErrorCode::Internal, "affine smoke CPU mismatch").expect("msg"),
             "affine output did not match cpu_affine_u32",
-            Some(ctx),
         ));
     }
     if after != 0 || retained != 0 {
-        return Err(fail_report(
-            SmokeKind::Compute,
+        return Err(locals.fail(
+            ctx,
             &DomainError::try_new(ErrorCode::Internal, "smoke accounting leak after drop")
                 .expect("msg"),
             format!("after_drop current={after} retained_submissions={retained}"),
-            Some(ctx),
         ));
     }
     if status != ContextStatus::Live {
-        return Err(fail_report(
-            SmokeKind::Compute,
+        return Err(locals.fail(
+            ctx,
             &DomainError::try_new(ErrorCode::DeviceLost, "smoke context not live").expect("msg"),
             format!("context_status={status:?}"),
-            Some(ctx),
         ));
     }
 
@@ -685,6 +772,24 @@ mod tests {
         assert_eq!(report.after_drop_current_bytes, Some(0));
         assert_eq!(report.retained_submissions, Some(0));
         assert_eq!(smoke_exit_code(&report), EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn submit_inject_fail_matches_context_current_zero_then_retry() {
+        let mut ctx = GpuContext::open_synthetic(
+            &CapabilityRequest::diagnose_default(),
+            sample_adapter(),
+            false,
+        )
+        .expect("open");
+        ctx.inject_next_submit_error();
+        let fail = run_compute_smoke_on_context(&mut ctx).expect_err("fail");
+        assert_eq!(fail.status, SmokeStatus::Fail);
+        assert_eq!(fail.after_drop_current_bytes, Some(0));
+        assert_eq!(ctx.resource_accounting().current_bytes, 0);
+        assert_eq!(ctx.retained_submission_count(), 0);
+        let pass = run_compute_smoke_on_context(&mut ctx).expect("retry");
+        assert_eq!(pass.status, SmokeStatus::Pass);
     }
 
     #[test]

@@ -688,6 +688,80 @@ impl ResourceLedger {
         }
     }
 
+    /// Drop one **unsubmitted** pending staging (upload or readback) and its
+    /// owning command / pending_hold. No-op if already submitted (not in
+    /// `pending_staging`) — never frees in-flight GPU work.
+    fn abandon_unsubmitted_staging(&mut self, staging_id: u64) -> bool {
+        let Some(idx) = self.pending_staging.iter().position(|&id| id == staging_id) else {
+            return false;
+        };
+        if let Some(cmd_idx) = self
+            .pending_commands
+            .iter()
+            .position(|c| c.staging_id == Some(staging_id))
+        {
+            self.pending_commands.remove(cmd_idx);
+        }
+        self.pending_staging.remove(idx);
+        let hold = self
+            .stagings
+            .get(&staging_id)
+            .and_then(|s| match &s.pending_hold_on {
+                Some(PendingHoldTarget::Buffer(id)) => Some(PendingHoldTarget::Buffer(*id)),
+                Some(PendingHoldTarget::Texture(id)) => Some(PendingHoldTarget::Texture(*id)),
+                None => None,
+            });
+        match hold {
+            Some(PendingHoldTarget::Buffer(bid)) => {
+                if let Some(i) = self.pending_buffers.iter().rposition(|&id| id == bid) {
+                    self.pending_buffers.remove(i);
+                }
+                if let Some(b) = self.buffers.get_mut(&bid) {
+                    b.pending_hold = b.pending_hold.saturating_sub(1);
+                }
+                self.free_staging(staging_id);
+                self.maybe_reclaim_buffer(bid);
+            }
+            Some(PendingHoldTarget::Texture(tid)) => {
+                if let Some(i) = self.pending_textures.iter().rposition(|&id| id == tid) {
+                    self.pending_textures.remove(i);
+                }
+                if let Some(t) = self.textures.get_mut(&tid) {
+                    t.pending_hold = t.pending_hold.saturating_sub(1);
+                }
+                self.free_staging(staging_id);
+                self.maybe_reclaim_texture(tid);
+            }
+            None => {
+                self.free_staging(staging_id);
+            }
+        }
+        true
+    }
+
+    /// Abandon **all** unsubmitted pending encodes: staging + compute commands
+    /// with buffer/texture holds. Does not touch submitted/in-flight work.
+    fn abandon_all_unsubmitted_pending(&mut self) {
+        let staging_ids: Vec<u64> = self.pending_staging.clone();
+        for sid in staging_ids {
+            let _ = self.abandon_unsubmitted_staging(sid);
+        }
+        // Compute (and any leftover) commands without staging ownership.
+        self.pending_commands.clear();
+        while let Some(bid) = self.pending_buffers.pop() {
+            if let Some(b) = self.buffers.get_mut(&bid) {
+                b.pending_hold = b.pending_hold.saturating_sub(1);
+            }
+            self.maybe_reclaim_buffer(bid);
+        }
+        while let Some(tid) = self.pending_textures.pop() {
+            if let Some(t) = self.textures.get_mut(&tid) {
+                t.pending_hold = t.pending_hold.saturating_sub(1);
+            }
+            self.maybe_reclaim_texture(tid);
+        }
+    }
+
     /// Last `ReadbackTicket` dropped without a successful map.
     fn on_readback_ticket_dropped(&mut self, staging_id: u64) {
         let Some(st) = self.stagings.get(&staging_id) else {
@@ -700,52 +774,8 @@ impl ResourceLedger {
             self.free_staging(staging_id);
             return;
         }
-        // Still encoded pending (not submitted): remove the command that owns
-        // this staging (by staging_id, not by parallel index), then holds +
-        // staging. Compute commands carry `staging_id: None` and are untouched.
-        // Synthetic may have staging without a wgpu command — free staging only.
-        if let Some(idx) = self.pending_staging.iter().position(|&id| id == staging_id) {
-            if let Some(cmd_idx) = self
-                .pending_commands
-                .iter()
-                .position(|c| c.staging_id == Some(staging_id))
-            {
-                self.pending_commands.remove(cmd_idx);
-            }
-            self.pending_staging.remove(idx);
-            let hold = self
-                .stagings
-                .get(&staging_id)
-                .and_then(|s| match &s.pending_hold_on {
-                    Some(PendingHoldTarget::Buffer(id)) => Some(PendingHoldTarget::Buffer(*id)),
-                    Some(PendingHoldTarget::Texture(id)) => Some(PendingHoldTarget::Texture(*id)),
-                    None => None,
-                });
-            match hold {
-                Some(PendingHoldTarget::Buffer(bid)) => {
-                    if let Some(i) = self.pending_buffers.iter().rposition(|&id| id == bid) {
-                        self.pending_buffers.remove(i);
-                    }
-                    if let Some(b) = self.buffers.get_mut(&bid) {
-                        b.pending_hold = b.pending_hold.saturating_sub(1);
-                    }
-                    self.free_staging(staging_id);
-                    self.maybe_reclaim_buffer(bid);
-                }
-                Some(PendingHoldTarget::Texture(tid)) => {
-                    if let Some(i) = self.pending_textures.iter().rposition(|&id| id == tid) {
-                        self.pending_textures.remove(i);
-                    }
-                    if let Some(t) = self.textures.get_mut(&tid) {
-                        t.pending_hold = t.pending_hold.saturating_sub(1);
-                    }
-                    self.free_staging(staging_id);
-                    self.maybe_reclaim_texture(tid);
-                }
-                None => {
-                    self.free_staging(staging_id);
-                }
-            }
+        // Still encoded pending (not submitted): remove owning command + holds.
+        if self.abandon_unsubmitted_staging(staging_id) {
             return;
         }
         // Submitted, GPU not finished: wait will reap.
@@ -863,6 +893,17 @@ impl GpuContext {
                 textures: 0,
                 current_bytes: 0,
             })
+    }
+
+    /// Abandon all **unsubmitted** pending encodes (upload/readback staging and
+    /// compute commands). Releases pending holds and frees staging accounted
+    /// bytes. Does **not** free in-flight GPU work — call [`Self::wait`] on any
+    /// accepted [`SubmissionHandle`] first (or mark readback abandon-on-complete
+    /// via ticket Drop). Safe after submit inject / preflight failures.
+    pub fn abandon_unsubmitted_pending(&mut self) {
+        if let Ok(mut led) = self.resource_ledger.lock() {
+            led.abandon_all_unsubmitted_pending();
+        }
     }
 
     /// Retained submission records (completed waits reap metadata).

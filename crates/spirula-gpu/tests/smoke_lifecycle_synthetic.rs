@@ -108,3 +108,43 @@ fn synthetic_surface_smoke_unsupported_no_forged_window() {
             .is_some_and(|r| r.contains("will not forge a window"))
     );
 }
+
+#[test]
+fn synthetic_submit_inject_fail_reclaims_then_retry_passes() {
+    let mut ctx = open_ctx();
+    ctx.inject_next_submit_error();
+    let fail = run_compute_smoke_on_context(&mut ctx).expect_err("injected submit must Fail");
+    assert_eq!(fail.status, SmokeStatus::Fail);
+    assert_eq!(fail.error_code.as_deref(), Some("SP-GPU-003"));
+    assert_eq!(fail.after_drop_current_bytes, Some(0));
+    assert_eq!(fail.retained_submissions, Some(0));
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    assert_eq!(ctx.retained_submission_count(), 0);
+    assert_eq!(ctx.pending_resource_counts().stagings, 0);
+    assert_eq!(ctx.pending_resource_counts().commands, 0);
+    assert_eq!(ctx.status(), ContextStatus::Live);
+
+    let pass = run_compute_smoke_on_context(&mut ctx).expect("retry pass");
+    assert_eq!(pass.status, SmokeStatus::Pass);
+    assert_eq!(pass.after_drop_current_bytes, Some(0));
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_wait_timeout_fail_reclaims_for_reuse() {
+    let mut ctx = open_ctx();
+    // Encode uploads then timeout the first wait inside smoke.
+    ctx.inject_next_wait_timeout();
+    let fail = run_compute_smoke_on_context(&mut ctx).expect_err("timeout must Fail");
+    assert_eq!(fail.status, SmokeStatus::Fail);
+    assert_eq!(fail.error_code.as_deref(), Some("SP-GPU-003"));
+    assert_eq!(fail.after_drop_current_bytes, Some(0));
+    assert_eq!(fail.retained_submissions, Some(0));
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    assert_eq!(ctx.retained_submission_count(), 0);
+    assert_eq!(ctx.status(), ContextStatus::Live);
+
+    let pass = run_compute_smoke_on_context(&mut ctx).expect("retry after timeout reclaim");
+    assert_eq!(pass.status, SmokeStatus::Pass);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}

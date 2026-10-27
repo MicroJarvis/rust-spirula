@@ -4,7 +4,8 @@ use spirula_core::EXIT_SUCCESS;
 use spirula_gpu::{
     CapabilityRequest, ContextStatus, GpuContext, SmokeStatus, format_smoke_report,
     probe_smoke_lost_fail, probe_smoke_timeout_fail, probe_smoke_validation_fail,
-    run_compute_smoke, run_compute_smoke_repeat, run_surface_smoke_gated, smoke_exit_code,
+    run_compute_smoke, run_compute_smoke_on_context, run_compute_smoke_repeat,
+    run_surface_smoke_gated, smoke_exit_code,
 };
 
 #[test]
@@ -82,6 +83,45 @@ fn host_smoke_fail_probes_or_unavailable() {
         Err(failure) => {
             eprintln!(
                 "host_smoke_fail_probes unavailable stage={:?} {}",
+                failure.stage,
+                failure.error.message()
+            );
+        }
+    }
+}
+
+#[test]
+fn host_submit_inject_fail_reclaims_then_retry_or_unavailable() {
+    let request = CapabilityRequest::diagnose_default();
+    match GpuContext::open(&request) {
+        Ok(mut ctx) => {
+            ctx.inject_next_submit_error();
+            let fail =
+                run_compute_smoke_on_context(&mut ctx).expect_err("injected submit must Fail");
+            eprintln!("submit inject fail: {}", format_smoke_report(&fail));
+            assert_eq!(fail.status, SmokeStatus::Fail);
+            assert_eq!(fail.error_code.as_deref(), Some("SP-GPU-003"));
+            assert_eq!(fail.after_drop_current_bytes, Some(0));
+            assert_eq!(fail.retained_submissions, Some(0));
+            assert_eq!(
+                ctx.resource_accounting().current_bytes,
+                0,
+                "stranded pending must not remain after smoke Fail"
+            );
+            assert_eq!(ctx.retained_submission_count(), 0);
+            assert_eq!(ctx.pending_resource_counts().stagings, 0);
+            assert_eq!(ctx.pending_resource_counts().commands, 0);
+
+            let pass = run_compute_smoke_on_context(&mut ctx).expect("retry pass");
+            eprintln!("retry pass: {}", format_smoke_report(&pass));
+            assert_eq!(pass.status, SmokeStatus::Pass);
+            assert_eq!(pass.after_drop_current_bytes, Some(0));
+            assert_eq!(ctx.resource_accounting().current_bytes, 0);
+            ctx.close();
+        }
+        Err(failure) => {
+            eprintln!(
+                "host_submit_inject unavailable stage={:?} {}",
                 failure.stage,
                 failure.error.message()
             );

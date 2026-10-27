@@ -32,6 +32,11 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`.
   (not a false pass). Exit 0.
 - Fail probes (tests): validation → `SP-INP-003`; wait timeout → `SP-GPU-003`
   then reclaim; lost → `SP-GPU-002`. Reuses P2-F05 inject/diagnostic paths.
+- Every compute Fail exit abandons **unsubmitted** pending (staging/holds) and
+  waits any accepted submission before dropping handles — report
+  `after_drop current=0` / `retained=0` must match live context accounting so
+  the context stays reusable (submit-inject → retry pass). Never frees in-flight
+  GPU work without wait.
 
 ### Surface smoke
 
