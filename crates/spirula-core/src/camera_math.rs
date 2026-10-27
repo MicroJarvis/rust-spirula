@@ -125,6 +125,12 @@ pub fn valid_distortion(
     tier: DistortionTier,
     d: &[f64; DISTORTION_PARAMS],
 ) -> Result<bool, DomainError> {
+    if !(u.is_finite() && v.is_finite()) {
+        return Err(out_of_range("normalized", "finite", "nonfinite"));
+    }
+    if !d.iter().all(|c| c.is_finite()) {
+        return Err(out_of_range("distortion", "finite", "nonfinite"));
+    }
     if matches!(tier, DistortionTier::None) {
         return Ok(true);
     }
@@ -143,6 +149,12 @@ pub fn distort_point(
     tier: DistortionTier,
     d: &[f64; DISTORTION_PARAMS],
 ) -> Result<(f64, f64), DomainError> {
+    if !(u.is_finite() && v.is_finite()) {
+        return Err(out_of_range("normalized", "finite", "nonfinite"));
+    }
+    if !d.iter().all(|c| c.is_finite()) {
+        return Err(out_of_range("distortion", "finite", "nonfinite"));
+    }
     if matches!(model, CameraModel::Equirectangular) {
         return Ok((u, v));
     }
@@ -624,5 +636,64 @@ mod tests {
         bad[0] = f64::NAN;
         assert!(undistort_lens(0.1, 0.2, DistortionTier::OpenCv, &bad).is_err());
         assert!(undistort_lens(0.1, 0.2, DistortionTier::None, &bad).is_err());
+    }
+
+    #[test]
+    fn valid_distortion_rejects_nonfinite_before_none_identity() {
+        let zero = [0.0; DISTORTION_PARAMS];
+        assert!(valid_distortion(f64::NAN, 0.0, DistortionTier::None, &zero).is_err());
+        assert!(valid_distortion(0.0, f64::INFINITY, DistortionTier::None, &zero).is_err());
+        assert!(valid_distortion(0.1, 0.2, DistortionTier::None, &zero).unwrap());
+        let mut bad = zero;
+        bad[3] = f64::NEG_INFINITY;
+        assert!(valid_distortion(0.1, 0.2, DistortionTier::None, &bad).is_err());
+    }
+
+    #[test]
+    fn distort_point_equirect_rejects_nonfinite_before_passthrough() {
+        let zero = [0.0; DISTORTION_PARAMS];
+        assert!(
+            distort_point(
+                f64::NAN,
+                0.0,
+                CameraModel::Equirectangular,
+                DistortionTier::None,
+                &zero
+            )
+            .is_err()
+        );
+        assert!(
+            distort_point(
+                0.0,
+                f64::INFINITY,
+                CameraModel::Equirectangular,
+                DistortionTier::None,
+                &zero
+            )
+            .is_err()
+        );
+        assert_eq!(
+            distort_point(
+                0.5,
+                -0.25,
+                CameraModel::Equirectangular,
+                DistortionTier::None,
+                &zero
+            )
+            .unwrap(),
+            (0.5, -0.25)
+        );
+        let mut bad = zero;
+        bad[7] = f64::NAN;
+        assert!(
+            distort_point(
+                0.5,
+                -0.25,
+                CameraModel::Equirectangular,
+                DistortionTier::None,
+                &bad
+            )
+            .is_err()
+        );
     }
 }
