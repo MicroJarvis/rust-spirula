@@ -79,13 +79,17 @@ wgpu `COPY_BYTES_PER_ROW_ALIGNMENT` (256); tight host RGBA has no padding.
 3. Readback → map → tight RGBA.
 4. Exact match vs CPU pattern or typed fail.
 5. **Fail reclaim (P2-F06 semantics):** on Err after resources exist, drop
-   ticket, `abandon_unsubmitted_pending`, then **wait the accepted submission
-   while retaining the handle** until Ok (never `take`+ignore timeout Err).
-   If reclaim wait cannot finish within its deadline → **close the context**
-   (ledger invalidate) and report that honestly — do **not** claim Live
-   `current==0` after discarding the only handle. When reclaim succeeds on a
-   still-Live context: `current_bytes == 0`, pending empty,
-   `retained_submission_count == 0` (exact), then retryable.
+   ticket, `abandon_unsubmitted_pending`. Distinguish **already-reaped
+   terminal** wait errors (post-submit Validation / OOM: wait reaps then
+   returns typed `SP-GPU-003` / `SP-GPU-004`) from **still in-flight**
+   timeout/cancel. Only wait a handle that is still accepted; clear
+   `locals.submission` when wait already reaped. Preserve the original typed
+   produce error when reclaim is clean (do not overwrite OOM with
+   `reclaim wait failed`). If an in-flight reclaim wait cannot finish within
+   its deadline → **close the context** (ledger invalidate) and report that
+   honestly — do **not** claim Live `current==0` after discarding the only
+   handle. When reclaim succeeds on a still-Live context: `current_bytes == 0`,
+   pending empty, `retained_submission_count == 0` (exact), then retryable.
 6. Wait uses short slices with a **total deadline** (not `wait(..., None)`);
    `cancel=None` still bounds wall time; cancel token remains observable when
    present. Timeout inject keeps the submission for the next slice/reclaim.
@@ -121,8 +125,11 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 - `mark_software_paint_verified` only from a verified paint path
   (`RenderingState::AfterRendering`). If the notifier is unsupported, paint
   stays **unverified** — never mark before the window draws.
-- Probe binary: worker opens GPU; UI timer polls status/frames; window stays
-  open for CUA. Software renderer ≠ wgpu surface present.
+- Probe binary: worker opens GPU; UI timer polls status/frames; auto-cycles
+  application `resize` → `request_frame` → display across sizes (64×48, 65×3,
+  63×2, 128×72) with generation gate — not window-stretch of a fixed buffer.
+  Tech buttons also drive resize. Window stays open for CUA. Software renderer
+  ≠ wgpu surface present.
 - No navigation chrome (P6-F03).
 
 ### Measurement honesty
@@ -171,6 +178,7 @@ Illegal sizes: `0` or `>4096` → typed `ValueOutOfRange` before GPU work.
 | Date | Host | Command | Result |
 |---|---|---|---|
 | 2026-10-27 | macOS aarch64 (this worktree) | `cargo run -p spirula-ui --bin spirula-presentation-probe` (left visible for CUA) | **进行中** — window launched for operator/CUA check of display/resize/close; not claimed complete until CUA confirms draw |
+| 2026-10-27 | macOS aarch64 | `/tmp/SpirulaPresentationProbe.app` via `open` (bundle id `local.spirula.presentation-probe`; ad-hoc codesign; not a P9 package; not in repo) | **进行中** — CUA inventory could not attach to bare binary; .app wrapper for operator/CUA; multi-size frame stream; draw not claimed complete |
 
 ## Non-claims
 

@@ -69,10 +69,11 @@ impl PresentLocals {
         }
     }
 
-    /// Drop ticket, abandon unsubmitted, wait accepted submission **keeping the
-    /// handle until Ok**. If wait cannot finish within the reclaim deadline,
-    /// close the context (ledger invalidate) and return Err — do **not** claim
-    /// Live `current==0` after discarding the only handle on a timeout Err.
+    /// Drop ticket, abandon unsubmitted. Only wait a submission that is still
+    /// accepted/in-flight. Already-reaped terminal wait errors leave
+    /// `submission=None` (or yield "unknown submission handle") — treat as
+    /// clean, preserve the caller's typed error. True in-flight timeout that
+    /// cannot finish → close context and report (do not drop the only handle).
     fn reclaim(&mut self, ctx: &mut GpuContext) -> Result<(), DomainError> {
         self.ticket = None;
         ctx.abandon_unsubmitted_pending();
@@ -81,15 +82,18 @@ impl PresentLocals {
                 Ok(()) => {
                     self.submission = None;
                 }
-                Err(e) => {
-                    // Handle still owned conceptually until close tears down the
-                    // ledger; closing avoids a lost accepted submission.
+                Err(e) if is_unknown_submission(&e) => {
+                    // Prior wait already reaped (e.g. post-submit Validation/OOM).
                     self.submission = None;
+                }
+                Err(e) if is_wait_timeout(&e) || e.code() == ErrorCode::Canceled => {
+                    // Still in-flight: cannot discard the only handle.
                     self.tex = None;
                     ctx.abandon_unsubmitted_pending();
                     if ctx.status() == ContextStatus::Live {
                         ctx.close();
                     }
+                    self.submission = None;
                     return Err(DomainError::try_new(
                         ErrorCode::SubmitFailed,
                         format!(
@@ -100,6 +104,29 @@ impl PresentLocals {
                     )
                     .expect("msg"));
                 }
+                Err(e) => {
+                    // Other wait failures after a still-listed submission: try
+                    // one more interpretation — if retained is already 0, treat
+                    // as reaped; else close.
+                    if ctx.retained_submission_count() == 0 {
+                        self.submission = None;
+                    } else {
+                        self.tex = None;
+                        ctx.abandon_unsubmitted_pending();
+                        if ctx.status() == ContextStatus::Live {
+                            ctx.close();
+                        }
+                        self.submission = None;
+                        return Err(DomainError::try_new(
+                            ErrorCode::SubmitFailed,
+                            format!(
+                                "presentation reclaim wait failed; context closed ({})",
+                                e.message()
+                            ),
+                        )
+                        .expect("msg"));
+                    }
+                }
             }
         }
         self.tex = None;
@@ -108,11 +135,16 @@ impl PresentLocals {
     }
 
     fn fail(&mut self, ctx: &mut GpuContext, err: DomainError) -> DomainError {
+        // Always prefer the original typed produce error when reclaim is clean.
         match self.reclaim(ctx) {
             Ok(()) => err,
             Err(reclaim_err) => reclaim_err,
         }
     }
+}
+
+fn is_unknown_submission(err: &DomainError) -> bool {
+    err.message().contains("unknown submission handle")
 }
 
 const WAIT_SLICE: Duration = Duration::from_millis(50);
@@ -239,7 +271,11 @@ pub fn produce_probe_rgba_frame(
 
     let submission = *locals.submission.as_ref().expect("submission");
     if let Err(e) = wait_cancelable(ctx, submission, cancel) {
-        // Timeout inject / cancel / other: reclaim waits the retained handle.
+        // Post-submit Validation/OOM: wait already reaped → clear handle.
+        // Timeout / cancel mid-wait: submission still accepted → reclaim waits.
+        if !is_wait_timeout(&e) && e.code() != ErrorCode::Canceled {
+            locals.submission = None;
+        }
         return Err(locals.fail(ctx, e));
     }
     // Successful wait reaped the submission record.
@@ -437,6 +473,69 @@ mod tests {
         ctx.inject_next_wait_timeout();
         let frame = produce_probe_rgba_frame(&mut ctx, 65, 3, 1, 0, None).expect("retry wait");
         assert_eq!((frame.width, frame.height), (65, 3));
+        drop(frame);
+        assert_presentation_cleanup(&ctx);
+        ctx.close();
+    }
+
+    #[test]
+    fn post_submit_validation_preserves_typed_err_live_retry_or_skip() {
+        use crate::diagnostics::ScopeErrorInject;
+        let request = CapabilityRequest::diagnose_default();
+        let mut ctx = match GpuContext::open(&request) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skip: no GPU ({})", e.error);
+                return;
+            }
+        };
+        ctx.inject_next_post_submit_scope_error(ScopeErrorInject::Validation);
+        let err = produce_probe_rgba_frame(&mut ctx, 65, 3, 1, 0, None).expect_err("validation");
+        assert_eq!(err.code(), ErrorCode::SubmitFailed, "{err}");
+        assert!(
+            err.message().contains("validation") || err.message().contains("injected"),
+            "{}",
+            err.message()
+        );
+        assert!(
+            !err.message().contains("reclaim wait failed"),
+            "must not overwrite typed err: {}",
+            err.message()
+        );
+        assert_eq!(ctx.status(), ContextStatus::Live);
+        assert_presentation_cleanup(&ctx);
+        let frame = produce_probe_rgba_frame(&mut ctx, 8, 4, 2, 0, None).expect("retry");
+        drop(frame);
+        assert_presentation_cleanup(&ctx);
+        ctx.close();
+    }
+
+    #[test]
+    fn post_submit_oom_preserves_sp_gpu_004_live_retry_or_skip() {
+        use crate::diagnostics::ScopeErrorInject;
+        let request = CapabilityRequest::diagnose_default();
+        let mut ctx = match GpuContext::open(&request) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skip: no GPU ({})", e.error);
+                return;
+            }
+        };
+        ctx.inject_next_post_submit_scope_error(ScopeErrorInject::OutOfMemory {
+            requested_bytes: Some(1536),
+            current_bytes: Some(4608),
+            budget_bytes: Some(8192),
+        });
+        let err = produce_probe_rgba_frame(&mut ctx, 65, 3, 1, 0, None).expect_err("oom");
+        assert_eq!(err.code(), ErrorCode::AllocationFailed, "{err}");
+        assert!(
+            !err.message().contains("reclaim wait failed"),
+            "must preserve SP-GPU-004: {}",
+            err.message()
+        );
+        assert_eq!(ctx.status(), ContextStatus::Live);
+        assert_presentation_cleanup(&ctx);
+        let frame = produce_probe_rgba_frame(&mut ctx, 8, 4, 2, 0, None).expect("retry");
         drop(frame);
         assert_presentation_cleanup(&ctx);
         ctx.close();
