@@ -13,6 +13,7 @@ mod disk_log;
 mod event;
 mod history;
 mod ids;
+mod image_ops;
 mod limits;
 mod notify;
 mod presentation;
@@ -29,6 +30,7 @@ pub use event::{
     ReplayOutcome, RunOutcome, Snapshot,
 };
 pub use ids::{CommandId, RunId, SessionId};
+pub use image_ops::{NormalizedMask, OrientedRgb, PrepareMaskArgs};
 pub use limits::SessionLimits;
 pub use notify::{SubscribeError, Subscription};
 pub use presentation::{

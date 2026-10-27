@@ -156,9 +156,12 @@ refer to [fixtures.md](fixtures.md).
   baseline.
 - `C-DATA-07` / `C-DATA-08` / `C-DATA-10` are **进行中** under P3-F02
   ([phase-3/image-orient-mask.md](../phase-3/image-orient-mask.md)): PNG/JPEG
-  size probe, JPEG EXIF Orientation 1..8, pixel bake with AD-P3-F02-01
-  turns-only apply policy, mask nonzero / alpha≥128 normalize + nearest
-  resize. EXR/TIFF/BMP/TGA and depth/normal stay out of this tip.
+  **header-only** size probe with encoded/pixel budgets before decode; JPEG
+  EXIF Orientation 1..8 (full SHORT `u16`, LE/BE, bad IFD rejected); pixel bake
+  with AD-P3-F02-01 turns-only / full policies; mask NonZero via stbi gray
+  (alpha ignored) + nearest; Alpha LA/RGBA via `cpu_resize` then ≥128; C++
+  pixel goldens + `spirula-application` session entry. EXR/TIFF/BMP/TGA,
+  depth/normal, and mask boundary EDT stay out of this tip.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.

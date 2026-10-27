@@ -3828,6 +3828,7 @@ dependencies = [
  "libc",
  "spirula-core",
  "spirula-gpu",
+ "spirula-io",
 ]
 
 [[package]]

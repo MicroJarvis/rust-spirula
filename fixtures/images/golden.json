@@ -25,5 +25,18 @@
     "orientation": 6,
     "out_w": 2,
     "out_h": 4
+  },
+  "cpp_orient_mask_golden": {
+    "path": "cpp_orient_mask_golden.json",
+    "schema": "spirula-image-orient-mask-cpp-golden",
+    "version": 1,
+    "reference_commit": "9a24f09927944a795e7ba1bd8243a625bf419479",
+    "generator": "tools/image-orient-golden",
+    "covers": [
+      "orient_full_1_8",
+      "orient_turns_1_8",
+      "mask_nearest",
+      "alpha_cpu_resize"
+    ]
   }
 }

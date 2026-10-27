@@ -4,13 +4,15 @@
 //! `9a24f099` `sfm/core/Exif.h` + `core/ImageOrient.h`. DataManager `apply`
 //! turns-only policy is [`ApplyPolicy::TurnsOnly`].
 
-use std::fs;
 use std::path::Path;
 
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 
 /// Hard cap on decoded / oriented pixel count (`AD-P3-F02-02`).
 pub const MAX_IMAGE_PIXELS: u64 = 16_777_216;
+
+/// Hard cap on encoded file / buffer size before decode (`AD-P3-F02-02`).
+pub const MAX_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Config modes from `TrainConfig::exif_orientation`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,8 +57,13 @@ impl ExifOrientation {
     pub const IDENTITY: Self = Self(1);
 
     pub fn from_u8(v: u8) -> Result<Self, DomainError> {
+        Self::from_u16(u16::from(v))
+    }
+
+    /// EXIF Orientation is a TIFF SHORT; validate the full `u16` (257/262 must not become 1/6).
+    pub fn from_u16(v: u16) -> Result<Self, DomainError> {
         if (1..=8).contains(&v) {
-            Ok(Self(v))
+            Ok(Self(v as u8))
         } else {
             Err(err(
                 ErrorCode::ValueOutOfRange,
@@ -240,8 +247,19 @@ pub fn apply_orientation(
         xf.mirror = false;
     }
     if xf.identity() {
+        // Still validate channels 1..=4 and budgets (ImageOrient contract).
         ensure_pixel_budget(width, height)?;
-        let n = (width as usize) * (height as usize) * (channels as usize);
+        if channels == 0 || channels > 4 {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                "channels",
+                format!("expected 1..=4, got {channels}"),
+            ));
+        }
+        let n = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(channels as usize))
+            .ok_or_else(|| err(ErrorCode::ValueOutOfRange, "image_size", "overflow"))?;
         if src.len() < n || dst.len() < n {
             return Err(err(ErrorCode::MalformedRecord, "pixels", "buffer short"));
         }
@@ -266,13 +284,7 @@ pub fn read_path_exif_orientation(path: &Path) -> Result<ExifOrientation, Domain
     if ext != "jpg" && ext != "jpeg" {
         return Ok(ExifOrientation::IDENTITY);
     }
-    let bytes = fs::read(path).map_err(|e| {
-        err(
-            ErrorCode::ReadFailed,
-            "path",
-            format!("read {}: {e}", path.display()),
-        )
-    })?;
+    let bytes = crate::image_probe::read_image_bytes_capped(path)?;
     read_jpeg_exif_orientation(&bytes)
 }
 
@@ -391,29 +403,48 @@ fn orientation_from_exif_app1(seg: &[u8]) -> Result<Option<ExifOrientation>, Dom
     if read_u16(2)? != 42 {
         return Err(err(ErrorCode::MalformedRecord, "exif", "bad TIFF magic"));
     }
-    let mut ifd = read_u32(4)? as usize;
-    // Walk IFD0 for tag 0x0112 Orientation (SHORT).
-    if ifd + 2 > tiff.len() {
-        return Ok(None);
+    let ifd0 = read_u32(4)? as usize;
+    // Reject IFD offsets that cannot hold the entry count.
+    if ifd0.checked_add(2).is_none_or(|end| end > tiff.len()) {
+        return Err(err(
+            ErrorCode::MalformedRecord,
+            "exif",
+            "IFD0 offset out of range",
+        ));
     }
-    let count = read_u16(ifd)? as usize;
-    ifd += 2;
-    for e in 0..count {
-        let off = ifd + e * 12;
-        if off + 12 > tiff.len() {
-            return Err(err(
-                ErrorCode::MalformedRecord,
-                "exif",
-                "truncated IFD entry",
-            ));
-        }
+    let count = read_u16(ifd0)? as usize;
+    let entries_end = ifd0
+        .checked_add(2)
+        .and_then(|s| s.checked_add(count.saturating_mul(12)))
+        .ok_or_else(|| err(ErrorCode::MalformedRecord, "exif", "IFD size overflow"))?;
+    if entries_end > tiff.len() {
+        return Err(err(
+            ErrorCode::MalformedRecord,
+            "exif",
+            "truncated IFD entries",
+        ));
+    }
+    let mut ifd = ifd0 + 2;
+    for _ in 0..count {
+        let off = ifd;
+        ifd += 12;
         let tag = read_u16(off)?;
         let typ = read_u16(off + 2)?;
         let n = read_u32(off + 4)?;
-        if tag == 0x0112 && typ == 3 && n == 1 {
-            let v = read_u16(off + 8)? as u8;
-            return Ok(Some(ExifOrientation::from_u8(v)?));
+        if tag != 0x0112 {
+            continue;
         }
+        // Orientation must be TIFF SHORT count 1; reject wrong type/count.
+        if typ != 3 || n != 1 {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "exif",
+                format!("Orientation tag type={typ} count={n}, expected SHORT/1"),
+            ));
+        }
+        // Value fits in the 4-byte value/offset field for SHORT/1.
+        let v = read_u16(off + 8)?;
+        return Ok(Some(ExifOrientation::from_u16(v)?));
     }
     Ok(None)
 }
@@ -498,5 +529,122 @@ mod tests {
             read_jpeg_exif_orientation(&jpeg).unwrap(),
             ExifOrientation::IDENTITY
         );
+    }
+
+    #[test]
+    fn identity_apply_still_rejects_bad_channels() {
+        let src = [1u8, 2, 3];
+        let mut dst = [0u8; 3];
+        let e = apply_orientation(
+            &src,
+            1,
+            1,
+            5,
+            ExifOrientation::IDENTITY,
+            ApplyPolicy::TurnsOnly,
+            &mut dst,
+        )
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn from_u16_rejects_257_and_262() {
+        // Truncating to u8 would wrongly yield 1 and 6.
+        assert!(ExifOrientation::from_u16(257).is_err());
+        assert!(ExifOrientation::from_u16(262).is_err());
+        assert_eq!(ExifOrientation::from_u16(6).unwrap().get(), 6);
+    }
+
+    fn wrap_app1_jpeg(tiff: &[u8]) -> Vec<u8> {
+        let mut app1 = Vec::new();
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(tiff);
+        let seglen = (app1.len() + 2) as u16;
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        jpeg.extend_from_slice(&seglen.to_be_bytes());
+        jpeg.extend_from_slice(&app1);
+        jpeg.extend_from_slice(&[0xFF, 0xD9]);
+        jpeg
+    }
+
+    fn tiff_with_orientation(le: bool, value: u16) -> Vec<u8> {
+        let mut t = Vec::new();
+        if le {
+            t.extend_from_slice(b"II");
+        } else {
+            t.extend_from_slice(b"MM");
+        }
+        let put_u16 = |t: &mut Vec<u8>, v: u16| {
+            if le {
+                t.extend_from_slice(&v.to_le_bytes());
+            } else {
+                t.extend_from_slice(&v.to_be_bytes());
+            }
+        };
+        let put_u32 = |t: &mut Vec<u8>, v: u32| {
+            if le {
+                t.extend_from_slice(&v.to_le_bytes());
+            } else {
+                t.extend_from_slice(&v.to_be_bytes());
+            }
+        };
+        put_u16(&mut t, 42);
+        put_u32(&mut t, 8); // IFD0 at offset 8
+        put_u16(&mut t, 1); // 1 entry
+        put_u16(&mut t, 0x0112);
+        put_u16(&mut t, 3); // SHORT
+        put_u32(&mut t, 1);
+        put_u16(&mut t, value);
+        put_u16(&mut t, 0); // pad
+        put_u32(&mut t, 0); // next IFD
+        t
+    }
+
+    #[test]
+    fn exif_orientation_le_and_be() {
+        for le in [true, false] {
+            let jpeg = wrap_app1_jpeg(&tiff_with_orientation(le, 6));
+            assert_eq!(
+                read_jpeg_exif_orientation(&jpeg).unwrap().get(),
+                6,
+                "le={le}"
+            );
+        }
+    }
+
+    #[test]
+    fn exif_rejects_short_value_257() {
+        let jpeg = wrap_app1_jpeg(&tiff_with_orientation(true, 257));
+        let e = read_jpeg_exif_orientation(&jpeg).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    }
+
+    #[test]
+    fn exif_rejects_bad_ifd_offset() {
+        let mut t = Vec::new();
+        t.extend_from_slice(b"II");
+        t.extend_from_slice(&42u16.to_le_bytes());
+        t.extend_from_slice(&10_000u32.to_le_bytes()); // IFD far past end
+        let jpeg = wrap_app1_jpeg(&t);
+        let e = read_jpeg_exif_orientation(&jpeg).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::MalformedRecord);
+    }
+
+    #[test]
+    fn exif_rejects_wrong_orientation_type() {
+        let mut t = Vec::new();
+        t.extend_from_slice(b"II");
+        t.extend_from_slice(&42u16.to_le_bytes());
+        t.extend_from_slice(&8u32.to_le_bytes());
+        t.extend_from_slice(&1u16.to_le_bytes());
+        t.extend_from_slice(&0x0112u16.to_le_bytes());
+        t.extend_from_slice(&4u16.to_le_bytes()); // LONG instead of SHORT
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&6u32.to_le_bytes());
+        t.extend_from_slice(&0u32.to_le_bytes());
+        let jpeg = wrap_app1_jpeg(&t);
+        let e = read_jpeg_exif_orientation(&jpeg).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::MalformedRecord);
     }
 }

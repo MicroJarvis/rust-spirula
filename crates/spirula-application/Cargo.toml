@@ -12,6 +12,8 @@ publish = false
 spirula-core = { path = "../spirula-core" }
 # AD-P6-F07-01: narrow presentation edge only (no direct wgpu*).
 spirula-gpu = { path = "../spirula-gpu" }
+# P3-F02: real image orient/mask entry (architecture application → io).
+spirula-io = { path = "../spirula-io" }
 
 [dev-dependencies]
 libc = "0.2"

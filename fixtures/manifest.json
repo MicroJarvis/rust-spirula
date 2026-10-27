@@ -39,14 +39,14 @@
       "sha256": "5fe6aaf8ce3c92ce8e17fe9362e3d840f81911dde4860928baf6c32368e8c611"
     },
     {
-      "path": "datasets/tiny-colmap/images.txt",
-      "bytes": 206,
-      "sha256": "1ee640b9e9e44a46af215f1b33b44a313832226745274fd3ff31a2f42547fadf"
-    },
-    {
       "path": "datasets/tiny-colmap/images/tiny.png",
       "bytes": 8494,
       "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
+    },
+    {
+      "path": "datasets/tiny-colmap/images.txt",
+      "bytes": 206,
+      "sha256": "1ee640b9e9e44a46af215f1b33b44a313832226745274fd3ff31a2f42547fadf"
     },
     {
       "path": "datasets/tiny-colmap/points3D.txt",
@@ -84,9 +84,14 @@
       "sha256": "4e5991a32d1c29f3e24dbc13b6c1f8830936f53cfe6ce890a523275ef219eaf9"
     },
     {
+      "path": "images/cpp_orient_mask_golden.json",
+      "bytes": 2887,
+      "sha256": "bccdcd7b44e0e7bde139fccc766784c0b313bee4e3a80705bd0994efe5548b59"
+    },
+    {
       "path": "images/golden.json",
-      "bytes": 567,
-      "sha256": "68fc85971e96f1fa8b67687d633ad470cc50c6ac2a61461c28b745806a6dc0c1"
+      "bytes": 951,
+      "sha256": "3f15693ef8367470c700be0c0e47e688a74b3832fd32ee105df54582fd02c102"
     },
     {
       "path": "images/mask_4x2.png",

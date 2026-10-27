@@ -1,0 +1,129 @@
+//! Minimal application/session entry for P3-F02 image orient / mask normalize.
+//!
+//! Real `spirula-io` decode + bake (not a fake Probe*). Session must be Idle or
+//! Ready so this stays a side path until dataset load owns the same stack.
+
+use std::path::Path;
+
+use spirula_core::{ContextKey, DomainError, ErrorCode};
+use spirula_io::{
+    ApplyPolicy, ExifOrientation, MaskNormalizeOptions, MaskSourceKind, apply_orientation,
+    decode_mask_image_bytes, decode_rgb8, normalize_mask, oriented_size, probe_image_size,
+    read_image_bytes_capped, read_path_exif_orientation,
+};
+
+use crate::session::ApplicationService;
+use crate::state::SessionState;
+
+fn err(code: ErrorCode, field: &str, msg: impl Into<String>) -> DomainError {
+    DomainError::try_new(code, msg)
+        .expect("msg")
+        .with_context(ContextKey::Field, field)
+        .expect("field")
+}
+
+/// Oriented RGB8 produced through the application owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrientedRgb {
+    pub width: u32,
+    pub height: u32,
+    pub rgb: Vec<u8>,
+    pub orientation: u8,
+    pub policy: ApplyPolicy,
+}
+
+/// Normalized 0/1 mask produced through the application owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NormalizedMask {
+    pub width: u32,
+    pub height: u32,
+    pub samples: Vec<u8>,
+}
+
+/// Arguments for [`ApplicationService::prepare_normalized_mask_file`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrepareMaskArgs {
+    pub dst_w: u32,
+    pub dst_h: u32,
+    pub kind: MaskSourceKind,
+    pub orientation: u8,
+    pub policy: ApplyPolicy,
+    pub flip: bool,
+}
+
+impl ApplicationService {
+    fn require_idle_or_ready(&self) -> Result<(), DomainError> {
+        let phase = self.snapshot().state;
+        match phase {
+            SessionState::Idle | SessionState::Ready => Ok(()),
+            other => Err(err(
+                ErrorCode::InvalidState,
+                "session",
+                format!("image ops require Idle|Ready, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Probe PNG/JPEG size via `spirula-io` (header-only) under session ownership.
+    pub fn probe_image_file_size(&self, path: &Path) -> Result<(u32, u32), DomainError> {
+        self.require_idle_or_ready()?;
+        probe_image_size(path)
+    }
+
+    /// Decode + bake EXIF orientation into RGB8. `orientation_override` of `None`
+    /// reads JPEG EXIF (PNG → identity).
+    pub fn prepare_oriented_rgb_file(
+        &self,
+        path: &Path,
+        orientation_override: Option<u8>,
+        policy: ApplyPolicy,
+    ) -> Result<OrientedRgb, DomainError> {
+        self.require_idle_or_ready()?;
+        let orientation = match orientation_override {
+            Some(v) => ExifOrientation::from_u8(v)?,
+            None => read_path_exif_orientation(path)?,
+        };
+        let (w, h, rgb) = decode_rgb8(path)?;
+        let xf = {
+            let mut t = orientation.transform();
+            if matches!(policy, ApplyPolicy::TurnsOnly) {
+                t.mirror = false;
+            }
+            t
+        };
+        let (ow, oh) = oriented_size(w, h, xf.turns_cw);
+        let mut dst = vec![0u8; (ow as usize) * (oh as usize) * 3];
+        let (dw, dh) = apply_orientation(&rgb, w, h, 3, orientation, policy, &mut dst)?;
+        Ok(OrientedRgb {
+            width: dw,
+            height: dh,
+            rgb: dst,
+            orientation: orientation.get(),
+            policy,
+        })
+    }
+
+    /// Decode a mask file and normalize to `dst_w x dst_h` binary samples.
+    pub fn prepare_normalized_mask_file(
+        &self,
+        path: &Path,
+        args: PrepareMaskArgs,
+    ) -> Result<NormalizedMask, DomainError> {
+        self.require_idle_or_ready()?;
+        let bytes = read_image_bytes_capped(path)?;
+        let (w, h, ch, samples) = decode_mask_image_bytes(&bytes)?;
+        let mut dst = vec![0u8; (args.dst_w as usize) * (args.dst_h as usize)];
+        let opts = MaskNormalizeOptions {
+            kind: args.kind,
+            flip: args.flip,
+            orientation: ExifOrientation::from_u8(args.orientation)?,
+            apply_policy: args.policy,
+        };
+        normalize_mask(&samples, w, h, ch, args.dst_w, args.dst_h, opts, &mut dst)?;
+        Ok(NormalizedMask {
+            width: args.dst_w,
+            height: args.dst_h,
+            samples: dst,
+        })
+    }
+}
