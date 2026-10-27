@@ -1,6 +1,6 @@
 # P2-F07: minimal CLI package / isolated launch
 
-Status: **当前 / HOLD-MERGE** (implementation tip pending independent review).
+Status: **当前 / 未批准** (integrity fix in progress; not merge-ready).
 Owner: workspace / `spirula-xtask`. Builds on [cli.md](../phase-1/cli.md)
 (P1-F09), [gpu-smoke.md](gpu-smoke.md) (P2-F06). Does **not** wire
 application/train/UI GPU ownership. Phase 2 exit remains open (surface present
@@ -64,14 +64,25 @@ in the manifest values beyond recorded host triple/toolchain strings.
 
 ### Manifest fields
 
-`MANIFEST.json` schema version 1 records:
+`MANIFEST.json` schema version 1 records (all required; missing/empty/wrong-type
+→ typed `manifest:` failure):
 
+- `feature` = `P2-F07`, `package_kind` = `minimal-cli`
 - `revision` (git SHA), `version` (workspace package version)
-- `host_target`, `toolchain` (rustc version + commit-hash)
-- `profile`, `locked: true`
-- per-binary `sha256`, `size_bytes`, `runtime_dependencies[]`
-- `licenses[]` (at least `GPL-3.0-or-later`)
-- `claims` block: what this package does **not** assert (see Non-claims)
+- `host_target`, `toolchain.{rustc_release,rustc_commit_hash,rustc_host}`
+- `profile` (`release`|`dev`), `locked: true`
+- exactly three `binaries[]` entries; each `name` is unique and from the
+  allowlist; **`path` must equal `bin/<name>`** (no absolute/`..`/aliases);
+  `sha256` / `size_bytes` / `runtime_dependencies[]` must match that
+  canonical regular file — the same path `package-run` executes
+- `licenses[]` includes `GPL-3.0-or-later`
+- `claims` object with the six honesty bools
+- `NOTICE` must exist as a regular (non-symlink) file
+
+Package layout allowlist only: `MANIFEST.json`, `NOTICE`, `bin/`, and the three
+canonical binaries. Symlinks (including under `bin/` or parents), extra files,
+or dangling links fail with `layout:`. This is execution/integrity consistency,
+**not** cryptographic signing of rewritten manifests.
 
 ### Atomic publish
 
@@ -106,7 +117,7 @@ in the manifest values beyond recorded host triple/toolchain strings.
   unsupported).
 - Phase 2 exit **not** closed by this feature alone.
 
-## Acceptance (for HOLD-MERGE candidate)
+## Acceptance (for clean candidate; not approved)
 
 1. Reproducible package command from clean HEAD or `--from-ref`.
 2. Manifest hashes verify; missing/tampered binaries fail check.
@@ -126,15 +137,16 @@ cargo run -p spirula-xtask -- package-run --package /tmp/spirula-cli-pkg
 
 Optional: `--from-ref <sha>`, `--profile release|dev`.
 
-## Tested evidence (HOLD tip)
+## Tested evidence (candidate tip)
 
 | Check | Command | Sample result |
 |---|---|---|
-| Unit (hash/tamper/atomic/spaces/parse) | `cargo test -p spirula-xtask --lib package::` | **8/8** |
+| Unit (canonical path/symlink/NOTICE/metadata/…) | `cargo test -p spirula-xtask --lib package::` | **14/14** |
 | Host assemble + isolated run | `cargo test -p spirula-xtask --test package_host` | **1/1** |
 | Docs consistency (74 IDs) | `cargo test -p spirula-xtask --test docs` | **ok** |
-| Fresh full gate | `cargo run -p spirula-xtask -- verify` | see `/tmp/spirula-cursor-p2-f07-full-verify.log` |
-| Focused aggregate | unit+host+docs | `/tmp/spirula-cursor-p2-f07-focused.log` |
+| Fresh full gate | `cargo run -p spirula-xtask -- verify` | **8/8** `/tmp/spirula-cursor-p2-f07-integrity-full-verify.log` |
+| Focused aggregate | unit+host+docs | `/tmp/spirula-cursor-p2-f07-integrity-focused.log` |
+| Review probes (reject) | manifest-path / empty-metadata / missing-notice / symlink / missing-canonical | package-check fails as typed `manifest:`/`layout:` |
 
 ## Non-claims
 

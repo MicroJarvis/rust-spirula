@@ -45,10 +45,17 @@ pub struct PackageOutcome {
 }
 
 /// Verify a previously built package against its manifest.
+///
+/// Integrity rules (not cryptographic signing): the checked hash must be for
+/// the unique canonical `bin/<name>` that [`run_package_isolated`] executes;
+/// required contract fields and NOTICE must be present; package contents are
+/// restricted to an explicit allowlist with no symlinks.
 pub fn check_package(package_dir: &Path) -> Result<Value, String> {
+    verify_package_root_layout(package_dir)?;
     let manifest = read_manifest(package_dir)?;
-    verify_manifest_contents(package_dir, &manifest)?;
-    verify_no_forbidden_entries(package_dir)?;
+    verify_manifest_contract(&manifest)?;
+    verify_manifest_binaries(package_dir, &manifest)?;
+    verify_package_allowlist(package_dir)?;
     Ok(manifest)
 }
 
@@ -175,8 +182,10 @@ pub fn assemble_package_from_bin_dir(
             .map_err(|e| format!("serialize manifest: {e}"))?
             + "\n";
         fs::write(staging.join(MANIFEST_NAME), body).map_err(|e| format!("write manifest: {e}"))?;
-        verify_manifest_contents(&staging, &manifest)?;
-        verify_no_forbidden_entries(&staging)?;
+        verify_package_root_layout(&staging)?;
+        verify_manifest_contract(&manifest)?;
+        verify_manifest_binaries(&staging, &manifest)?;
+        verify_package_allowlist(&staging)?;
         Ok(())
     })();
 
@@ -214,11 +223,16 @@ pub fn run_package_isolated(
     let isolate = unique_isolate(isolate_parent)?;
     let copy_result = (|| {
         copy_dir_recursive(package_dir, &isolate)?;
-        verify_no_forbidden_entries(&isolate)?;
+        // Re-check after copy so isolate cannot diverge (symlink drop, extras).
+        verify_package_root_layout(&isolate)?;
+        verify_package_allowlist(&isolate)?;
         // cwd with spaces, unrelated to the package tree.
         let cwd = isolate_parent.join("run cwd with spaces");
         fs::create_dir_all(&cwd).map_err(|e| format!("creating cwd: {e}"))?;
         let bin = isolate.join(BIN_DIR);
+        // Execute only the canonical allowlisted paths (same as check hashes).
+        let spirula = canonical_bin_file(&isolate, "spirula")?;
+        let smoke_bin = canonical_bin_file(&isolate, "spirula-gpu-smoke")?;
         let mut report = IsolatedRunReport {
             isolate: isolate.clone(),
             cwd: cwd.clone(),
@@ -232,12 +246,11 @@ pub fn run_package_isolated(
             smoke_counted_as_pass: false,
         };
 
-        report.help_exit = run_scrubbed(&bin.join("spirula"), &["help"], &cwd, &bin)?.exit;
+        report.help_exit = run_scrubbed(&spirula, &["help"], &cwd, &bin)?.exit;
         if report.help_exit != 0 {
             return Err(format!("spirula help exit {}", report.help_exit));
         }
-        report.capabilities_exit =
-            run_scrubbed(&bin.join("spirula"), &["capabilities"], &cwd, &bin)?.exit;
+        report.capabilities_exit = run_scrubbed(&spirula, &["capabilities"], &cwd, &bin)?.exit;
         if report.capabilities_exit != 0 {
             return Err(format!(
                 "spirula capabilities exit {}",
@@ -245,7 +258,7 @@ pub fn run_package_isolated(
             ));
         }
         report.probe_exit = run_scrubbed(
-            &bin.join("spirula"),
+            &spirula,
             &["probe", "--label", "pkg", "--steps", "1"],
             &cwd,
             &bin,
@@ -255,7 +268,7 @@ pub fn run_package_isolated(
             return Err(format!("spirula probe exit {}", report.probe_exit));
         }
 
-        let smoke = run_scrubbed(&bin.join("spirula-gpu-smoke"), &["--compute"], &cwd, &bin)?;
+        let smoke = run_scrubbed(&smoke_bin, &["--compute"], &cwd, &bin)?;
         report.smoke_exit = smoke.exit;
         if report.smoke_exit != 0 {
             return Err(format!(
@@ -463,84 +476,333 @@ fn read_manifest(package_dir: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
-fn verify_manifest_contents(package_dir: &Path, manifest: &Value) -> Result<(), String> {
+fn canonical_rel_path(name: &str) -> String {
+    format!("{BIN_DIR}/{name}")
+}
+
+fn canonical_bin_file(package_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    if !PACKAGE_BINARIES.contains(&name) {
+        return Err(format!("layout: unknown package binary name `{name}`"));
+    }
+    let path = package_dir.join(BIN_DIR).join(name);
+    require_regular_file(&path, &format!("bin/{name}"))?;
+    Ok(path)
+}
+
+fn require_regular_file(path: &Path, label: &str) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| format!("layout: missing {label} at {}: {e}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "layout: {label} must be a regular file, not a symlink ({})",
+            path.display()
+        ));
+    }
+    if !meta.file_type().is_file() {
+        return Err(format!(
+            "layout: {label} must be a regular file ({})",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn require_regular_dir(path: &Path, label: &str) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| format!("layout: missing {label} at {}: {e}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "layout: {label} must be a directory, not a symlink ({})",
+            path.display()
+        ));
+    }
+    if !meta.file_type().is_dir() {
+        return Err(format!(
+            "layout: {label} must be a directory ({})",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn verify_package_root_layout(package_dir: &Path) -> Result<(), String> {
+    require_regular_dir(package_dir, "package root")?;
+    require_regular_file(&package_dir.join(MANIFEST_NAME), MANIFEST_NAME)?;
+    require_regular_file(&package_dir.join(NOTICE_NAME), NOTICE_NAME)?;
+    require_regular_dir(&package_dir.join(BIN_DIR), BIN_DIR)?;
+    for name in PACKAGE_BINARIES {
+        require_regular_file(
+            &package_dir.join(BIN_DIR).join(name),
+            &canonical_rel_path(name),
+        )?;
+    }
+    Ok(())
+}
+
+fn require_nonempty_str(manifest: &Value, key: &str) -> Result<String, String> {
+    let value = manifest
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("manifest: missing or empty `{key}`"))?;
+    Ok(value.to_owned())
+}
+
+fn verify_manifest_contract(manifest: &Value) -> Result<(), String> {
     let schema = manifest
         .get("schema_version")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| "manifest missing schema_version".to_owned())?;
+        .ok_or_else(|| "manifest: missing schema_version".to_owned())?;
     if schema != u64::from(SCHEMA_VERSION) {
         return Err(format!(
-            "unsupported manifest schema_version {schema} (want {SCHEMA_VERSION})"
+            "manifest: unsupported schema_version {schema} (want {SCHEMA_VERSION})"
         ));
     }
     if manifest.get("locked").and_then(|v| v.as_bool()) != Some(true) {
-        return Err("manifest.locked must be true".to_owned());
+        return Err("manifest: locked must be true".to_owned());
     }
-    let binaries = manifest
-        .get("binaries")
+    let feature = require_nonempty_str(manifest, "feature")?;
+    if feature != "P2-F07" {
+        return Err(format!(
+            "manifest: feature must be P2-F07 (got `{feature}`)"
+        ));
+    }
+    let kind = require_nonempty_str(manifest, "package_kind")?;
+    if kind != "minimal-cli" {
+        return Err(format!(
+            "manifest: package_kind must be minimal-cli (got `{kind}`)"
+        ));
+    }
+    let _revision = require_nonempty_str(manifest, "revision")?;
+    let _version = require_nonempty_str(manifest, "version")?;
+    let _host = require_nonempty_str(manifest, "host_target")?;
+    let profile = require_nonempty_str(manifest, "profile")?;
+    if profile != "release" && profile != "dev" {
+        return Err(format!(
+            "manifest: profile must be release|dev (got `{profile}`)"
+        ));
+    }
+    let toolchain = manifest
+        .get("toolchain")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "manifest: missing toolchain object".to_owned())?;
+    for key in ["rustc_release", "rustc_commit_hash", "rustc_host"] {
+        let ok = toolchain
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty());
+        if !ok {
+            return Err(format!("manifest: toolchain missing non-empty `{key}`"));
+        }
+    }
+    let licenses = manifest
+        .get("licenses")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| "manifest missing binaries[]".to_owned())?;
-    let mut seen = BTreeMap::new();
-    for entry in binaries {
-        let name = entry
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "binary entry missing name".to_owned())?;
-        let rel = entry
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("binary `{name}` missing path"))?;
-        let expected = entry
-            .get("sha256")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("binary `{name}` missing sha256"))?;
-        let file = package_dir.join(rel);
-        if !file.is_file() {
-            return Err(format!("package missing binary file: {}", file.display()));
-        }
-        let actual = sha256_file(&file)?;
-        if actual != expected {
-            return Err(format!(
-                "sha256 mismatch for `{name}`: manifest={expected} actual={actual}"
-            ));
-        }
-        seen.insert(name.to_owned(), ());
+        .ok_or_else(|| "manifest: missing licenses[]".to_owned())?;
+    if !licenses
+        .iter()
+        .any(|v| v.as_str() == Some("GPL-3.0-or-later"))
+    {
+        return Err("manifest: licenses[] must include GPL-3.0-or-later".to_owned());
     }
-    for required in PACKAGE_BINARIES {
-        if !seen.contains_key(*required) {
-            return Err(format!("manifest missing required binary `{required}`"));
+    let claims = manifest
+        .get("claims")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "manifest: missing claims object".to_owned())?;
+    for key in [
+        "signed_release",
+        "three_platform_matrix",
+        "surface_present_verified",
+        "train_preview_ui_wired",
+        "phase2_exit_closed",
+        "bit_for_bit_reproducible",
+    ] {
+        if claims.get(key).and_then(|v| v.as_bool()).is_none() {
+            return Err(format!("manifest: claims missing bool `{key}`"));
         }
     }
     Ok(())
 }
 
-fn verify_no_forbidden_entries(package_dir: &Path) -> Result<(), String> {
-    let forbidden_names = [
-        ".git",
-        "Cargo.toml",
-        "Cargo.lock",
-        "target",
-        "src",
-        "crates",
-        "tools",
-        ".env",
-        "credentials.json",
-    ];
-    for name in forbidden_names {
-        let path = package_dir.join(name);
-        if path.exists() {
+fn verify_manifest_binaries(package_dir: &Path, manifest: &Value) -> Result<(), String> {
+    let binaries = manifest
+        .get("binaries")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "manifest: missing binaries[]".to_owned())?;
+    if binaries.len() != PACKAGE_BINARIES.len() {
+        return Err(format!(
+            "manifest: binaries[] must have exactly {} entries (got {})",
+            PACKAGE_BINARIES.len(),
+            binaries.len()
+        ));
+    }
+
+    let mut seen_names: BTreeMap<String, ()> = BTreeMap::new();
+    let mut seen_paths: BTreeMap<String, ()> = BTreeMap::new();
+    for entry in binaries {
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "manifest: binary entry missing name".to_owned())?;
+        if !PACKAGE_BINARIES.contains(&name) {
             return Err(format!(
-                "package must not contain `{name}` (found {})",
-                path.display()
+                "manifest: unexpected binary name `{name}` (allowlist: {PACKAGE_BINARIES:?})"
+            ));
+        }
+        if seen_names.insert(name.to_owned(), ()).is_some() {
+            return Err(format!("manifest: duplicate binary name `{name}`"));
+        }
+        let rel = entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("manifest: binary `{name}` missing path"))?;
+        validate_canonical_rel_path(name, rel)?;
+        if seen_paths.insert(rel.to_owned(), ()).is_some() {
+            return Err(format!("manifest: duplicate binary path `{rel}`"));
+        }
+
+        let expected_sha = entry
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("manifest: binary `{name}` missing sha256"))?;
+        let expected_size = entry
+            .get("size_bytes")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| format!("manifest: binary `{name}` missing size_bytes"))?;
+        let deps = entry
+            .get("runtime_dependencies")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("manifest: binary `{name}` missing runtime_dependencies[]"))?;
+        if deps.iter().any(|v| v.as_str().is_none()) {
+            return Err(format!(
+                "manifest: binary `{name}` runtime_dependencies must be strings"
+            ));
+        }
+
+        // Hash/size the unique canonical path that package-run executes.
+        let file = canonical_bin_file(package_dir, name)?;
+        let actual_sha = sha256_file(&file)?;
+        if actual_sha != expected_sha {
+            return Err(format!(
+                "manifest: sha256 mismatch for `{name}` at {}: manifest={expected_sha} actual={actual_sha}",
+                file.display()
+            ));
+        }
+        let actual_size = fs::metadata(&file)
+            .map_err(|e| format!("layout: stat {}: {e}", file.display()))?
+            .len();
+        if actual_size != expected_size {
+            return Err(format!(
+                "manifest: size_bytes mismatch for `{name}`: manifest={expected_size} actual={actual_size}"
             ));
         }
     }
-    // Also reject any .rs source accidentally copied under the package.
-    for entry in walk_files(package_dir)? {
-        if entry.extension().and_then(|s| s.to_str()) == Some("rs") {
+    for required in PACKAGE_BINARIES {
+        if !seen_names.contains_key(*required) {
+            return Err(format!("manifest: missing required binary `{required}`"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_canonical_rel_path(name: &str, rel: &str) -> Result<(), String> {
+    let expected = canonical_rel_path(name);
+    if rel != expected {
+        return Err(format!(
+            "manifest: binary `{name}` path must be exactly `{expected}` (got `{rel}`)"
+        ));
+    }
+    if Path::new(rel).is_absolute() {
+        return Err(format!(
+            "manifest: binary `{name}` path must not be absolute"
+        ));
+    }
+    if rel.contains('\0') || rel.contains('\\') {
+        return Err(format!(
+            "manifest: binary `{name}` path has illegal characters"
+        ));
+    }
+    for component in Path::new(rel).components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir => {
+                return Err(format!(
+                    "manifest: binary `{name}` path must not contain `.`"
+                ));
+            }
+            Component::ParentDir => {
+                return Err(format!(
+                    "manifest: binary `{name}` path must not contain `..`"
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "manifest: binary `{name}` path must be package-relative"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Exact allowlist: MANIFEST.json, NOTICE, bin/, and the three canonical bins.
+fn verify_package_allowlist(package_dir: &Path) -> Result<(), String> {
+    let mut allowed_files: BTreeMap<PathBuf, ()> = BTreeMap::new();
+    allowed_files.insert(package_dir.join(MANIFEST_NAME), ());
+    allowed_files.insert(package_dir.join(NOTICE_NAME), ());
+    for name in PACKAGE_BINARIES {
+        allowed_files.insert(package_dir.join(BIN_DIR).join(name), ());
+    }
+
+    let mut allowed_dirs: BTreeMap<PathBuf, ()> = BTreeMap::new();
+    allowed_dirs.insert(package_dir.to_path_buf(), ());
+    allowed_dirs.insert(package_dir.join(BIN_DIR), ());
+
+    walk_package_entries(package_dir, package_dir, &allowed_files, &allowed_dirs)
+}
+
+fn walk_package_entries(
+    root: &Path,
+    dir: &Path,
+    allowed_files: &BTreeMap<PathBuf, ()>,
+    allowed_dirs: &BTreeMap<PathBuf, ()>,
+) -> Result<(), String> {
+    for entry in
+        fs::read_dir(dir).map_err(|e| format!("layout: read_dir {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("layout: read_dir entry: {e}"))?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|e| format!("layout: lstat {}: {e}", path.display()))?;
+        let ft = meta.file_type();
+        if ft.is_symlink() {
             return Err(format!(
-                "package must not contain Rust sources (found {})",
-                entry.display()
+                "layout: symlink not allowed in package ({})",
+                path.display()
+            ));
+        }
+        if ft.is_dir() {
+            if !allowed_dirs.contains_key(&path) {
+                return Err(format!(
+                    "layout: unexpected directory `{}` (not on allowlist)",
+                    path.strip_prefix(root).unwrap_or(&path).display()
+                ));
+            }
+            walk_package_entries(root, &path, allowed_files, allowed_dirs)?;
+        } else if ft.is_file() {
+            if !allowed_files.contains_key(&path) {
+                return Err(format!(
+                    "layout: unexpected file `{}` (not on allowlist)",
+                    path.strip_prefix(root).unwrap_or(&path).display()
+                ));
+            }
+        } else {
+            return Err(format!(
+                "layout: unsupported file type at {}",
+                path.display()
             ));
         }
     }
@@ -842,33 +1104,26 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
     for entry in fs::read_dir(src).map_err(|e| format!("read_dir {}: {e}", src.display()))? {
         let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
-        let ty = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
-        let to = dest.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&entry.path(), &to)?;
-        } else if ty.is_file() {
-            fs::copy(entry.path(), &to)
-                .map_err(|e| format!("copy {}: {e}", entry.path().display()))?;
-        }
-    }
-    Ok(())
-}
-
-fn walk_files(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    walk_files_inner(root, &mut out)?;
-    Ok(out)
-}
-
-fn walk_files_inner(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
         let path = entry.path();
-        let ty = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
-        if ty.is_dir() {
-            walk_files_inner(&path, out)?;
-        } else if ty.is_file() {
-            out.push(path);
+        let meta =
+            fs::symlink_metadata(&path).map_err(|e| format!("lstat {}: {e}", path.display()))?;
+        let ft = meta.file_type();
+        let to = dest.join(entry.file_name());
+        if ft.is_symlink() {
+            return Err(format!(
+                "layout: refusing to copy symlink {}",
+                path.display()
+            ));
+        }
+        if ft.is_dir() {
+            copy_dir_recursive(&path, &to)?;
+        } else if ft.is_file() {
+            fs::copy(&path, &to).map_err(|e| format!("copy {}: {e}", path.display()))?;
+        } else {
+            return Err(format!(
+                "layout: unsupported type while copying {}",
+                path.display()
+            ));
         }
     }
     Ok(())
@@ -919,7 +1174,11 @@ mod tests {
             "revision": "deadbeef",
             "version": "0.1.0",
             "host_target": "aarch64-apple-darwin",
-            "toolchain": {"rustc_release": "1.99.0"},
+            "toolchain": {
+                "rustc_release": "1.99.0",
+                "rustc_commit_hash": "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+                "rustc_host": "aarch64-apple-darwin"
+            },
             "profile": "dev",
             "locked": true,
             "binaries": binaries,
@@ -939,6 +1198,18 @@ mod tests {
         )
         .unwrap();
         manifest
+    }
+
+    fn rewrite_manifest(dir: &Path, mutator: impl FnOnce(&mut Value)) {
+        let path = dir.join(MANIFEST_NAME);
+        let mut manifest: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        mutator(&mut manifest);
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&manifest).unwrap() + "\n",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -966,7 +1237,10 @@ mod tests {
         fake_manifest(&dir);
         fs::remove_file(dir.join(BIN_DIR).join("spirula-gpu-smoke")).unwrap();
         let err = check_package(&dir).expect_err("missing");
-        assert!(err.contains("missing binary"), "{err}");
+        assert!(
+            err.contains("missing") || err.contains("bin/spirula-gpu-smoke"),
+            "{err}"
+        );
         let _ = remove_path_best_effort(&dir);
     }
 
@@ -976,7 +1250,118 @@ mod tests {
         fake_manifest(&dir);
         fs::write(dir.join("Cargo.toml"), b"[package]\n").unwrap();
         let err = check_package(&dir).expect_err("cargo");
-        assert!(err.contains("Cargo.toml"), "{err}");
+        assert!(
+            err.contains("Cargo.toml") || err.contains("allowlist"),
+            "{err}"
+        );
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_path_alias_to_other_binary() {
+        let dir = temp_dir("alias");
+        fake_manifest(&dir);
+        // Reproduce review bypass: spirula path+hash → smoke binary, leave a
+        // stub at bin/spirula.
+        let smoke = dir.join(BIN_DIR).join("spirula-gpu-smoke");
+        let smoke_sha = sha256_file(&smoke).unwrap();
+        let smoke_size = fs::metadata(&smoke).unwrap().len();
+        fs::write(dir.join(BIN_DIR).join("spirula"), b"#!/bin/sh\nexit 0\n").unwrap();
+        rewrite_manifest(&dir, |m| {
+            for entry in m["binaries"].as_array_mut().unwrap() {
+                if entry["name"] == "spirula" {
+                    entry["path"] = json!("bin/spirula-gpu-smoke");
+                    entry["sha256"] = json!(smoke_sha);
+                    entry["size_bytes"] = json!(smoke_size);
+                }
+            }
+        });
+        let err = check_package(&dir).expect_err("alias");
+        assert!(err.contains("path must be exactly `bin/spirula`"), "{err}");
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_parent_dir_path() {
+        let dir = temp_dir("dotdot");
+        fake_manifest(&dir);
+        rewrite_manifest(&dir, |m| {
+            for entry in m["binaries"].as_array_mut().unwrap() {
+                if entry["name"] == "spirula" {
+                    entry["path"] = json!("../baseline/bin/spirula");
+                }
+            }
+        });
+        let err = check_package(&dir).expect_err("dotdot");
+        assert!(
+            err.contains("path must be exactly `bin/spirula`") || err.contains("`..`"),
+            "{err}"
+        );
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_symlink_binary() {
+        let dir = temp_dir("symlink");
+        fake_manifest(&dir);
+        let bin = dir.join(BIN_DIR).join("spirula");
+        let external = temp_dir("symlink-ext").join("external");
+        fs::write(&external, b"external-bin").unwrap();
+        fs::remove_file(&bin).unwrap();
+        std::os::unix::fs::symlink(&external, &bin).unwrap();
+        let err = check_package(&dir).expect_err("symlink");
+        assert!(err.contains("symlink"), "{err}");
+        let _ = remove_path_best_effort(&dir);
+        let _ = remove_path_best_effort(external.parent().unwrap());
+    }
+
+    #[test]
+    fn check_rejects_missing_notice() {
+        let dir = temp_dir("no-notice");
+        fake_manifest(&dir);
+        fs::remove_file(dir.join(NOTICE_NAME)).unwrap();
+        let err = check_package(&dir).expect_err("notice");
+        assert!(err.contains("NOTICE"), "{err}");
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_empty_metadata() {
+        let dir = temp_dir("empty-meta");
+        fake_manifest(&dir);
+        // Keep only schema/locked/binaries like the review probe.
+        rewrite_manifest(&dir, |m| {
+            let binaries = m["binaries"].clone();
+            *m = json!({
+                "schema_version": SCHEMA_VERSION,
+                "locked": true,
+                "binaries": binaries,
+            });
+        });
+        let err = check_package(&dir).expect_err("empty");
+        assert!(
+            err.contains("missing or empty `revision`")
+                || err.contains("missing or empty `feature`")
+                || err.contains("missing"),
+            "{err}"
+        );
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_duplicate_binary_name() {
+        let dir = temp_dir("dup");
+        fake_manifest(&dir);
+        rewrite_manifest(&dir, |m| {
+            let binaries = m["binaries"].as_array_mut().unwrap();
+            let extra = binaries[0].clone();
+            binaries.push(extra);
+        });
+        let err = check_package(&dir).expect_err("dup");
+        assert!(
+            err.contains("exactly 3") || err.contains("duplicate"),
+            "{err}"
+        );
         let _ = remove_path_best_effort(&dir);
     }
 

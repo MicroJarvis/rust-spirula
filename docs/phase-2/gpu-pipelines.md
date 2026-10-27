@@ -3,7 +3,7 @@
 Status: **已完成** (code tip `2bd98deae866da09a3c14f694d9d2028f8b17f35`).
 Owner: `spirula-gpu`. Builds on [gpu-resources.md](gpu-resources.md) (P2-F03).
 GPU diagnostic events: P2-F05 (已完成); headless smoke P2-F06 (已完成);
-packaging P2-F07 (当前 / HOLD-MERGE); pipeline cache *optimization* profiling
+packaging P2-F07 (当前 / 未批准); pipeline cache *optimization* profiling
 stays P9-F03.
 Phase 2 exit remains open.
 

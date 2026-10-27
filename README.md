@@ -44,7 +44,7 @@ P2-F05 bindings are
 P2-F06 bindings are
 [docs/phase-2/gpu-smoke.md](docs/phase-2/gpu-smoke.md);
 P2-F07 bindings are
-[docs/phase-2/cli-package.md](docs/phase-2/cli-package.md) (HOLD-MERGE).
+[docs/phase-2/cli-package.md](docs/phase-2/cli-package.md) (未批准).
 The single local verification entry is:
 
 ```bash
@@ -67,7 +67,7 @@ P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
 real train/preview stay later features. Phase 2 current work is P2-F07
-(HOLD-MERGE) in [docs/project-plan.md](docs/project-plan.md). GPU diagnose
+(未批准) in [docs/project-plan.md](docs/project-plan.md). GPU diagnose
 (enumerate, `--device`, `--resources`, or `--compute`) and smoke
 (`spirula-gpu-smoke`; not application/train/UI readiness; surface remains honest
 unsupported / not a present-pass claim). Minimal portable package (no signed
