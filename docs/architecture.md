@@ -227,4 +227,7 @@ P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
 versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
 Phase 2 exit stays open while surface present remains unverified — completing
 P2-F01–P2-F07 and the P6-F07 tip does not close that exit. Train/preview and
-P6-F03 navigation remain unwired. Plan current work is **P3-F01**.
+P6-F03 navigation remain unwired. Plan current work on main is **P3-F01**
+(unmerged tip). Parallel **P3-F02** (`codex/p3-f02`;
+[phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)) adds PNG/JPEG
+probe, EXIF Orientation bake, and mask normalize in `spirula-io`.

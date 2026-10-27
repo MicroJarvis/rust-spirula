@@ -3856,6 +3856,7 @@ dependencies = [
 name = "spirula-io"
 version = "0.1.0"
 dependencies = [
+ "image",
  "serde_json",
  "sha2",
  "spirula-core",

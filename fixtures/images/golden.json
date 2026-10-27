@@ -1,0 +1,29 @@
+{
+  "schema": "spirula-image-orient-mask-golden",
+  "version": 1,
+  "reference_commit": "9a24f09927944a795e7ba1bd8243a625bf419479",
+  "nonsquare_png": {
+    "path": "nonsquare_4x2.png",
+    "width": 4,
+    "height": 2
+  },
+  "mask_png": {
+    "path": "mask_4x2.png",
+    "width": 4,
+    "height": 2,
+    "nonzero_left": true
+  },
+  "jpeg_orient6": {
+    "path": "orient6_1x1.jpg",
+    "orientation": 6,
+    "turns_cw": 1,
+    "mirror": false
+  },
+  "apply_turns_only_size": {
+    "src_w": 4,
+    "src_h": 2,
+    "orientation": 6,
+    "out_w": 2,
+    "out_h": 4
+  }
+}

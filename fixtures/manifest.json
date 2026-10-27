@@ -9,16 +9,6 @@
       "sha256": "65e09b22b9958afbd9523267caaa71c57ad3c589d06635a0f1057293f6c53792"
     },
     {
-      "path": "config/catalog.json",
-      "bytes": 41905,
-      "sha256": "4dd0aaecf8dcc78bced12a60d11a6182e026b010ac167a6749f08791b4955f05"
-    },
-    {
-      "path": "config/defaults.json",
-      "bytes": 6530,
-      "sha256": "50259f7b2d854bcb681474153f727b0f95466a24a77881a49cfc33b8deb04a74"
-    },
-    {
       "path": "checkpoints/tiny-run/config.json",
       "bytes": 201,
       "sha256": "e3965610d3ccc8dc7ac458a14dc645f1e48899eab637264a8649ec27e56efbd8"
@@ -34,19 +24,29 @@
       "sha256": "13936c09989920c5dbaec539b950bf119c195faf3d66def03675bdc337ac0c78"
     },
     {
+      "path": "config/catalog.json",
+      "bytes": 41905,
+      "sha256": "4dd0aaecf8dcc78bced12a60d11a6182e026b010ac167a6749f08791b4955f05"
+    },
+    {
+      "path": "config/defaults.json",
+      "bytes": 6530,
+      "sha256": "50259f7b2d854bcb681474153f727b0f95466a24a77881a49cfc33b8deb04a74"
+    },
+    {
       "path": "datasets/tiny-colmap/cameras.txt",
       "bytes": 155,
       "sha256": "5fe6aaf8ce3c92ce8e17fe9362e3d840f81911dde4860928baf6c32368e8c611"
     },
     {
-      "path": "datasets/tiny-colmap/images/tiny.png",
-      "bytes": 8494,
-      "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
-    },
-    {
       "path": "datasets/tiny-colmap/images.txt",
       "bytes": 206,
       "sha256": "1ee640b9e9e44a46af215f1b33b44a313832226745274fd3ff31a2f42547fadf"
+    },
+    {
+      "path": "datasets/tiny-colmap/images/tiny.png",
+      "bytes": 8494,
+      "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
     },
     {
       "path": "datasets/tiny-colmap/points3D.txt",
@@ -82,6 +82,31 @@
       "path": "golden/splats.json",
       "bytes": 1410,
       "sha256": "4e5991a32d1c29f3e24dbc13b6c1f8830936f53cfe6ce890a523275ef219eaf9"
+    },
+    {
+      "path": "images/golden.json",
+      "bytes": 567,
+      "sha256": "68fc85971e96f1fa8b67687d633ad470cc50c6ac2a61461c28b745806a6dc0c1"
+    },
+    {
+      "path": "images/mask_4x2.png",
+      "bytes": 73,
+      "sha256": "83f6af1600eaa12fb477f9e4207ccf7a2680d87b1d5feaf0bd2e043b6ffcacdc"
+    },
+    {
+      "path": "images/nonsquare_4x2.png",
+      "bytes": 76,
+      "sha256": "73b047f8c23e37a5b6897245967e1b91fa1f9ac60b2d6e7a0133b487eb5594fb"
+    },
+    {
+      "path": "images/orient1_1x1.jpg",
+      "bytes": 195,
+      "sha256": "677d168e268b3e2278ea46758d2209c14a00e6f13d7a6112f3943024dcb7022e"
+    },
+    {
+      "path": "images/orient6_1x1.jpg",
+      "bytes": 195,
+      "sha256": "5b7f2b92a08a76154bb1f6652a9f8fb3d8bda472c556a3ab30d1deea584cb6b7"
     },
     {
       "path": "render/golden.png",
