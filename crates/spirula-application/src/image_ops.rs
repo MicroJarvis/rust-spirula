@@ -1,7 +1,9 @@
 //! Minimal application/session entry for P3-F02 image orient / mask normalize.
 //!
-//! Real `spirula-io` decode + bake (not a fake Probe*). Session must be Idle or
-//! Ready so this stays a side path until dataset load owns the same stack.
+//! Real `spirula-io` decode + bake (not a fake Probe*). Wired through
+//! [`crate::command::CommandPayload::PrepareOrientedImage`] /
+//! [`crate::command::CommandPayload::PrepareNormalizedMask`] and also exposed as
+//! sync helpers on [`ApplicationService`] for the same Idle|Ready gate.
 
 use std::path::Path;
 
@@ -51,6 +53,56 @@ pub struct PrepareMaskArgs {
     pub flip: bool,
 }
 
+pub(crate) fn run_prepare_oriented_rgb(
+    path: &Path,
+    orientation_override: Option<u8>,
+    policy: ApplyPolicy,
+) -> Result<OrientedRgb, DomainError> {
+    let orientation = match orientation_override {
+        Some(v) => ExifOrientation::from_u8(v)?,
+        None => read_path_exif_orientation(path)?,
+    };
+    let (w, h, rgb) = decode_rgb8(path)?;
+    let xf = {
+        let mut t = orientation.transform();
+        if matches!(policy, ApplyPolicy::TurnsOnly) {
+            t.mirror = false;
+        }
+        t
+    };
+    let (ow, oh) = oriented_size(w, h, xf.turns_cw);
+    let mut dst = vec![0u8; (ow as usize) * (oh as usize) * 3];
+    let (dw, dh) = apply_orientation(&rgb, w, h, 3, orientation, policy, &mut dst)?;
+    Ok(OrientedRgb {
+        width: dw,
+        height: dh,
+        rgb: dst,
+        orientation: orientation.get(),
+        policy,
+    })
+}
+
+pub(crate) fn run_prepare_normalized_mask(
+    path: &Path,
+    args: PrepareMaskArgs,
+) -> Result<NormalizedMask, DomainError> {
+    let bytes = read_image_bytes_capped(path)?;
+    let (w, h, ch, samples) = decode_mask_image_bytes(&bytes)?;
+    let mut dst = vec![0u8; (args.dst_w as usize) * (args.dst_h as usize)];
+    let opts = MaskNormalizeOptions {
+        kind: args.kind,
+        flip: args.flip,
+        orientation: ExifOrientation::from_u8(args.orientation)?,
+        apply_policy: args.policy,
+    };
+    normalize_mask(&samples, w, h, ch, args.dst_w, args.dst_h, opts, &mut dst)?;
+    Ok(NormalizedMask {
+        width: args.dst_w,
+        height: args.dst_h,
+        samples: dst,
+    })
+}
+
 impl ApplicationService {
     fn require_idle_or_ready(&self) -> Result<(), DomainError> {
         let phase = self.snapshot().state;
@@ -70,8 +122,8 @@ impl ApplicationService {
         probe_image_size(path)
     }
 
-    /// Decode + bake EXIF orientation into RGB8. `orientation_override` of `None`
-    /// reads JPEG EXIF (PNG → identity).
+    /// Decode + bake EXIF orientation into RGB8. Prefer the session command
+    /// [`crate::CommandPayload::PrepareOrientedImage`] for admitted e2e paths.
     pub fn prepare_oriented_rgb_file(
         &self,
         path: &Path,
@@ -79,51 +131,17 @@ impl ApplicationService {
         policy: ApplyPolicy,
     ) -> Result<OrientedRgb, DomainError> {
         self.require_idle_or_ready()?;
-        let orientation = match orientation_override {
-            Some(v) => ExifOrientation::from_u8(v)?,
-            None => read_path_exif_orientation(path)?,
-        };
-        let (w, h, rgb) = decode_rgb8(path)?;
-        let xf = {
-            let mut t = orientation.transform();
-            if matches!(policy, ApplyPolicy::TurnsOnly) {
-                t.mirror = false;
-            }
-            t
-        };
-        let (ow, oh) = oriented_size(w, h, xf.turns_cw);
-        let mut dst = vec![0u8; (ow as usize) * (oh as usize) * 3];
-        let (dw, dh) = apply_orientation(&rgb, w, h, 3, orientation, policy, &mut dst)?;
-        Ok(OrientedRgb {
-            width: dw,
-            height: dh,
-            rgb: dst,
-            orientation: orientation.get(),
-            policy,
-        })
+        run_prepare_oriented_rgb(path, orientation_override, policy)
     }
 
-    /// Decode a mask file and normalize to `dst_w x dst_h` binary samples.
+    /// Decode a mask file and normalize. Prefer
+    /// [`crate::CommandPayload::PrepareNormalizedMask`] for admitted e2e paths.
     pub fn prepare_normalized_mask_file(
         &self,
         path: &Path,
         args: PrepareMaskArgs,
     ) -> Result<NormalizedMask, DomainError> {
         self.require_idle_or_ready()?;
-        let bytes = read_image_bytes_capped(path)?;
-        let (w, h, ch, samples) = decode_mask_image_bytes(&bytes)?;
-        let mut dst = vec![0u8; (args.dst_w as usize) * (args.dst_h as usize)];
-        let opts = MaskNormalizeOptions {
-            kind: args.kind,
-            flip: args.flip,
-            orientation: ExifOrientation::from_u8(args.orientation)?,
-            apply_policy: args.policy,
-        };
-        normalize_mask(&samples, w, h, ch, args.dst_w, args.dst_h, opts, &mut dst)?;
-        Ok(NormalizedMask {
-            width: args.dst_w,
-            height: args.dst_h,
-            samples: dst,
-        })
+        run_prepare_normalized_mask(path, args)
     }
 }

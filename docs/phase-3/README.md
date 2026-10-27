@@ -8,6 +8,6 @@
 
 This branch (`codex/p3-f02`) is cut from main `dfb17ab` and does **not** include
 unmerged P3-F01 camera work. P3-F02 implements C-DATA-10 / C-DATA-08 (partial
-C-DATA-07 PNG/JPEG) in `spirula-io` plus a minimal `spirula-application`
-session entry. Format scope stays PNG+JPEG; mask EDT stays out. 74 plan IDs
-unchanged.
+C-DATA-07 PNG/JPEG) in `spirula-io` plus admitted session commands
+`PrepareOrientedImage` / `PrepareNormalizedMask` (wiring not deferred). Format
+scope stays PNG+JPEG; mask EDT stays out. 74 plan IDs unchanged.

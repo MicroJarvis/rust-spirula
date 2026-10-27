@@ -39,6 +39,25 @@ pub(crate) fn check_label(label: &str, limits: &SessionLimits) -> Result<(), Dom
     Ok(())
 }
 
+/// Filesystem path for P3-F02 image commands (independent of probe label cap).
+pub(crate) const IMAGE_PATH_MAX_BYTES: usize = 4096;
+
+pub(crate) fn check_image_path(path: &str) -> Result<(), DomainError> {
+    if path.trim().is_empty() {
+        return Err(DomainError::try_new(
+            ErrorCode::InvalidArgument,
+            "image path must be non-empty",
+        )
+        .expect("message")
+        .with_context(ContextKey::Field, "path")
+        .expect("field"));
+    }
+    if path.len() > IMAGE_PATH_MAX_BYTES {
+        return Err(reject_oversized("path", path.len(), IMAGE_PATH_MAX_BYTES));
+    }
+    Ok(())
+}
+
 pub(crate) fn check_log_message(message: &str, limits: &SessionLimits) -> Result<(), DomainError> {
     if message.len() > limits.log_message_max_bytes {
         return Err(reject_oversized(
@@ -189,6 +208,32 @@ pub(crate) fn bound_command_payload(
                 label: omit_label(label.len()),
             }
         }
+        CommandPayload::PrepareOrientedImage {
+            path,
+            orientation,
+            turns_only,
+        } if path.len() > limits.label_max_bytes => CommandPayload::PrepareOrientedImage {
+            path: omit_label(path.len()),
+            orientation,
+            turns_only,
+        },
+        CommandPayload::PrepareNormalizedMask {
+            path,
+            dst_w,
+            dst_h,
+            orientation,
+            turns_only,
+            flip,
+            alpha,
+        } if path.len() > limits.label_max_bytes => CommandPayload::PrepareNormalizedMask {
+            path: omit_label(path.len()),
+            dst_w,
+            dst_h,
+            orientation,
+            turns_only,
+            flip,
+            alpha,
+        },
         other => other,
     }
 }

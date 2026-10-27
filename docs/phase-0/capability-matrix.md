@@ -160,8 +160,9 @@ refer to [fixtures.md](fixtures.md).
   EXIF Orientation 1..8 (full SHORT `u16`, LE/BE, bad IFD rejected); pixel bake
   with AD-P3-F02-01 turns-only / full policies; mask NonZero via stbi gray
   (alpha ignored) + nearest; Alpha LA/RGBA via `cpu_resize` then ≥128; C++
-  pixel goldens + `spirula-application` session entry. EXR/TIFF/BMP/TGA,
-  depth/normal, and mask boundary EDT stay out of this tip.
+  pixel goldens + admitted `spirula-application` session commands (real IO
+  e2e). EXR/TIFF/BMP/TGA, depth/normal, and mask boundary EDT stay out of
+  this tip (plan scope; not shrunk for READY).
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.

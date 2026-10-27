@@ -80,6 +80,22 @@ pub enum Event {
     ProbeStarted {
         steps: u64,
     },
+    /// Real P3-F02 orient bake finished (before command terminal).
+    ImagePrepared {
+        path: String,
+        width: u32,
+        height: u32,
+        orientation: u8,
+        turns_only: bool,
+    },
+    /// Real P3-F02 mask normalize finished (before command terminal).
+    MaskPrepared {
+        path: String,
+        width: u32,
+        height: u32,
+        kept: u64,
+        alpha: bool,
+    },
     CheckpointSaved {
         step: u64,
         label: String,
@@ -117,6 +133,32 @@ impl Clone for Event {
                 label: label.clone(),
             },
             Self::ProbeStarted { steps } => Self::ProbeStarted { steps: *steps },
+            Self::ImagePrepared {
+                path,
+                width,
+                height,
+                orientation,
+                turns_only,
+            } => Self::ImagePrepared {
+                path: path.clone(),
+                width: *width,
+                height: *height,
+                orientation: *orientation,
+                turns_only: *turns_only,
+            },
+            Self::MaskPrepared {
+                path,
+                width,
+                height,
+                kept,
+                alpha,
+            } => Self::MaskPrepared {
+                path: path.clone(),
+                width: *width,
+                height: *height,
+                kept: *kept,
+                alpha: *alpha,
+            },
             Self::CheckpointSaved { step, label } => Self::CheckpointSaved {
                 step: *step,
                 label: label.clone(),
@@ -154,6 +196,8 @@ impl Event {
             },
             Self::ProbeLoaded { label } => 32 + label.len(),
             Self::ProbeStarted { .. } => 32,
+            Self::ImagePrepared { path, .. } => 48 + path.len(),
+            Self::MaskPrepared { path, .. } => 48 + path.len(),
             Self::CheckpointSaved { label, .. } => 48 + label.len(),
             Self::ShutdownComplete => 24,
         }

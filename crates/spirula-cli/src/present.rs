@@ -280,6 +280,22 @@ fn format_event_line(envelope: &EventEnvelope) -> String {
         Event::Completed { outcome } => format!("completed {}\n", format_outcome(outcome)),
         Event::ProbeLoaded { label } => format!("probe-loaded {label}\n"),
         Event::ProbeStarted { steps } => format!("probe-started steps={steps}\n"),
+        Event::ImagePrepared {
+            path,
+            width,
+            height,
+            orientation,
+            turns_only,
+        } => format!(
+            "image-prepared path={path} {width}x{height} orient={orientation} turns_only={turns_only}\n"
+        ),
+        Event::MaskPrepared {
+            path,
+            width,
+            height,
+            kept,
+            alpha,
+        } => format!("mask-prepared path={path} {width}x{height} kept={kept} alpha={alpha}\n"),
         Event::CheckpointSaved { step, label } => {
             format!("checkpoint step={step} label={label}\n")
         }

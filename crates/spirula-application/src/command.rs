@@ -17,7 +17,7 @@ impl Command {
     }
 }
 
-/// P1-F07 command surface. Real load/train names stay out of this enum.
+/// Session command surface. Probe* stay fake; P3-F02 image prepare is real IO.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandPayload {
     /// Fake dataset load. `label` is a non-empty probe tag, not a path read.
@@ -27,6 +27,24 @@ pub enum CommandPayload {
     /// Fake multi-step work. Does not claim training capability.
     ProbeRun {
         steps: u64,
+    },
+    /// Real PNG/JPEG orient bake via `spirula-io` (P3-F02). Idle|Ready only.
+    PrepareOrientedImage {
+        path: String,
+        /// `None` → read JPEG EXIF (non-JPEG → identity).
+        orientation: Option<u8>,
+        turns_only: bool,
+    },
+    /// Real mask normalize via `spirula-io` (P3-F02). Idle|Ready only.
+    PrepareNormalizedMask {
+        path: String,
+        dst_w: u32,
+        dst_h: u32,
+        orientation: u8,
+        turns_only: bool,
+        flip: bool,
+        /// `false` → NonZero file mask; `true` → AlphaThreshold128.
+        alpha: bool,
     },
     Pause,
     Resume,
@@ -43,6 +61,8 @@ impl CommandPayload {
         match self {
             Self::ProbeLoad { .. } => "probe_load",
             Self::ProbeRun { .. } => "probe_run",
+            Self::PrepareOrientedImage { .. } => "prepare_oriented_image",
+            Self::PrepareNormalizedMask { .. } => "prepare_normalized_mask",
             Self::Pause => "pause",
             Self::Resume => "resume",
             Self::Stop { .. } => "stop",
@@ -60,7 +80,13 @@ impl CommandPayload {
     }
 
     pub(crate) fn is_mutating_probe(&self) -> bool {
-        matches!(self, Self::ProbeLoad { .. } | Self::ProbeRun { .. })
+        matches!(
+            self,
+            Self::ProbeLoad { .. }
+                | Self::ProbeRun { .. }
+                | Self::PrepareOrientedImage { .. }
+                | Self::PrepareNormalizedMask { .. }
+        )
     }
 
     pub(crate) fn validate(&self, limits: &SessionLimits) -> Result<(), DomainError> {
@@ -82,6 +108,35 @@ impl CommandPayload {
                 }
                 Ok(())
             }
+            Self::PrepareOrientedImage {
+                path, orientation, ..
+            } => {
+                crate::bound::check_image_path(path)?;
+                if let Some(o) = orientation {
+                    spirula_io::ExifOrientation::from_u8(*o).map(|_| ())?;
+                }
+                Ok(())
+            }
+            Self::PrepareNormalizedMask {
+                path,
+                dst_w,
+                dst_h,
+                orientation,
+                ..
+            } => {
+                crate::bound::check_image_path(path)?;
+                spirula_io::ExifOrientation::from_u8(*orientation).map(|_| ())?;
+                if *dst_w == 0 || *dst_h == 0 {
+                    return Err(DomainError::try_new(
+                        ErrorCode::ValueOutOfRange,
+                        "mask destination size must be positive",
+                    )
+                    .expect("message")
+                    .with_context(ContextKey::Field, "dst_size")
+                    .expect("field"));
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -91,6 +146,8 @@ impl CommandPayload {
         match self {
             Self::ProbeLoad { label } => 16 + label.len(),
             Self::ProbeRun { .. } => 16,
+            Self::PrepareOrientedImage { path, .. } => 24 + path.len(),
+            Self::PrepareNormalizedMask { path, .. } => 40 + path.len(),
             Self::Stop { .. } => 12,
             Self::Pause | Self::Resume | Self::Shutdown | Self::Reset => 8,
         }

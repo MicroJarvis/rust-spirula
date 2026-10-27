@@ -41,14 +41,20 @@ never rewritten.
 
 ## Application / session entry
 
-`spirula-application` depends on `spirula-io` (allowed architecture edge) and
-exposes session-gated helpers on `ApplicationService`:
+Wiring is **not deferred**. `spirula-application` depends on `spirula-io`
+(allowed architecture edge) and admits real commands on the unique session owner:
 
-- `probe_image_file_size`
-- `prepare_oriented_rgb_file`
-- `prepare_normalized_mask_file`
+| Command | Behavior |
+|---|---|
+| `PrepareOrientedImage { path, orientation, turns_only }` | Real decode + EXIF bake; emits `Event::ImagePrepared` then `Completed` / `Failed` |
+| `PrepareNormalizedMask { path, dst_*, orientation, turns_only, flip, alpha }` | Real mask normalize; emits `Event::MaskPrepared` then terminal |
 
-Idle|Ready only. E2E: `crates/spirula-application/tests/image_ops_e2e.rs`.
+Idle|Ready only; counted as mutating (blocks while another probe/image command
+is in flight). Sync helpers (`probe_image_file_size` /
+`prepare_oriented_rgb_file` / `prepare_normalized_mask_file`) share the same
+`spirula-io` path for unit convenience. E2E:
+`crates/spirula-application/tests/image_ops_e2e.rs` (submit → control events →
+terminal).
 
 ## C++ pixel goldens
 

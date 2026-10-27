@@ -769,6 +769,10 @@ fn validate_in_state(phase: SessionState, payload: &CommandPayload) -> Result<()
             )
         }
         CommandPayload::ProbeRun { .. } => phase == SessionState::Ready,
+        CommandPayload::PrepareOrientedImage { .. }
+        | CommandPayload::PrepareNormalizedMask { .. } => {
+            matches!(phase, SessionState::Idle | SessionState::Ready)
+        }
         CommandPayload::Pause => {
             matches!(phase, SessionState::Running | SessionState::Paused)
         }
@@ -971,6 +975,133 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 stall,
                 save_on_cancel: save_flag,
             });
+        }
+        CommandPayload::PrepareOrientedImage {
+            path,
+            orientation,
+            turns_only,
+        } => {
+            let policy = if turns_only {
+                spirula_io::ApplyPolicy::TurnsOnly
+            } else {
+                spirula_io::ApplyPolicy::FullTransform
+            };
+            drop(st);
+            let outcome = crate::image_ops::run_prepare_oriented_rgb(
+                std::path::Path::new(&path),
+                orientation,
+                policy,
+            );
+            let mut st = lock(&shared.state);
+            if st.active_command != Some(id) || st.active_run != Some(run_id) {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            match outcome {
+                Ok(img) => {
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(id),
+                        Some(run_id),
+                        Event::ImagePrepared {
+                            path,
+                            width: img.width,
+                            height: img.height,
+                            orientation: img.orientation,
+                            turns_only,
+                        },
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Err(error) => {
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        id,
+                        RunOutcome::Failed {
+                            error: error.without_source(),
+                        },
+                        Some(run_id),
+                    );
+                }
+            }
+        }
+        CommandPayload::PrepareNormalizedMask {
+            path,
+            dst_w,
+            dst_h,
+            orientation,
+            turns_only,
+            flip,
+            alpha,
+        } => {
+            let args = crate::image_ops::PrepareMaskArgs {
+                dst_w,
+                dst_h,
+                kind: if alpha {
+                    spirula_io::MaskSourceKind::AlphaThreshold128
+                } else {
+                    spirula_io::MaskSourceKind::NonZero
+                },
+                orientation,
+                policy: if turns_only {
+                    spirula_io::ApplyPolicy::TurnsOnly
+                } else {
+                    spirula_io::ApplyPolicy::FullTransform
+                },
+                flip,
+            };
+            drop(st);
+            let outcome =
+                crate::image_ops::run_prepare_normalized_mask(std::path::Path::new(&path), args);
+            let mut st = lock(&shared.state);
+            if st.active_command != Some(id) || st.active_run != Some(run_id) {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            match outcome {
+                Ok(mask) => {
+                    let kept = mask.samples.iter().filter(|&&v| v == 1).count() as u64;
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(id),
+                        Some(run_id),
+                        Event::MaskPrepared {
+                            path,
+                            width: mask.width,
+                            height: mask.height,
+                            kept,
+                            alpha,
+                        },
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Err(error) => {
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        id,
+                        RunOutcome::Failed {
+                            error: error.without_source(),
+                        },
+                        Some(run_id),
+                    );
+                }
+            }
         }
         other => {
             finish_active(
