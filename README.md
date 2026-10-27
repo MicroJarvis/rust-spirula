@@ -23,9 +23,10 @@ pinned commit, toolchain and build/test entry points are recorded in
 Phase 0 and Phase 1 are complete. P2-F01–P2-F07 (adapter negotiate, device/
 queue/context, buffer/texture/readback, shader/pipeline/affine compute, GPU
 errors / diagnostic events, headless compute smoke, minimal CLI package) are
-complete; the current feature is early P6-F07 (HOLD-MERGE Slint/wgpu
-display-path; [docs/phase-6/presentation-path.md](docs/phase-6/presentation-path.md)).
-Phase 2 exit is not closed (surface present still unverified). Phase 0 evidence is in
+complete; early P6-F07 (Slint/wgpu display-path;
+[docs/phase-6/presentation-path.md](docs/phase-6/presentation-path.md)) is
+complete; the current feature is **P3-F01**. Phase 2 exit is not closed
+(surface present still unverified). Phase 0 evidence is in
 [docs/phase-0/exit-report.md](docs/phase-0/exit-report.md).
 Phase 1 records are in
 [docs/phase-1/exit-report.md](docs/phase-1/exit-report.md);
@@ -67,7 +68,7 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Plan current work is early P6-F07 in
+real train/preview stay later features. Plan current work is **P3-F01** in
 [docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
 `--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
 not application/train/UI readiness; surface remains honest unsupported / not a

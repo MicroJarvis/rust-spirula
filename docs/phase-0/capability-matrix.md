@@ -95,7 +95,7 @@ refer to [fixtures.md](fixtures.md).
 | C-UI-05 | log and error feedback | `gui/GuiApp.cpp:10696-10699`, `TrainRunner.cpp:160-180` | events | log panel/modal | raw error text plus typed code; retry on data errors | P6-F03/P6-F06 | `spirula-ui` | 未开始 |
 | C-UI-06 | GUI automation surface | `gui/Automation.cpp:734-746` | HTTP/UI events | state/tree/screenshot | loopback, off by default | P6-F06 (optional) | `spirula-ui` | 未开始 |
 | C-UI-07 | shared session with CLI | `GuiApp.cpp:1391-1410` | application API | same events | CLI and UI submit the same commands | P6-F06 parity test | `spirula-application` | 未开始 |
-| C-UI-08 | measured Slint presentation path | (new; reference viewer blit is behavior input) | application image/opaque presentation | displayed frame | no public wgpu in UI; shared/readback fallback cost recorded | P6-F07 copies/latency/lifetime | `spirula-ui`/`spirula-application`/`spirula-gpu` | 当前 |
+| C-UI-08 | measured Slint presentation path | (new; reference viewer blit is behavior input) | application image/opaque presentation | displayed frame | no public wgpu in UI; shared/readback fallback cost recorded | P6-F07 copies/latency/lifetime | `spirula-ui`/`spirula-application`/`spirula-gpu` | 已完成 |
 
 ## CLI and application
 
@@ -180,6 +180,11 @@ refer to [fixtures.md](fixtures.md).
   foundation, not completed SfM/video algorithms.
 
 - The new saved-state/VJP/aggregation rows remain unimplemented; existing CPU
-  math/config/atomic tests do not validate GPU training. Per-stage budgets,
-  initial CLI packages, presentation costs and full-resume tests are target
-  gates in [development-gates.md](../development-gates.md), not completed evidence.
+  math/config/atomic tests do not validate GPU training. Per-stage budgets and
+  full-resume tests remain target gates in
+  [development-gates.md](../development-gates.md). Initial CLI packages are
+  `C-X-06` / P2-F07（已完成）. `C-UI-08` / P6-F07 tip recorded per-frame copy
+  bytes and host produce→deliver latency (CUA window draw); process-wide CPU
+  total peak was **not** measured; software rendering notifier may stay
+  unverified (`Unsupported`) while CUA-visible software draw is recorded
+  separately — still **not** wgpu surface present.

@@ -380,15 +380,18 @@ are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
   deviation). Context creation happens in the session worker, never on the UI
   thread;
 - GPU work is submitted through the context; readback and sync are explicit;
-- the UI never creates, uploads, or reads GPU resources. P6-F07 validates
-  Slint presentation via application-owned `PresentedFrame` host values
-  (AD-P6-F07-01: application may call `spirula-gpu` to produce frames; UI and
-  core never name `wgpu`). Shared-texture into Slint is unavailable in this
-  tip → explicit readback → host copy → Slint `Image` upload; per-frame copy
-  bytes, sync labels (`submit`/`wait`/`map`/`set-image`), and host produce→
-  deliver latency are recorded. Software renderer paint ≠ wgpu surface present.
-  Binding: [phase-6/presentation-path.md](../phase-6/presentation-path.md).
-  Any further boundary change must update this contract and architecture together.
+- the UI never creates, uploads, or reads GPU resources. P6-F07 (已完成)
+  validates Slint presentation via application-owned `PresentedFrame` host
+  values (AD-P6-F07-01: application may call `spirula-gpu` to produce frames;
+  UI and core never name `wgpu`). Shared-texture into Slint is unavailable in
+  this tip → explicit readback → host copy → Slint `Image` upload; per-frame
+  copy bytes, sync labels (`submit`/`wait`/`map`/`set-image`), and host
+  produce→deliver latency are recorded. Process-wide CPU total peak was not
+  measured. Software rendering notifier may remain unverified when
+  `Unsupported`; CUA-visible software draw is separate evidence. Software
+  renderer paint ≠ wgpu surface present (Phase 2 exit stays open). Binding:
+  [phase-6/presentation-path.md](../phase-6/presentation-path.md). Any further
+  boundary change must update this contract and architecture together.
 
 ### 6.2 Resource labels and lifetime
 

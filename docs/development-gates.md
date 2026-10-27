@@ -72,13 +72,19 @@ upload→compute→readback 验证接口，P4-F02 验证 render/train 共享资�
 P2-F01 明确 required/optional feature 与 limits。subgroup、f16、timestamp
 和浮点累加路径分别声明能力、回退或不可用诊断，不因使用 wgpu 就默认可用。
 
-P6-F07 在完整窗口开发前做最小 Slint 显示验证：固定 Slint 1.18
-`renderer-software` 与 wgpu 30.0.1、adapter/backend、线程与纹理所有权；
-AD-P6-F07-01 允许 application→`spirula-gpu` 窄边生产 host 帧。本 tip 无共享
-纹理能力 → 显式 readback→host→Slint `Image` 上传；记录每帧复制字节、同步点
-（`submit`/`wait`/`map`/`set-image`）、produce→deliver 延迟与不可测项。UI
-只接收 `PresentedFrame`，不直接 GPU/IO。software paint ≠ wgpu surface present；
-不能宣称零复制。契约 [phase-6/presentation-path.md](phase-6/presentation-path.md)。
+P6-F07（已完成，tip `82adae0eebbb1f1a0f20ddfec1d7dd824ae7006c`）在完整窗口
+开发前做了最小 Slint 显示验证：固定 Slint 1.18 `renderer-software` 与 wgpu
+30.0.1、adapter/backend、线程与纹理所有权；AD-P6-F07-01 允许
+application→`spirula-gpu` 窄边生产 host 帧。本 tip 无共享纹理能力 → 显式
+readback→host→Slint `Image` 上传；已记录每帧复制字节、同步点
+（`submit`/`wait`/`map`/`set-image`）、produce→deliver 延迟；进程 CPU 总峰值
+**未测**；GPU→display present / compositor 不可测。UI 只接收
+`PresentedFrame`，不直接 GPU/IO。app software rendering notifier 在
+`Unsupported` 时保持 unverified，与 CUA 人工可见软件绘制分别记录；
+software paint ≠ wgpu surface present；不能宣称零复制；Phase 2 出口仍 open。
+正式 UI / train/preview / P6-F03 未接入。契约
+[phase-6/presentation-path.md](phase-6/presentation-path.md)。计划当前为
+P3-F01。
 
 ## 5. 资源预算、背压与逐阶段测量
 

@@ -211,17 +211,20 @@ records the pinned sources and accepted lessons. The stack remains Rust /
 Slint / wgpu / WGSL; Brush is a development reference, not a runtime engine.
 The C++ checkout remains the compatibility authority.
 
-P6-F07 (HOLD-MERGE) is the early presentation spike after Phase 2 packaging:
-Slint 1.18 + `renderer-software`, wgpu 30.0.1, application→gpu presentation
-produce, readback→host→Slint `Image` upload, measured copy bytes/sync points,
-capacity-1 latest-frame backpressure. Does **not** claim wgpu surface present.
-See [phase-6/presentation-path.md](phase-6/presentation-path.md). P2-F07
-(已完成, tip `17c1202a6a2b70183192a1367d96ffbb0e992e67`) packages the minimal
-CLI + GPU diagnose/smoke binaries via `spirula-xtask` without adding a
+P6-F07 (已完成, tip `82adae0eebbb1f1a0f20ddfec1d7dd824ae7006c`) is the early
+presentation spike after Phase 2 packaging: Slint 1.18 + `renderer-software`,
+wgpu 30.0.1, application→gpu presentation produce, readback→host→Slint `Image`
+upload, measured copy bytes/sync points / host produce→deliver latency,
+capacity-1 latest-frame backpressure, CUA-visible software draw. Process-wide
+CPU total peak was **not** measured; app software rendering notifier may stay
+unverified (`Unsupported`). Does **not** claim zero-copy or wgpu surface
+present. See [phase-6/presentation-path.md](phase-6/presentation-path.md).
+P2-F07 (已完成, tip `17c1202a6a2b70183192a1367d96ffbb0e992e67`) packages the
+minimal CLI + GPU diagnose/smoke binaries via `spirula-xtask` without adding a
 CLI→GPU edge; see [phase-2/cli-package.md](phase-2/cli-package.md). P4-F06/P5-F07
 add real workflow samples; P9-F04 covers signed multi-platform installers.
 P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
 versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
 Phase 2 exit stays open while surface present remains unverified — completing
-P2-F01–P2-F07 does not close that exit. Train/preview and P6-F03 navigation
-remain unwired.
+P2-F01–P2-F07 and the P6-F07 tip does not close that exit. Train/preview and
+P6-F03 navigation remain unwired. Plan current work is **P3-F01**.
