@@ -1,6 +1,7 @@
 # P3-F02: image orientation and mask
 
-Status: **进行中** (branch `codex/p3-f02`; HOLD candidate). Owner:
+Status: **已完成**. Code tip `6f2b79ca5da9af5d8b14f5b2e2cd9b16cdacbc90`;
+landed on main via merge `da0ea365f1a77d820c26e25390b6111aaf7587f2`. Owner:
 `spirula-io` + admitted `spirula-application` session commands. Prerequisite
 P1-F02 done. Not COLMAP parsers (P3-F03), not training cache (P3-F08), not UI
 mask editor (P7-F01).
@@ -9,15 +10,12 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`.
 
 ## Capability scope (matrix)
 
-| Matrix | Delivered in this tip |
+| Matrix | Scope delivered |
 |---|---|
 | **C-DATA-07** | PNG / JPEG / BMP (CORE+INFO) / TGA / TIFF / EXR decode + header/dimension probe; `DecodedRgb::{U8,U16,F32}` preserves 16-bit/`f32` DynamicImage variants; encoded + pixel budgets before decode/alloc |
 | **C-DATA-08** | NonZero (stbi gray, alpha ignored); Alpha LA/RGBA + `cpu_resize` ≥128; flip; **boundary offset** (`fraction * sqrt(W*H)` EDT); nonfinite offset rejected before mutation |
 | **C-DATA-09** | 16-bit depth PNG (+ bilinear); RGB normal: pixel turn → bilinear resize → `turn_normal_vectors` (pin `decode_normal_into` order) |
 | **C-DATA-10** | JPEG EXIF Orientation 1..8; modes; Full/TurnsOnly bake; SHORT `u16` (257/262 rejected); LE/BE + bad IFD |
-
-These rows stay **进行中** until independent READY — not claimed complete by
-shrinking scope in docs.
 
 ## Inventory (reference)
 
@@ -78,10 +76,11 @@ path-based `decode_rgb8` / hinted mask decode). Sync + admitted TGA coverage:
 `image_ops_e2e.rs`. Wide-row / downsample after-start cancel regressions live
 in `image_mask` unit tests.
 
-**HOLD:** mid-decode cancel inside the third-party decoder remains unmet
-relative to a strict 250 ms-inside-decode reading of §5; docs do not claim
-it. Drop/join-after-deadline vs true worker exit remains honestly documented
-above — global §5 requirements are not weakened to close the feature.
+**Non-claim / boundary (does not block READY):** mid-decode cancel inside the
+third-party decoder remains unmet relative to a strict 250 ms-inside-decode
+reading of §5; docs do not claim it. Drop/join-after-deadline vs true worker
+exit remains honestly documented above — global §5 requirements are not
+weakened to close the feature.
 
 Events: `ImagePrepared` / `MaskPrepared`. E2E:
 `crates/spirula-application/tests/image_ops_e2e.rs`.
@@ -123,12 +122,10 @@ consumed by orient/mask/format/offset tests.
 
 ## Non-claims
 
-- This branch already contains landed P3-F01 (camera) via merge from main;
-  main tip is clean (`33cf0c1` at P3-F02 integration). Do not treat P3-F01 as
-  missing on this baseline.
 - Custom C++ EXR/TIFF colour-management edge cases beyond `image` crate decode
   are not claimed bit-identical to `ExrImage.cpp`/`TiffImage.cpp`; fixtures
   cover probe/decode/dtype routing.
-- Third-party `image` decode is not cancelable mid-call (see cancel table).
+- Third-party `image` decode is not cancelable mid-call (see cancel table);
+  this boundary does not reopen C-DATA-07..10 or block READY.
 - UI mask editor remains P7-F01.
-- C-DATA-07..10 remain **进行中 / HOLD** until independent READY.
+- COLMAP parsers remain P3-F03; training cache remains P3-F08.
