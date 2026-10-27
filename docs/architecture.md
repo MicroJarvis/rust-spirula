@@ -200,9 +200,12 @@ records the pinned sources and accepted lessons. The stack remains Rust /
 Slint / wgpu / WGSL; Brush is a development reference, not a runtime engine.
 The C++ checkout remains the compatibility authority.
 
-P6-F07 is an early presentation spike after P2, measuring renderer/backend,
-texture/thread ownership, readback fallback and bytes copied per frame.
-P2-F07 packages the minimal CLI; P4-F06/P5-F07 add real workflow samples.
-P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
-versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
-All these capabilities remain pending until their feature evidence is recorded.
+P6-F07 is an early presentation spike after Phase 2 packaging, measuring
+renderer/backend, texture/thread ownership, readback fallback and bytes copied
+per frame. P2-F07 (HOLD-MERGE) packages the minimal CLI + GPU diagnose/smoke
+binaries via `spirula-xtask` without adding a CLI→GPU dependency edge; see
+[phase-2/cli-package.md](phase-2/cli-package.md). P4-F06/P5-F07 add real
+workflow samples; P9-F04 covers signed multi-platform installers. P5-F05 saves
+full optimizer/scheduler/RNG/sampler/refinement state through versioned
+immutable checkpoint generations; P5-F07 verifies new-process resume. Phase 2
+exit stays open while surface present remains unverified.

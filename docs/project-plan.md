@@ -344,10 +344,17 @@ reclaim、最小 surface 诚实 **unsupported**/不伪造窗口且**不**声称 
 `/tmp/spirula-p2-f06-review/REVIEW-final-e66af3d.md`；parent full verify 8/8
 与 host 5/5 + synthetic 6/6 见该契约（样本
 `/tmp/spirula-codex-p2-f06-e66af3d-independent-verify.log`、
-`/tmp/spirula-codex-p2-f06-e66af3d-focused.log`）。**诚实边界**：P2-F07 为
-**当前**（packaging 未开始）；application/train/UI/P6-F01 未接入；非通用
-logging/P9 汇总；不声称真实硬件 OOM；不声称 surface present pass；60 s
-watchdog 仍 deferred。Phase 2 退出条件仍未满足。
+`/tmp/spirula-codex-p2-f06-e66af3d-focused.log`）。P2-F07（最小 CLI 包与隔离
+启动）为 **当前 / HOLD-MERGE**：`spirula-xtask package` /
+`package-check` / `package-run` 从干净 checkout 或 `--from-ref` 以
+`--locked` 组装 `spirula` + GPU diagnose/smoke；MANIFEST 记录
+revision/version/host/toolchain/sha256/runtime deps/许可证；隔离目录跑
+help/capabilities/fake-probe 与 compute smoke（pass⇒cpu_exact+current0，
+adapter 不可用⇒精确 skip 不计 pass）；CLI 不新增 GPU 边；无签名/三平台/
+P9 安装包。契约 [phase-2/cli-package.md](phase-2/cli-package.md)。
+**诚实边界**：application/train/UI/P6-F01 未接入；不声称真实硬件 OOM；不声称
+surface present pass；60 s watchdog 仍 deferred；Phase 2 退出条件仍未满足
+（surface 未验证）。合并后按原路线提前 P6-F07。
 2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。

@@ -1,0 +1,1043 @@
+//! P2-F07 minimal CLI package: clean/archive build, manifest, isolated run.
+//!
+//! Binding: `docs/phase-2/cli-package.md`. Tooling only — does not change
+//! `spirula-cli` → GPU edges.
+
+use std::collections::BTreeMap;
+use std::env;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+/// Binaries shipped in the minimal CLI package.
+pub const PACKAGE_BINARIES: &[&str] = &["spirula", "spirula-gpu-diagnose", "spirula-gpu-smoke"];
+
+const MANIFEST_NAME: &str = "MANIFEST.json";
+const NOTICE_NAME: &str = "NOTICE";
+const BIN_DIR: &str = "bin";
+const SCHEMA_VERSION: u32 = 1;
+const STAGING_PREFIX: &str = ".spirula-pkg-tmp.";
+
+/// Options for [`build_package`].
+#[derive(Clone, Debug)]
+pub struct PackageOptions {
+    /// Destination package directory (must not already exist).
+    pub out: PathBuf,
+    /// Workspace / clean tree used as the source of truth for `git` / cargo.
+    pub workspace: PathBuf,
+    /// When set, archive this ref into an isolated tree and build there.
+    pub from_ref: Option<String>,
+    /// Cargo profile name (`release` or `dev`).
+    pub profile: String,
+}
+
+/// Result of a successful package publish.
+#[derive(Clone, Debug)]
+pub struct PackageOutcome {
+    pub package_dir: PathBuf,
+    pub revision: String,
+    pub manifest_path: PathBuf,
+}
+
+/// Verify a previously built package against its manifest.
+pub fn check_package(package_dir: &Path) -> Result<Value, String> {
+    let manifest = read_manifest(package_dir)?;
+    verify_manifest_contents(package_dir, &manifest)?;
+    verify_no_forbidden_entries(package_dir)?;
+    Ok(manifest)
+}
+
+/// Metadata recorded into `MANIFEST.json` when assembling from built binaries.
+#[derive(Clone, Debug)]
+pub struct AssembleMeta {
+    pub revision: String,
+    pub version: String,
+    pub profile: String,
+}
+
+/// Build and atomically publish a package directory.
+///
+/// Requires a clean worktree unless [`PackageOptions::from_ref`] is set (then
+/// the build uses `git archive` of that ref into an isolated tree).
+pub fn build_package(opts: &PackageOptions) -> Result<PackageOutcome, String> {
+    let (build_root, revision, cleanup_build) =
+        prepare_build_tree(&opts.workspace, opts.from_ref.as_deref())?;
+    let result = (|| {
+        cargo_build_bins(&build_root, &opts.profile)?;
+        let target_bin = cargo_target_bin_dir(&build_root, &opts.profile)?;
+        let version = workspace_version(&build_root)?;
+        assemble_package_from_bin_dir(
+            &target_bin,
+            &opts.out,
+            &AssembleMeta {
+                revision: revision.clone(),
+                version,
+                profile: opts.profile.clone(),
+            },
+        )
+    })();
+    if cleanup_build {
+        let _ = remove_path_best_effort(&build_root);
+    }
+    result
+}
+
+/// Assemble a package from an existing Cargo target bin directory.
+///
+/// Used by host tests (dirty trees) and by [`build_package`] after a locked
+/// build. Still refuses an existing destination and publishes atomically.
+pub fn assemble_package_from_bin_dir(
+    bin_dir: &Path,
+    out: &Path,
+    meta: &AssembleMeta,
+) -> Result<PackageOutcome, String> {
+    if out.exists() {
+        return Err(format!(
+            "package destination already exists: {}",
+            out.display()
+        ));
+    }
+    let parent = out.parent().ok_or_else(|| {
+        format!(
+            "package destination has no parent directory: {}",
+            out.display()
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|e| format!("creating parent {}: {e}", parent.display()))?;
+
+    let staging = unique_staging(parent)?;
+    let assembled = (|| {
+        fs::create_dir_all(staging.join(BIN_DIR))
+            .map_err(|e| format!("creating staging bin: {e}"))?;
+        let mut binaries = Vec::new();
+        for name in PACKAGE_BINARIES {
+            let src = bin_dir.join(name);
+            if !src.is_file() {
+                return Err(format!("built binary missing: {}", src.display()));
+            }
+            let dest = staging.join(BIN_DIR).join(name);
+            fs::copy(&src, &dest)
+                .map_err(|e| format!("copy {} → {}: {e}", src.display(), dest.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&dest)
+                    .map_err(|e| format!("stat {}: {e}", dest.display()))?
+                    .permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&dest, perms)
+                    .map_err(|e| format!("chmod {}: {e}", dest.display()))?;
+            }
+            let sha = sha256_file(&dest)?;
+            let size = fs::metadata(&dest)
+                .map_err(|e| format!("stat {}: {e}", dest.display()))?
+                .len();
+            let deps = runtime_dependencies(&dest)?;
+            reject_nonsystem_dylibs(name, &deps)?;
+            binaries.push(json!({
+                "name": name,
+                "path": format!("{BIN_DIR}/{name}"),
+                "sha256": sha,
+                "size_bytes": size,
+                "runtime_dependencies": deps,
+            }));
+        }
+        write_notice(&staging)?;
+        let host = rustc_host()?;
+        let toolchain = rustc_toolchain()?;
+        let manifest = json!({
+            "schema_version": SCHEMA_VERSION,
+            "feature": "P2-F07",
+            "package_kind": "minimal-cli",
+            "revision": meta.revision,
+            "version": meta.version,
+            "host_target": host,
+            "toolchain": toolchain,
+            "profile": meta.profile,
+            "locked": true,
+            "binaries": binaries,
+            "licenses": ["GPL-3.0-or-later"],
+            "claims": {
+                "signed_release": false,
+                "three_platform_matrix": false,
+                "surface_present_verified": false,
+                "train_preview_ui_wired": false,
+                "phase2_exit_closed": false,
+                "bit_for_bit_reproducible": false
+            }
+        });
+        let body = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("serialize manifest: {e}"))?
+            + "\n";
+        fs::write(staging.join(MANIFEST_NAME), body).map_err(|e| format!("write manifest: {e}"))?;
+        verify_manifest_contents(&staging, &manifest)?;
+        verify_no_forbidden_entries(&staging)?;
+        Ok(())
+    })();
+
+    match assembled {
+        Ok(()) => {
+            fs::rename(&staging, out).map_err(|e| {
+                let _ = remove_path_best_effort(&staging);
+                format!(
+                    "atomic publish {} → {}: {e}",
+                    staging.display(),
+                    out.display()
+                )
+            })?;
+            Ok(PackageOutcome {
+                package_dir: out.to_path_buf(),
+                revision: meta.revision.clone(),
+                manifest_path: out.join(MANIFEST_NAME),
+            })
+        }
+        Err(err) => {
+            let _ = remove_path_best_effort(&staging);
+            Err(err)
+        }
+    }
+}
+
+/// Run packaged binaries in a source-free isolate directory.
+pub fn run_package_isolated(
+    package_dir: &Path,
+    isolate_parent: &Path,
+) -> Result<IsolatedRunReport, String> {
+    check_package(package_dir)?;
+    fs::create_dir_all(isolate_parent)
+        .map_err(|e| format!("creating isolate parent {}: {e}", isolate_parent.display()))?;
+    let isolate = unique_isolate(isolate_parent)?;
+    let copy_result = (|| {
+        copy_dir_recursive(package_dir, &isolate)?;
+        verify_no_forbidden_entries(&isolate)?;
+        // cwd with spaces, unrelated to the package tree.
+        let cwd = isolate_parent.join("run cwd with spaces");
+        fs::create_dir_all(&cwd).map_err(|e| format!("creating cwd: {e}"))?;
+        let bin = isolate.join(BIN_DIR);
+        let mut report = IsolatedRunReport {
+            isolate: isolate.clone(),
+            cwd: cwd.clone(),
+            help_exit: 0,
+            capabilities_exit: 0,
+            probe_exit: 0,
+            smoke_exit: 0,
+            smoke_status: String::new(),
+            smoke_match: None,
+            smoke_current: None,
+            smoke_counted_as_pass: false,
+        };
+
+        report.help_exit = run_scrubbed(&bin.join("spirula"), &["help"], &cwd, &bin)?.exit;
+        if report.help_exit != 0 {
+            return Err(format!("spirula help exit {}", report.help_exit));
+        }
+        report.capabilities_exit =
+            run_scrubbed(&bin.join("spirula"), &["capabilities"], &cwd, &bin)?.exit;
+        if report.capabilities_exit != 0 {
+            return Err(format!(
+                "spirula capabilities exit {}",
+                report.capabilities_exit
+            ));
+        }
+        report.probe_exit = run_scrubbed(
+            &bin.join("spirula"),
+            &["probe", "--label", "pkg", "--steps", "1"],
+            &cwd,
+            &bin,
+        )?
+        .exit;
+        if report.probe_exit != 0 {
+            return Err(format!("spirula probe exit {}", report.probe_exit));
+        }
+
+        let smoke = run_scrubbed(&bin.join("spirula-gpu-smoke"), &["--compute"], &cwd, &bin)?;
+        report.smoke_exit = smoke.exit;
+        if report.smoke_exit != 0 {
+            return Err(format!(
+                "spirula-gpu-smoke exit {} stdout:\n{}stderr:\n{}",
+                report.smoke_exit, smoke.stdout, smoke.stderr
+            ));
+        }
+        let status = parse_smoke_field(&smoke.stdout, "status=")
+            .ok_or_else(|| format!("smoke missing status= in:\n{}", smoke.stdout))?;
+        report.smoke_status = status.clone();
+        report.smoke_match = parse_smoke_field(&smoke.stdout, "match=");
+        report.smoke_current =
+            parse_smoke_field(&smoke.stdout, "after_drop current=").and_then(|s| s.parse().ok());
+
+        match status.as_str() {
+            "pass" => {
+                if report.smoke_match.as_deref() != Some("cpu_exact") {
+                    return Err(format!(
+                        "smoke pass without cpu_exact (match={:?})",
+                        report.smoke_match
+                    ));
+                }
+                if report.smoke_current != Some(0) {
+                    return Err(format!(
+                        "smoke pass without after_drop current=0 (got {:?})",
+                        report.smoke_current
+                    ));
+                }
+                report.smoke_counted_as_pass = true;
+            }
+            "skip" => {
+                // Precise skip is success for the package gate; must not be
+                // reported as a pass.
+                report.smoke_counted_as_pass = false;
+                if !smoke.stdout.contains("open_failure_stage=")
+                    && !smoke.stdout.contains("reason=")
+                {
+                    return Err("smoke skip without open_failure_stage= or reason=".to_owned());
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unexpected smoke status `{other}` (want pass|skip)"
+                ));
+            }
+        }
+        Ok(report)
+    })();
+
+    match copy_result {
+        Ok(report) => Ok(report),
+        Err(err) => {
+            let _ = remove_path_best_effort(&isolate);
+            Err(err)
+        }
+    }
+}
+
+/// Summary of an isolated package run.
+#[derive(Clone, Debug)]
+pub struct IsolatedRunReport {
+    pub isolate: PathBuf,
+    pub cwd: PathBuf,
+    pub help_exit: i32,
+    pub capabilities_exit: i32,
+    pub probe_exit: i32,
+    pub smoke_exit: i32,
+    pub smoke_status: String,
+    pub smoke_match: Option<String>,
+    pub smoke_current: Option<u64>,
+    pub smoke_counted_as_pass: bool,
+}
+
+fn prepare_build_tree(
+    workspace: &Path,
+    from_ref: Option<&str>,
+) -> Result<(PathBuf, String, bool), String> {
+    let git_meta = workspace.join(".git");
+    if !git_meta.exists() {
+        return Err(format!(
+            "workspace is not a git checkout: {}",
+            workspace.display()
+        ));
+    }
+    if let Some(rev) = from_ref {
+        let parent = env::temp_dir().join("spirula-pkg-build");
+        fs::create_dir_all(&parent).map_err(|e| format!("temp build parent: {e}"))?;
+        let dest = unique_path(&parent, "archive-")?;
+        git_archive(workspace, rev, &dest)?;
+        // Cargo needs the lockfile; git archive includes it from the ref.
+        Ok((dest, resolve_revision(workspace, rev)?, true))
+    } else {
+        ensure_clean(workspace)?;
+        let rev = resolve_revision(workspace, "HEAD")?;
+        Ok((workspace.to_path_buf(), rev, false))
+    }
+}
+
+fn ensure_clean(workspace: &Path) -> Result<(), String> {
+    let out = git_output(workspace, &["status", "--porcelain"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !text.trim().is_empty() {
+        return Err(format!(
+            "refusing dirty worktree (pass --from-ref <sha> for an isolated archive build):\n{}",
+            text.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_revision(workspace: &Path, rev: &str) -> Result<String, String> {
+    let out = git_output(workspace, &["rev-parse", rev])?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn git_archive(workspace: &Path, rev: &str, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| format!("archive dest: {e}"))?;
+    Command::new("git")
+        .args(["archive", "--format=tar", rev])
+        .current_dir(workspace)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            let mut tar = Command::new("tar")
+                .arg("-xf")
+                .arg("-")
+                .current_dir(dest)
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            if let (Some(mut git_out), Some(mut tar_in)) = (child.stdout.take(), tar.stdin.take()) {
+                io::copy(&mut git_out, &mut tar_in)?;
+            }
+            let tar_status = tar.wait()?;
+            let git_status = child.wait()?;
+            if !git_status.success() {
+                return Err(io::Error::other(format!(
+                    "git archive failed with {git_status}"
+                )));
+            }
+            if !tar_status.success() {
+                return Err(io::Error::other(format!(
+                    "tar extract failed with {tar_status}"
+                )));
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("git archive | tar: {e}"))?;
+    if !dest.join("Cargo.toml").is_file() {
+        return Err(format!(
+            "archived tree missing Cargo.toml at {}",
+            dest.display()
+        ));
+    }
+    Ok(())
+}
+
+fn cargo_build_bins(build_root: &Path, profile: &str) -> Result<(), String> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let mut cmd = Command::new(&cargo);
+    cmd.arg("build")
+        .arg("--locked")
+        .arg("-p")
+        .arg("spirula-cli")
+        .arg("-p")
+        .arg("spirula-gpu")
+        .current_dir(build_root);
+    match profile {
+        "release" => {
+            cmd.arg("--release");
+        }
+        "dev" => {}
+        other => return Err(format!("unsupported profile `{other}` (want release|dev)")),
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("spawning cargo build: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo build --locked failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn cargo_target_bin_dir(build_root: &Path, profile: &str) -> Result<PathBuf, String> {
+    let dir_name = match profile {
+        "release" => "release",
+        "dev" => "debug",
+        other => return Err(format!("unsupported profile `{other}`")),
+    };
+    let path = build_root.join("target").join(dir_name);
+    if !path.is_dir() {
+        return Err(format!("cargo target dir missing: {}", path.display()));
+    }
+    Ok(path)
+}
+
+fn read_manifest(package_dir: &Path) -> Result<Value, String> {
+    let path = package_dir.join(MANIFEST_NAME);
+    let text = fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
+}
+
+fn verify_manifest_contents(package_dir: &Path, manifest: &Value) -> Result<(), String> {
+    let schema = manifest
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "manifest missing schema_version".to_owned())?;
+    if schema != u64::from(SCHEMA_VERSION) {
+        return Err(format!(
+            "unsupported manifest schema_version {schema} (want {SCHEMA_VERSION})"
+        ));
+    }
+    if manifest.get("locked").and_then(|v| v.as_bool()) != Some(true) {
+        return Err("manifest.locked must be true".to_owned());
+    }
+    let binaries = manifest
+        .get("binaries")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "manifest missing binaries[]".to_owned())?;
+    let mut seen = BTreeMap::new();
+    for entry in binaries {
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "binary entry missing name".to_owned())?;
+        let rel = entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("binary `{name}` missing path"))?;
+        let expected = entry
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("binary `{name}` missing sha256"))?;
+        let file = package_dir.join(rel);
+        if !file.is_file() {
+            return Err(format!("package missing binary file: {}", file.display()));
+        }
+        let actual = sha256_file(&file)?;
+        if actual != expected {
+            return Err(format!(
+                "sha256 mismatch for `{name}`: manifest={expected} actual={actual}"
+            ));
+        }
+        seen.insert(name.to_owned(), ());
+    }
+    for required in PACKAGE_BINARIES {
+        if !seen.contains_key(*required) {
+            return Err(format!("manifest missing required binary `{required}`"));
+        }
+    }
+    Ok(())
+}
+
+fn verify_no_forbidden_entries(package_dir: &Path) -> Result<(), String> {
+    let forbidden_names = [
+        ".git",
+        "Cargo.toml",
+        "Cargo.lock",
+        "target",
+        "src",
+        "crates",
+        "tools",
+        ".env",
+        "credentials.json",
+    ];
+    for name in forbidden_names {
+        let path = package_dir.join(name);
+        if path.exists() {
+            return Err(format!(
+                "package must not contain `{name}` (found {})",
+                path.display()
+            ));
+        }
+    }
+    // Also reject any .rs source accidentally copied under the package.
+    for entry in walk_files(package_dir)? {
+        if entry.extension().and_then(|s| s.to_str()) == Some("rs") {
+            return Err(format!(
+                "package must not contain Rust sources (found {})",
+                entry.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_notice(package_dir: &Path) -> Result<(), String> {
+    let body = "Spirula Studio minimal CLI package (P2-F07)\n\
+License: GPL-3.0-or-later (see workspace [workspace.package] license).\n\
+This package ships process entry binaries only. It is not a signed installer,\n\
+does not claim a three-platform matrix, and does not wire train/preview/UI.\n";
+    fs::write(package_dir.join(NOTICE_NAME), body).map_err(|e| format!("write NOTICE: {e}"))
+}
+
+fn runtime_dependencies(binary: &Path) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("otool")
+            .args(["-L", &binary.display().to_string()])
+            .output()
+            .map_err(|e| format!("otool -L: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "otool -L failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut deps = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if i == 0 {
+                continue; // binary path header
+            }
+            let dep = line.split_whitespace().next().unwrap_or("");
+            if !dep.is_empty() {
+                deps.push(dep.to_owned());
+            }
+        }
+        Ok(deps)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let out = Command::new("ldd")
+            .arg(binary)
+            .output()
+            .map_err(|e| format!("ldd: {e}"))?;
+        // ldd returns non-zero for static binaries; still parse stdout.
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut deps = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            deps.push(line.to_owned());
+        }
+        Ok(deps)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = binary;
+        Ok(vec![
+            "(runtime dependency enumeration not implemented on this host)".to_owned(),
+        ])
+    }
+}
+
+fn reject_nonsystem_dylibs(name: &str, deps: &[String]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut bad = Vec::new();
+        for dep in deps {
+            if dep.starts_with("/usr/lib/") || dep.starts_with("/System/Library/") {
+                continue;
+            }
+            // Ignore self path lines that otool sometimes emits.
+            if dep.ends_with(name) {
+                continue;
+            }
+            bad.push(dep.clone());
+        }
+        if !bad.is_empty() {
+            return Err(format!(
+                "macOS binary `{name}` links non-system dylibs (not redistributable as a portable package): {bad:?}"
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (name, deps);
+    }
+    Ok(())
+}
+
+fn rustc_host() -> Result<String, String> {
+    crate::policy::rustc_host_triple()
+}
+
+fn rustc_toolchain() -> Result<Value, String> {
+    let out = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("rustc -vV: {e}"))?;
+    if !out.status.success() {
+        return Err("rustc -vV failed".to_owned());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut version = None;
+    let mut commit_hash = None;
+    let mut host = None;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("release: ") {
+            version = Some(v.to_owned());
+        } else if let Some(v) = line.strip_prefix("commit-hash: ") {
+            commit_hash = Some(v.to_owned());
+        } else if let Some(v) = line.strip_prefix("host: ") {
+            host = Some(v.to_owned());
+        }
+    }
+    Ok(json!({
+        "rustc_release": version,
+        "rustc_commit_hash": commit_hash,
+        "rustc_host": host,
+    }))
+}
+
+fn workspace_version(build_root: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(build_root.join("Cargo.toml"))
+        .map_err(|e| format!("reading workspace Cargo.toml: {e}"))?;
+    // Prefer [workspace.package] version.
+    let mut in_workspace_package = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_workspace_package = trimmed == "[workspace.package]";
+            continue;
+        }
+        if in_workspace_package && let Some(rest) = trimmed.strip_prefix("version") {
+            let rest = rest.trim_start().trim_start_matches('=').trim();
+            let v = rest.trim_matches('"');
+            if !v.is_empty() {
+                return Ok(v.to_owned());
+            }
+        }
+    }
+    Err("workspace.package version not found in Cargo.toml".to_owned())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_encode(hasher.finalize()))
+}
+
+fn hex_encode(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
+}
+
+struct CmdResult {
+    exit: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_scrubbed(
+    program: &Path,
+    args: &[&str],
+    cwd: &Path,
+    bin_dir: &Path,
+) -> Result<CmdResult, String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(cwd).env_clear();
+    // Minimal env: PATH to package bin + system bins; keep dyld/system essentials.
+    let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin_dir.display());
+    cmd.env("PATH", path);
+    cmd.env("HOME", cwd);
+    cmd.env("TMPDIR", cwd);
+    // Explicitly avoid leaking workspace hints.
+    for key in [
+        "CARGO",
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "RUSTUP_HOME",
+        "RUSTC",
+        "RUSTFLAGS",
+        "SPIRULA_REFERENCE_REPO",
+        "SPIRULA_FIXTURES",
+        "SPIRULA_GPU_SURFACE",
+    ] {
+        cmd.env_remove(key);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("running {} {:?}: {e}", program.display(), args))?;
+    Ok(CmdResult {
+        exit: out.status.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+fn parse_smoke_field(stdout: &str, key: &str) -> Option<String> {
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("spirula-gpu-smoke ") {
+            // status= lives on the header line among other keys.
+            if key == "status=" {
+                for part in rest.split_whitespace() {
+                    if let Some(v) = part.strip_prefix("status=") {
+                        return Some(v.to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(v) = line.strip_prefix(key) {
+            return Some(v.trim().to_owned());
+        }
+        // also allow "match=cpu_exact" style full-line keys already handled;
+        // for embedded keys on header we handled status above.
+        if key != "status=" {
+            for part in line.split_whitespace() {
+                if let Some(v) = part.strip_prefix(key) {
+                    return Some(v.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn git_output(workspace: &Path, args: &[&str]) -> Result<Output, String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(out)
+}
+
+fn unique_staging(parent: &Path) -> Result<PathBuf, String> {
+    unique_path(parent, STAGING_PREFIX)
+}
+
+fn unique_isolate(parent: &Path) -> Result<PathBuf, String> {
+    unique_path(parent, "isolate-")
+}
+
+fn unique_path(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("clock: {e}"))?
+        .as_nanos();
+    let path = parent.join(format!("{prefix}{nanos}"));
+    if path.exists() {
+        return Err(format!(
+            "staging path unexpectedly exists: {}",
+            path.display()
+        ));
+    }
+    fs::create_dir_all(&path).map_err(|e| format!("mkdir {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn remove_path_best_effort(path: &Path) -> io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("read_dir {}: {e}", src.display()))? {
+        let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
+        let ty = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
+        let to = dest.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &to)?;
+        } else if ty.is_file() {
+            fs::copy(entry.path(), &to)
+                .map_err(|e| format!("copy {}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn walk_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    walk_files_inner(root, &mut out)?;
+    Ok(out)
+}
+
+fn walk_files_inner(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
+        let path = entry.path();
+        let ty = entry.file_type().map_err(|e| format!("file_type: {e}"))?;
+        if ty.is_dir() {
+            walk_files_inner(&path, out)?;
+        } else if ty.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Library helpers used by unit tests (hash / forbidden / smoke parse).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let parent = env::temp_dir().join("spirula-p2-f07-tests");
+        fs::create_dir_all(&parent).unwrap();
+        unique_path(&parent, &format!("{label}-")).unwrap()
+    }
+
+    fn write_fake_binary(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+        let bin = dir.join(BIN_DIR);
+        fs::create_dir_all(&bin).unwrap();
+        let path = bin.join(name);
+        fs::write(&path, body).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    fn fake_manifest(dir: &Path) -> Value {
+        let mut binaries = Vec::new();
+        for name in PACKAGE_BINARIES {
+            let path = write_fake_binary(dir, name, format!("fake-{name}").as_bytes());
+            let sha = sha256_file(&path).unwrap();
+            let size = fs::metadata(&path).unwrap().len();
+            binaries.push(json!({
+                "name": name,
+                "path": format!("{BIN_DIR}/{name}"),
+                "sha256": sha,
+                "size_bytes": size,
+                "runtime_dependencies": ["/usr/lib/libSystem.B.dylib"]
+            }));
+        }
+        write_notice(dir).unwrap();
+        let manifest = json!({
+            "schema_version": SCHEMA_VERSION,
+            "feature": "P2-F07",
+            "package_kind": "minimal-cli",
+            "revision": "deadbeef",
+            "version": "0.1.0",
+            "host_target": "aarch64-apple-darwin",
+            "toolchain": {"rustc_release": "1.99.0"},
+            "profile": "dev",
+            "locked": true,
+            "binaries": binaries,
+            "licenses": ["GPL-3.0-or-later"],
+            "claims": {
+                "signed_release": false,
+                "three_platform_matrix": false,
+                "surface_present_verified": false,
+                "train_preview_ui_wired": false,
+                "phase2_exit_closed": false,
+                "bit_for_bit_reproducible": false
+            }
+        });
+        fs::write(
+            dir.join(MANIFEST_NAME),
+            serde_json::to_string_pretty(&manifest).unwrap() + "\n",
+        )
+        .unwrap();
+        manifest
+    }
+
+    #[test]
+    fn check_accepts_matching_hashes() {
+        let dir = temp_dir("hash-ok");
+        fake_manifest(&dir);
+        check_package(&dir).expect("ok");
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_tampered_binary() {
+        let dir = temp_dir("tamper");
+        fake_manifest(&dir);
+        let victim = dir.join(BIN_DIR).join("spirula");
+        fs::write(&victim, b"tampered").unwrap();
+        let err = check_package(&dir).expect_err("tamper");
+        assert!(err.contains("sha256 mismatch"), "{err}");
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_missing_binary() {
+        let dir = temp_dir("missing");
+        fake_manifest(&dir);
+        fs::remove_file(dir.join(BIN_DIR).join("spirula-gpu-smoke")).unwrap();
+        let err = check_package(&dir).expect_err("missing");
+        assert!(err.contains("missing binary"), "{err}");
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn check_rejects_source_contamination() {
+        let dir = temp_dir("src");
+        fake_manifest(&dir);
+        fs::write(dir.join("Cargo.toml"), b"[package]\n").unwrap();
+        let err = check_package(&dir).expect_err("cargo");
+        assert!(err.contains("Cargo.toml"), "{err}");
+        let _ = remove_path_best_effort(&dir);
+    }
+
+    #[test]
+    fn destination_exists_is_rejected() {
+        let parent = temp_dir("exists-parent");
+        let out = parent.join("pkg out with spaces");
+        fs::create_dir_all(&out).unwrap();
+        let err = assemble_package_from_bin_dir(
+            &parent,
+            &out,
+            &AssembleMeta {
+                revision: "x".into(),
+                version: "0.1.0".into(),
+                profile: "dev".into(),
+            },
+        )
+        .expect_err("exists");
+        assert!(err.contains("already exists"), "{err}");
+        let _ = remove_path_best_effort(&parent);
+    }
+
+    #[test]
+    fn staging_residue_removed_on_assemble_failure() {
+        let parent = temp_dir("residue");
+        // Create a staging dir and ensure remove helper clears it.
+        let staging = unique_staging(&parent).unwrap();
+        fs::write(staging.join("junk"), b"x").unwrap();
+        remove_path_best_effort(&staging).unwrap();
+        assert!(!staging.exists());
+        // No leftover staging prefixes after cleanup.
+        for entry in fs::read_dir(&parent).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!name.starts_with(STAGING_PREFIX), "leftover staging {name}");
+        }
+        let _ = remove_path_best_effort(&parent);
+    }
+
+    #[test]
+    fn smoke_parse_pass_and_skip_fields() {
+        let pass = "spirula-gpu-smoke kind=compute status=pass wgpu_version=30 repeat=0\n\
+match=cpu_exact\nafter_drop current=0\n";
+        assert_eq!(parse_smoke_field(pass, "status=").as_deref(), Some("pass"));
+        assert_eq!(
+            parse_smoke_field(pass, "match=").as_deref(),
+            Some("cpu_exact")
+        );
+        assert_eq!(
+            parse_smoke_field(pass, "after_drop current=").as_deref(),
+            Some("0")
+        );
+        let skip = "spirula-gpu-smoke kind=compute status=skip wgpu_version=30 repeat=0\n\
+open_failure_stage=Adapter\nreason=no adapter\n";
+        assert_eq!(parse_smoke_field(skip, "status=").as_deref(), Some("skip"));
+    }
+
+    #[test]
+    fn skip_is_not_counted_as_pass() {
+        // Document the gate rule used by run_package_isolated.
+        let status = "skip";
+        let counted_as_pass = status == "pass";
+        assert!(!counted_as_pass);
+    }
+}

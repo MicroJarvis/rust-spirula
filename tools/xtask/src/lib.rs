@@ -6,6 +6,7 @@
 //! optional C++ reference baseline, and the fixed workspace gate.
 
 pub mod gate;
+pub mod package;
 pub mod policy;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +14,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub use gate::{GateStep, diff_gate_step, ensure_compile_steps_pin_host, workspace_gate_steps};
+pub use package::{
+    AssembleMeta, IsolatedRunReport, PACKAGE_BINARIES, PackageOptions, PackageOutcome,
+    assemble_package_from_bin_dir, build_package, check_package, run_package_isolated,
+};
 pub use policy::{PolicyReport, check_workspace_policy, rustc_host_triple};
 
 /// Summary of the document/status check.

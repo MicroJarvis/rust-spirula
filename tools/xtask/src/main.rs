@@ -5,16 +5,19 @@
 //!   docs      verify project-plan status, links, artifacts and error codes
 //!   policy    verify lint inheritance, architecture edges, features, CLI shape
 //!   baseline  verify the pinned C++ reference checkout (skipped when absent)
+//!   package   build the P2-F07 minimal CLI package (clean HEAD or --from-ref)
+//!   package-check  verify package hashes / layout
+//!   package-run    isolated help/capabilities/probe + GPU smoke
 //!   verify    run fixtures + docs + policy + baseline note + the workspace gate
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Instant;
 
 use spirula_xtask::{
-    check_docs, check_workspace_policy, diff_gate_step, rustc_host_triple, workspace_gate_steps,
-    workspace_root,
+    PackageOptions, build_package, check_docs, check_package, check_workspace_policy,
+    diff_gate_step, run_package_isolated, rustc_host_triple, workspace_gate_steps, workspace_root,
 };
 
 fn main() -> ExitCode {
@@ -25,6 +28,9 @@ fn main() -> ExitCode {
         "docs" => run_docs(),
         "policy" => run_policy(),
         "baseline" => run_baseline(),
+        "package" => run_package(),
+        "package-check" => run_package_check(),
+        "package-run" => run_package_run(),
         "-h" | "--help" | "help" => {
             print_usage();
             ExitCode::SUCCESS
@@ -41,16 +47,171 @@ fn print_usage() {
     println!(
         "spirula-xtask <command>
 
-  verify    run fixture, documentation, policy and workspace checks (default)
-  fixtures  verify fixtures/manifest.json and every fixture format
-  docs      verify project-plan status, links, artifacts and error codes
-  policy    verify lint inheritance, architecture edges, features and CLI shape
-  baseline  verify the pinned C++ reference checkout, if present
+  verify         run fixture, documentation, policy and workspace checks (default)
+  fixtures       verify fixtures/manifest.json and every fixture format
+  docs           verify project-plan status, links, artifacts and error codes
+  policy         verify lint inheritance, architecture edges, features and CLI shape
+  baseline       verify the pinned C++ reference checkout, if present
+  package        build minimal CLI package (--out DIR [--from-ref SHA] [--profile release|dev])
+  package-check  verify package MANIFEST hashes and forbidden entries (--package DIR)
+  package-run    isolated help/capabilities/probe + compute smoke (--package DIR)
 
 Environment:
   SPIRULA_REFERENCE_REPO  C++ reference checkout (default: ../spirula-studio)
   SPIRULA_FIXTURES        fixture root (default: <workspace>/fixtures)"
     );
+}
+
+fn run_package() -> ExitCode {
+    let args: Vec<String> = env::args().skip(2).collect();
+    let mut out = None;
+    let mut from_ref = None;
+    let mut profile = "release".to_owned();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--out" => {
+                let v = args.get(i + 1).cloned();
+                if v.is_none() {
+                    eprintln!("error: --out requires a path");
+                    return ExitCode::from(2);
+                }
+                out = v;
+                i += 2;
+            }
+            "--from-ref" => {
+                let v = args.get(i + 1).cloned();
+                if v.is_none() {
+                    eprintln!("error: --from-ref requires a revision");
+                    return ExitCode::from(2);
+                }
+                from_ref = v;
+                i += 2;
+            }
+            "--profile" => {
+                let v = args.get(i + 1).cloned();
+                if v.is_none() {
+                    eprintln!("error: --profile requires release|dev");
+                    return ExitCode::from(2);
+                }
+                profile = v.unwrap();
+                i += 2;
+            }
+            "-h" | "--help" => {
+                print_usage();
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("error: unknown package flag `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(out) = out else {
+        eprintln!("error: package requires --out DIR");
+        return ExitCode::from(2);
+    };
+    let opts = PackageOptions {
+        out: PathBuf::from(out),
+        workspace: workspace_root(),
+        from_ref,
+        profile,
+    };
+    match build_package(&opts) {
+        Ok(outcome) => {
+            println!(
+                "package: ok revision={} out={}",
+                outcome.revision,
+                outcome.package_dir.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("package: failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_package_check() -> ExitCode {
+    let args: Vec<String> = env::args().skip(2).collect();
+    let package = match package_dir_flag(&args) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    match check_package(&package) {
+        Ok(manifest) => {
+            let rev = manifest
+                .get("revision")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            println!(
+                "package-check: ok revision={rev} path={}",
+                package.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("package-check: failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_package_run() -> ExitCode {
+    let args: Vec<String> = env::args().skip(2).collect();
+    let package = match package_dir_flag(&args) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let isolate_parent = std::env::temp_dir().join("spirula-pkg-isolate");
+    match run_package_isolated(&package, &isolate_parent) {
+        Ok(report) => {
+            println!(
+                "package-run: ok smoke_status={} counted_as_pass={} match={:?} current={:?} isolate={}",
+                report.smoke_status,
+                report.smoke_counted_as_pass,
+                report.smoke_match,
+                report.smoke_current,
+                report.isolate.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("package-run: failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn package_dir_flag(args: &[String]) -> Result<PathBuf, ExitCode> {
+    let mut package = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--package" => {
+                let v = args.get(i + 1).cloned();
+                if v.is_none() {
+                    eprintln!("error: --package requires a path");
+                    return Err(ExitCode::from(2));
+                }
+                package = v;
+                i += 2;
+            }
+            "-h" | "--help" => {
+                print_usage();
+                return Err(ExitCode::SUCCESS);
+            }
+            other => {
+                eprintln!("error: unknown flag `{other}`");
+                return Err(ExitCode::from(2));
+            }
+        }
+    }
+    package.map(PathBuf::from).ok_or_else(|| {
+        eprintln!("error: requires --package DIR");
+        ExitCode::from(2)
+    })
 }
 
 fn run_fixtures() -> ExitCode {
