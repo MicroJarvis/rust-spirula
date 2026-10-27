@@ -72,11 +72,13 @@ upload→compute→readback 验证接口，P4-F02 验证 render/train 共享资�
 P2-F01 明确 required/optional feature 与 limits。subgroup、f16、timestamp
 和浮点累加路径分别声明能力、回退或不可用诊断，不因使用 wgpu 就默认可用。
 
-P6-F07 在完整窗口开发前做最小 Slint 显示验证：固定 Slint renderer 和
-wgpu 版本、adapter/backend、线程与纹理所有权，记录共享纹理或
-readback→upload 路径、每帧复制字节、同步点、延迟和释放行为。UI 只通过
-application presentation 接口接收图像/不透明呈现对象，不直接操作 GPU。
-缺乏纹理共享能力时必须记录回退成本；不能宣称原生 UI 已实现零复制。
+P6-F07 在完整窗口开发前做最小 Slint 显示验证：固定 Slint 1.18
+`renderer-software` 与 wgpu 30.0.1、adapter/backend、线程与纹理所有权；
+AD-P6-F07-01 允许 application→`spirula-gpu` 窄边生产 host 帧。本 tip 无共享
+纹理能力 → 显式 readback→host→Slint `Image` 上传；记录每帧复制字节、同步点
+（`submit`/`wait`/`map`/`set-image`）、produce→deliver 延迟与不可测项。UI
+只接收 `PresentedFrame`，不直接 GPU/IO。software paint ≠ wgpu surface present；
+不能宣称零复制。契约 [phase-6/presentation-path.md](phase-6/presentation-path.md)。
 
 ## 5. 资源预算、背压与逐阶段测量
 

@@ -226,7 +226,7 @@ Phase 2 退出条件尚未满足（surface present 仍未验证，不得因 P2 �
 
 1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
 2. P2-F01–P2-F07（已完成）：GPU 能力、真实窄资源路径与最小可运行包。
-3. 提前执行 P6-F07（当前）：验证 Slint 显示及每帧复制成本。
+3. 提前执行 P6-F07（当前 / HOLD-MERGE）：验证 Slint 显示及每帧复制成本。
 4. P3-F01–P3-F08：相机、微型数据集、格式和有界加载；先完成各自前置。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
@@ -355,11 +355,13 @@ reclaim、最小 surface 诚实 **unsupported**/不伪造窗口且**不**声称 
 `/tmp/spirula-codex-cli-pkg-17c1202` 隔离 Metal smoke pass/cpu_exact/current0）；
 Linux 同路径实现但本 tip **未**主机实测；Windows publish **unsupported**；CLI
 不新增 GPU 边；无签名/三平台/P9 安装包。契约
-[phase-2/cli-package.md](phase-2/cli-package.md)。按原路线 **P6-F07 为当前**
-（early Slint/wgpu 显示路径验证；尚未启动实现）。**诚实边界**：P2-F01–P2-F07
-全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未验证；
-application/train/preview/正式 UI 未接入；不声称真实硬件 OOM；60 s watchdog 仍
-deferred。
+[phase-2/cli-package.md](phase-2/cli-package.md)。按原路线 **P6-F07 为当前 /
+HOLD-MERGE**（early Slint/wgpu 显示路径；契约
+[phase-6/presentation-path.md](phase-6/presentation-path.md)；AD-P6-F07-01
+application→gpu 窄边；readback→Slint `Image`；不宣称 surface present）。
+**诚实边界**：P2-F01–P2-F07 全部完成 **不** 等于 Phase 2 出口通过——surface
+present 仍未验证；train/preview/P6-F03 导航未接入；不声称真实硬件 OOM；60 s
+watchdog 仍 deferred。
 2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。

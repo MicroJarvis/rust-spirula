@@ -14,15 +14,18 @@ are added only after the core path is stable.
 spirula-ui ───────┐
 spirula-cli ──────┼──> spirula-application
                   │          │
+                  │          ├──> spirula-gpu     (P6-F07: presentation produce only)
                   │          ├──> spirula-train ──> spirula-render ──> spirula-gpu  (later)
                   │          ├──> spirula-io ──────> spirula-core                 (later)
-                  │          └──> spirula-core   (P1-F07: only this edge is live)
+                  │          └──> spirula-core
                   └──> spirula-core
 ```
 
 `spirula-application` exists as of P1-F07: unique session owner for admission,
 cancellation, recoverable control history, snapshots/cursors, and a fake probe
-worker. In this slice it depends only on `spirula-core` (no train/GPU/io).
+worker. **AD-P6-F07-01** adds a narrow `spirula-application` → `spirula-gpu`
+edge for presentation frame production only (no direct `wgpu*` in application
+or UI; UI still consumes host `PresentedFrame` / Slint `Image` only).
 P1-F09 supplies the early CLI; P6-F01 integrates full business services.
 `spirula-train` owns step scheduling, not a second application state machine.
 
@@ -73,18 +76,24 @@ Slint widgets.
 
 Unique logical session owner: command admission, Stop/Shutdown control, cancel
 token, recoverable control history, snapshots/cursors, bounded notify fanout,
-a fake probe worker (P1-F07), and optional rotated disk diagnostics (P1-F09).
+a fake probe worker (P1-F07), optional rotated disk diagnostics (P1-F09), and
+(P6-F07) an application-owned presentation owner that opens `GpuContext` and
+publishes host `PresentedFrame` values through a capacity-1 latest-frame slot.
 State mutations are serialized through one owner mutex (callers and the
 mailbox loop); UI/CLI must not duplicate the business state machine. Public
-deps today: `spirula-core` only. Bindings:
+deps: `spirula-core` plus narrow `spirula-gpu` for presentation (AD-P6-F07-01);
+train/io edges remain for later. Bindings:
 [phase-1/application.md](phase-1/application.md),
-[phase-1/cli.md](phase-1/cli.md).
+[phase-1/cli.md](phase-1/cli.md),
+[phase-6/presentation-path.md](phase-6/presentation-path.md).
 
 ### `spirula-ui`
 
 Slint components, screen state, commands, validation feedback, and event
 subscriptions. UI code presents application state; it does not parse datasets,
-create GPU pipelines, or implement training rules.
+create GPU pipelines, or implement training rules. P6-F07 adds host-frame →
+Slint `Image` upload (software renderer allowed) without depending on
+`spirula-gpu` / `wgpu*`.
 
 ### `spirula-cli`
 
@@ -101,8 +110,9 @@ The portability baseline is `wgpu` with WGSL shaders. P2-F01 pins `wgpu`
 features and limits (`ResolvedLimits` keeps required floors). P2-F02 adds a
 session-owned `GpuContext` (instance/adapter/device/queue, `DeviceHandle` with
 context id/generation, explicit close/`reopen`, lost latch + owner poll; no
-global singleton, no auto-rebuild). Application does not yet own the context;
-device open does not imply compute/train/UI readiness. Bindings:
+global singleton, no auto-rebuild). P6-F07 lets application open a context for
+presentation produce only; device open still does not imply compute/train or
+wgpu surface present readiness. Bindings:
 [phase-2/gpu-adapter.md](phase-2/gpu-adapter.md),
 [phase-2/device-context.md](phase-2/device-context.md),
 [phase-2/gpu-resources.md](phase-2/gpu-resources.md). P2-F03 adds narrow
@@ -116,8 +126,9 @@ post-submit wait failures (not application session history; P6-F01). Surface
 smoke is P2-F06 (已完成): headless affine compute smoke with Fail reclaim, plus
 an honest surface **unsupported** gate that will not forge a window
 (`spirula-gpu-smoke`; present not verified). Packaging is P2-F07 (已完成;
-[phase-2/cli-package.md](phase-2/cli-package.md)). Application does not own GPU
-resources yet; diagnose/smoke are not train/preview/UI readiness. Real host OOM
+[phase-2/cli-package.md](phase-2/cli-package.md)). Presentation (P6-F07) owns a
+transient GPU context for probe frames; diagnose/smoke/train/preview remain
+separate. Real host OOM
 remains unsupported; the 60 s stall watchdog stays deferred. Bindings:
 [phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md),
 [phase-2/gpu-diagnostics.md](phase-2/gpu-diagnostics.md),
@@ -200,16 +211,17 @@ records the pinned sources and accepted lessons. The stack remains Rust /
 Slint / wgpu / WGSL; Brush is a development reference, not a runtime engine.
 The C++ checkout remains the compatibility authority.
 
-P6-F07 is the current early presentation spike after Phase 2 packaging,
-measuring renderer/backend, texture/thread ownership, readback fallback and
-bytes copied per frame. P2-F07 (已完成, tip
-`17c1202a6a2b70183192a1367d96ffbb0e992e67`) packages the minimal CLI + GPU
-diagnose/smoke binaries via `spirula-xtask` without adding a CLI→GPU edge; see
-[phase-2/cli-package.md](phase-2/cli-package.md) (macOS tested; Linux path
-implemented but not host-tested; Windows publish unsupported). P4-F06/P5-F07
+P6-F07 (HOLD-MERGE) is the early presentation spike after Phase 2 packaging:
+Slint 1.18 + `renderer-software`, wgpu 30.0.1, application→gpu presentation
+produce, readback→host→Slint `Image` upload, measured copy bytes/sync points,
+capacity-1 latest-frame backpressure. Does **not** claim wgpu surface present.
+See [phase-6/presentation-path.md](phase-6/presentation-path.md). P2-F07
+(已完成, tip `17c1202a6a2b70183192a1367d96ffbb0e992e67`) packages the minimal
+CLI + GPU diagnose/smoke binaries via `spirula-xtask` without adding a
+CLI→GPU edge; see [phase-2/cli-package.md](phase-2/cli-package.md). P4-F06/P5-F07
 add real workflow samples; P9-F04 covers signed multi-platform installers.
 P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
 versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
 Phase 2 exit stays open while surface present remains unverified — completing
-P2-F01–P2-F07 does not close that exit. Train/preview and formal UI remain
-unwired.
+P2-F01–P2-F07 does not close that exit. Train/preview and P6-F03 navigation
+remain unwired.

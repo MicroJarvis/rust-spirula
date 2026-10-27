@@ -15,6 +15,7 @@ mod history;
 mod ids;
 mod limits;
 mod notify;
+mod presentation;
 mod session;
 mod state;
 mod worker;
@@ -30,6 +31,9 @@ pub use event::{
 pub use ids::{CommandId, RunId, SessionId};
 pub use limits::SessionLimits;
 pub use notify::{SubscribeError, Subscription};
+pub use presentation::{
+    DeliveredFrame, PresentationOwner, PresentationStats, produce_presentation_frame_once,
+};
 pub use session::{ApplicationService, SubscribeHandoffError};
 pub use state::SessionState;
 pub use worker::{FakeWorkerBehavior, StallGate, WorkerEvent};

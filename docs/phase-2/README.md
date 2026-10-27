@@ -13,9 +13,10 @@
 P2-F01–P2-F07 are **已完成**. Phase 2 exit conditions remain **open**: surface
 present is still **not** verified (F06 honest unsupported gate). Completing
 every Phase 2 feature ID does **not** close the Phase 2 exit. The plan current
-feature is early **P6-F07** (Slint/wgpu presentation path; not started in this
-worktree). Application / train / UI are not wired through this phase’s
-diagnose/smoke GPU boundary. P2-F05 diagnostics stay GPU-local (P6-F01 owns
+feature is early **P6-F07** (HOLD-MERGE; see
+[../phase-6/presentation-path.md](../phase-6/presentation-path.md)). Phase 2
+diagnose/smoke remain separate from presentation; train/preview/P6-F03 stay
+unwired. P2-F05 diagnostics stay GPU-local (P6-F01 owns
 application session history). Real host OOM remains unsupported; the 60 s stall
 watchdog stays deferred. Packaging honesty: macOS tested; Linux NOREPLACE path
 implemented but not host-tested here; Windows publish unsupported.

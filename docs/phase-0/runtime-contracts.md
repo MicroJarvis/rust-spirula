@@ -381,10 +381,14 @@ are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
   thread;
 - GPU work is submitted through the context; readback and sync are explicit;
 - the UI never creates, uploads, or reads GPU resources. P6-F07 validates
-  Slint presentation via application-owned image/opaque presentation values;
-  shared-texture or readback fallback, per-frame copies and synchronization are
-  measured before the full UI. No `wgpu` types cross into UI/core. Any boundary
-  change must first update this contract and architecture together.
+  Slint presentation via application-owned `PresentedFrame` host values
+  (AD-P6-F07-01: application may call `spirula-gpu` to produce frames; UI and
+  core never name `wgpu`). Shared-texture into Slint is unavailable in this
+  tip → explicit readback → host copy → Slint `Image` upload; per-frame copy
+  bytes, sync labels (`submit`/`wait`/`map`/`set-image`), and host produce→
+  deliver latency are recorded. Software renderer paint ≠ wgpu surface present.
+  Binding: [phase-6/presentation-path.md](../phase-6/presentation-path.md).
+  Any further boundary change must update this contract and architecture together.
 
 ### 6.2 Resource labels and lifetime
 

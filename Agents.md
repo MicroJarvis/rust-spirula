@@ -21,8 +21,8 @@
 ## 技术栈约束
 
 - 语言与构建：Rust 2024 workspace，使用 Cargo resolver 3。
-- 桌面 UI：Slint，集中在 `spirula-ui`；UI 通过 application/session 服务访问业务。
-- GPU：`wgpu` 管理设备、资源和管线，WGSL 编写 shader；不引入直接 Vulkan 或 CUDA 运行时路径。
+- 桌面 UI：Slint 1.18（P6-F07 钉 `renderer-software`），集中在 `spirula-ui`；UI 经 application presentation / session 访问业务，不直接 GPU/IO。
+- GPU：`wgpu` 30（`spirula-gpu`），WGSL shader；不引入直接 Vulkan 或 CUDA 运行时路径。application 仅允许 AD-P6-F07-01 窄边生产 host 帧，不得把 `wgpu*` 暴露给 UI/core。
 - 领域、数据、渲染和训练：按 workspace crate 边界使用 Rust 实现，边界见架构文档。
 - C++ 仓库只用于记录和核对参考行为，不作为 Rust 运行时依赖。
 - 技术栈发生变化时，必须同步更新本节、README 和相关架构文档。

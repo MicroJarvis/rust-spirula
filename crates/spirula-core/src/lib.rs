@@ -23,6 +23,7 @@ mod error;
 mod json_doc;
 mod math;
 mod perf;
+mod presentation;
 mod progress;
 mod scene;
 
@@ -46,6 +47,9 @@ pub use perf::{
     AccountedBytesTracker, AccountedMemory, DirtyStatus, EnvironmentInfo, PERF_REPORT_SCHEMA,
     PERF_REPORT_VERSION, PerfProvenance, PerfReport, PhaseTiming, SourceRevision,
     UnavailableMetric, parse_schema_version,
+};
+pub use presentation::{
+    FrameCopyReport, PresentationPathKind, PresentedFrame, cpu_probe_rgba8, rgba8_matches_cpu_probe,
 };
 pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,

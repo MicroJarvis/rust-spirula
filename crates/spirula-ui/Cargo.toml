@@ -3,10 +3,37 @@ name = "spirula-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Slint UI adapters; presentation probe (P6-F07)"
+publish = false
 
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "spirula-presentation-probe"
+path = "src/bin/presentation_probe.rs"
+
+[dependencies]
+spirula-core = { path = "../spirula-core" }
+spirula-application = { path = "../spirula-application" }
+# Pinned Slint 1.18 + software renderer. No unstable-wgpu-* — host frames
+# arrive via application PresentedFrame (readback→upload), not shared GPU textures.
+slint = { version = "=1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-software",
+] }
+
+[dev-dependencies]
+slint = { version = "=1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-software",
+] }
 
 [lints]
 workspace = true

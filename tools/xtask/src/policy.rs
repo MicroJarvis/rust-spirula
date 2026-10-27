@@ -62,7 +62,8 @@ fn allowed_workspace_deps(crate_name: &str) -> Option<&'static [&'static str]> {
             "spirula-render",
             "spirula-gpu",
         ],
-        "spirula-application" => &["spirula-core", "spirula-io", "spirula-train"],
+        // AD-P6-F07-01: narrow presentation edge to spirula-gpu (not wgpu*).
+        "spirula-application" => &["spirula-core", "spirula-io", "spirula-train", "spirula-gpu"],
         "spirula-ui" => &["spirula-core", "spirula-application"],
         "spirula-cli" => &["spirula-core", "spirula-application"],
         // Tooling only; not a runtime layer.
@@ -518,6 +519,14 @@ mod tests {
             &["spirula-core", "spirula-application"]
         );
         assert!(table.contains_key("spirula-application"));
+        assert!(
+            table["spirula-application"].contains(&"spirula-gpu"),
+            "AD-P6-F07-01: application→gpu presentation edge"
+        );
+        assert!(
+            !table["spirula-ui"].contains(&"spirula-gpu"),
+            "UI must not depend on spirula-gpu"
+        );
     }
 
     #[test]
@@ -629,6 +638,38 @@ mod tests {
             &workspace,
         );
         assert!(ui_wgpu.is_err(), "{ui_wgpu:?}");
+
+        // AD-P6-F07-01: application → spirula-gpu allowed; direct wgpu still forbidden.
+        assert!(
+            validate_member_dependencies(
+                "spirula-application",
+                &[
+                    path_dep("spirula-core", DepKind::Normal),
+                    path_dep("spirula-gpu", DepKind::Normal),
+                ],
+                &workspace,
+            )
+            .is_ok()
+        );
+        let app_wgpu = validate_member_dependencies(
+            "spirula-application",
+            &[
+                path_dep("spirula-core", DepKind::Normal),
+                external_dep("wgpu", DepKind::Normal),
+            ],
+            &workspace,
+        );
+        assert!(app_wgpu.is_err(), "{app_wgpu:?}");
+        let ui_gpu = validate_member_dependencies(
+            "spirula-ui",
+            &[
+                path_dep("spirula-core", DepKind::Normal),
+                path_dep("spirula-application", DepKind::Normal),
+                path_dep("spirula-gpu", DepKind::Normal),
+            ],
+            &workspace,
+        );
+        assert!(ui_gpu.is_err(), "{ui_gpu:?}");
 
         let cli_aliased_wgpu = validate_member_dependencies(
             "spirula-cli",

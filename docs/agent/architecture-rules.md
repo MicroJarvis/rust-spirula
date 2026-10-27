@@ -5,15 +5,17 @@
 ```text
 spirula-ui ───────┐
 spirula-cli ──────┼──> application/session
+                  │        ├──> spirula-gpu     (P6-F07 AD-P6-F07-01：呈现帧生产)
                   │        ├──> spirula-train ──> spirula-render ──> spirula-gpu
                   │        ├──> spirula-io ──────> spirula-core
                   │        └──> spirula-core
 ```
 
 P1-F07 提前新增 `spirula-application`，集中维护唯一应用 session、命令准入、
-取消、快照和事件；P1-F09 提供最小 CLI，P6-F01 完善集成。训练 worker 只维护
-step 调度，UI 与 CLI 只负责适配入口。不得让 UI 直接编排训练、读写检查点或创建
-GPU 管线。
+取消、快照和事件；P1-F09 提供最小 CLI，P6-F01 完善集成。P6-F07 允许
+application → `spirula-gpu` 窄边（仅 presentation），禁止 application/UI 直接
+依赖 `wgpu*`，禁止 UI → `spirula-gpu`。训练 worker 只维护 step 调度，UI 与
+CLI 只负责适配入口。不得让 UI 直接编排训练、读写检查点或创建 GPU 管线。
 
 ## crate 职责
 
@@ -39,7 +41,9 @@ session 使用有界命令通道、类型化事件、合作式取消和可观察
 CLI 和 Slint 必须调用同一 session 服务。
 
 公共 `wgpu` 类型只在 `spirula-gpu` 出现；使用经真实计算切片验证的窄类型封装，
-带 context/generation 校验。Slint 呈现经 application 接口，提前测量拷贝和同步。
+带 context/generation 校验。Slint 呈现经 application 接口（host
+`PresentedFrame` → Slint `Image`）；P6-F07 固定 readback→host 回退并记录
+每帧复制字节/同步点；software renderer 不得宣称 wgpu surface present 已验证。
 
 细分的梯度、资源、背压、可执行配置和 checkpoint 门禁见
 [../development-gates.md](../development-gates.md)。事件序号允许合并/丢弃后的

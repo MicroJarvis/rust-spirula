@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 spirula-core = { path = "../spirula-core" }
+# AD-P6-F07-01: narrow presentation edge only (no direct wgpu*).
+spirula-gpu = { path = "../spirula-gpu" }
 
 [dev-dependencies]
 libc = "0.2"

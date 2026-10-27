@@ -6,6 +6,7 @@
 //! P2-F04: compute shader/pipeline key/cache ([`pipeline`]).
 //! P2-F05: GPU errors and diagnostic events ([`diagnostics`]).
 //! P2-F06: headless compute / honest surface smoke ([`smoke`]).
+//! P6-F07: host presentation probe ([`present`]) — readback→host, not surface present.
 //! Public `wgpu` types do not leave this crate's implementation modules.
 
 #![forbid(unsafe_code)]
@@ -15,6 +16,7 @@ pub mod context;
 pub mod diagnostics;
 mod enumerate;
 pub mod pipeline;
+pub mod present;
 pub mod resource;
 pub mod smoke;
 
@@ -41,6 +43,7 @@ pub use pipeline::{
     PipelineCacheStats, PipelineKey, ShaderHeader, SpecConstants, affine_bind_layout_supported,
     cpu_affine_u32, parse_shader_header,
 };
+pub use present::produce_probe_rgba_frame;
 pub use resource::{
     BufferDesc, BufferHandle, BufferUsage, COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT,
     PendingResourceCounts, RESOURCE_ACCOUNT_SOURCE, ReadbackTicket, ResourceAccountingSnapshot,
