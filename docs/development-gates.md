@@ -86,6 +86,18 @@ software paint ≠ wgpu surface present；不能宣称零复制；Phase 2 出口
 [phase-6/presentation-path.md](phase-6/presentation-path.md)。计划当前为
 P3-F01。
 
+P2-F08（2026-10-27 评审新增）是 Phase 2 出口唯一剩余条件的负责人。
+P2-F06 交付的是 unsupported 门禁，不是 present 通过；不得因为 P2-F06
+验收文字里的“最小 surface 测试”而回溯宣称 present 已验证。P2-F08 必须
+提交：真实窗口 surface 配置、adapter surface 能力与 format/present mode
+协商结果、present 的可观察证据（present 后读回或合成器可见性），以及
+present 失败与 surface lost 的 typed error。若目标主机无法提供真实窗口，
+按平台记录 unsupported 的具体命令、环境和原因；**该记录不等于 P2-F08
+已完成，也不自动降低或关闭 Phase 2 出口**。software paint / Slint
+`renderer-software` 永远不算 present。任何出口书面调整须另行审查，不得用
+unsupported 偷换 present 验收，也不允许“功能点全标完成但出口永久 open”
+且无人负责。
+
 ## 5. 资源预算、背压与逐阶段测量
 
 P1-F08 建立结果格式和采样工具，后续功能提交各自样本，不等待 Phase 9。

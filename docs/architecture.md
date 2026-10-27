@@ -125,7 +125,11 @@ stable `SP-GPU-*` with a GPU-local bounded diagnostic ring and latched
 post-submit wait failures (not application session history; P6-F01). Surface
 smoke is P2-F06 (已完成): headless affine compute smoke with Fail reclaim, plus
 an honest surface **unsupported** gate that will not forge a window
-(`spirula-gpu-smoke`; present not verified). Packaging is P2-F07 (已完成;
+(`spirula-gpu-smoke`; present not verified). **P2-F08 owns real surface present
+verification** (added 2026-10-27): real-window surface config, adapter surface
+capability + format/present-mode negotiation, present evidence, and typed
+present/surface-loss errors — the only remaining Phase 2 exit condition.
+Packaging is P2-F07 (已完成;
 [phase-2/cli-package.md](phase-2/cli-package.md)). Presentation (P6-F07) owns a
 transient GPU context for probe frames; diagnose/smoke/train/preview remain
 separate. Real host OOM
@@ -226,5 +230,9 @@ add real workflow samples; P9-F04 covers signed multi-platform installers.
 P5-F05 saves full optimizer/scheduler/RNG/sampler/refinement state through
 versioned immutable checkpoint generations; P5-F07 verifies new-process resume.
 Phase 2 exit stays open while surface present remains unverified — completing
-P2-F01–P2-F07 and the P6-F07 tip does not close that exit. Train/preview and
-P6-F03 navigation remain unwired. Plan current work is **P3-F01**.
+P2-F01–P2-F07 and the P6-F07 tip does not close that exit; **P2-F08 is the
+owner of that remaining condition** (未开始; unsupported host records and
+software paint must not be read as present completion or as an automatic
+lowering of the Phase 2 exit). Train/preview and P6-F03 navigation remain
+unwired. Plan current work is **P3-F01** (implementation tip READY on
+`codex/p3-f01` but HOLD-MERGE / not on main).

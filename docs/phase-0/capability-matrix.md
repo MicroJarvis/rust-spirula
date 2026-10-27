@@ -69,6 +69,7 @@ refer to [fixtures.md](fixtures.md).
 | C-GPU-04 | shader pipeline contract | `backend/vulkan/VulkanPipelines.*` | WGSL/shader entry | pipeline | stable key (name+version+entry+spec+bind_layout_version); affine v1/v2 same-ABI epochs; SP-GPU-005 path=`shaders/<name>.wgsl`; diagnose `--compute` | P2-F04 | `spirula-gpu` | 已完成 |
 | C-GPU-05 | GPU errors and device loss | `VulkanContext.cpp:694-742`, `TrainerCore.cpp:1633-1636` | submit/wait | typed error + GPU-local diagnostics | error scopes→SP-GPU-001..005; Lost+reject; bounded ring; upload/readback/map metadata; post-submit waitable handle + latched wait Err; real OOM unsupported; no app session; stall watchdog deferred | P2-F05 | `spirula-gpu` | 已完成 |
 | C-GPU-06 | headless smoke test | `backend/vulkan/tests/vk_*` | device | pass/fail/skip/unsupported | affine compute smoke (reuse F04/F05) + Fail reclaim; honest surface unsupported gate (present not verified); device/backend/features/limits + cleanup current0; packaging P2-F07 | P2-F06 | `spirula-gpu` | 已完成 |
+| C-GPU-07 | window surface present | reference viewer/window swapchain path (behavior input only) | configured surface + frame | presented frame | adapter surface capability + format/present-mode negotiation; present evidence via readback or compositor visibility; typed present failure / surface loss; software paint never counts as present | P2-F08 | `spirula-gpu` | 未开始 |
 
 ## Training
 
@@ -129,7 +130,7 @@ refer to [fixtures.md](fixtures.md).
 |---|---|---|
 | `spirula-core` | C-DATA-11..16, C-DATA-22, C-CLI-02, C-APP-02, C-X-01, C-X-03 | P1-F01, P3-F01 |
 | `spirula-io` | C-DATA-01..10, C-DATA-17..26, C-X-03, C-X-07 | P1-F05, P3-F02..F07 |
-| `spirula-gpu` | C-GPU-01..06, C-REN-14, C-UI-08, C-CLI-05, C-X-05 | P2-F01..F06 |
+| `spirula-gpu` | C-GPU-01..07, C-REN-14, C-UI-08, C-CLI-05, C-X-05 | P2-F01..F06, P2-F08 |
 | `spirula-render` | C-REN-01..14 | P4-F01..F10 |
 | `spirula-train` | C-TRN-01..09 | P5-F08 validation first, P5-F01..F07 |
 | `spirula-ui` | C-UI-01..06, C-UI-08 | P6-F07 early, P6-F03..F06 |
@@ -153,6 +154,13 @@ refer to [fixtures.md](fixtures.md).
   and behind-camera rejection (P1-F04). Fisheye, equisolid, equirectangular,
   thin-prism, and ray generation stay in P3-F01, so the row stays `进行中`.
   `C-DATA-11` through `C-DATA-13` stay `未开始`.
+  P3-F01 has an implementation tip in worktree `p3-f01` / branch `codex/p3-f01`
+  (code `37b7a73`, docs tip `9e1834b`) covering all four rows (`CameraModel`,
+  `DistortionTier`, `SourceCamera`/`fit_camera*`, `CameraMath`/`FrameCamera`)
+  with C++ golden holdouts and branch-local `fixtures/manifest.json`
+  registration; independent review is **READY**, but the branch remains
+  **HOLD-MERGE** and is not merged to main. Rows stay `进行中`/`未开始` until
+  the merge lands; READY-but-unmerged is not completion on main.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.
