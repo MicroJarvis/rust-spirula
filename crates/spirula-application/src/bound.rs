@@ -225,6 +225,7 @@ pub(crate) fn bound_command_payload(
             turns_only,
             flip,
             alpha,
+            boundary_offset_milli,
         } if path.len() > limits.label_max_bytes => CommandPayload::PrepareNormalizedMask {
             path: omit_label(path.len()),
             dst_w,
@@ -233,6 +234,7 @@ pub(crate) fn bound_command_payload(
             turns_only,
             flip,
             alpha,
+            boundary_offset_milli,
         },
         other => other,
     }

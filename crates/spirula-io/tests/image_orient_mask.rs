@@ -73,6 +73,7 @@ fn mask_aligns_after_orientation_and_resize() {
         flip: false,
         orientation: ExifOrientation::from_u8(6).unwrap(),
         apply_policy: ApplyPolicy::TurnsOnly,
+        ..MaskNormalizeOptions::default()
     };
     normalize_mask(&samples, w, h, ch, 2, 4, opts, &mut dst).unwrap();
     assert_eq!(dst.iter().filter(|&&v| v == 1).count(), 4);
@@ -112,9 +113,17 @@ fn nearest_resize_mask_to_image_size() {
 fn cpp_golden_eight_orientations_full_and_turns() {
     let g = load_cpp_golden();
     assert_eq!(g["schema"], "spirula-image-orient-mask-cpp-golden");
+    assert!(g["version"].as_u64().unwrap() >= 2);
     assert_eq!(
         g["reference_commit"],
         "9a24f09927944a795e7ba1bd8243a625bf419479"
+    );
+    assert!(
+        g["extraction"]
+            .as_str()
+            .unwrap_or("")
+            .contains("DataManager.cpp"),
+        "golden must come from extracted pin sources"
     );
     let src_w = g["src_w"].as_u64().unwrap() as u32;
     let src_h = g["src_h"].as_u64().unwrap() as u32;
@@ -222,6 +231,63 @@ fn cpp_golden_eight_orientations_full_and_turns() {
             "o={o} mask nearest"
         );
     }
+}
+
+#[test]
+fn cpp_golden_counterexamples_hold_c0b4c50() {
+    let g = load_cpp_golden();
+    let ce = &g["counterexamples"];
+    let nz: Vec<u8> = ce["nonzero_rgba_luma"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u8)
+        .collect();
+    assert_eq!(nz, vec![0, 1]);
+    let abin: Vec<u8> = ce["alpha_2x1_to_1x1_bin"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u8)
+        .collect();
+    assert_eq!(abin, vec![1]);
+
+    // Rust path must match.
+    let samples = [0u8, 0, 0, 255, 255, 0, 0, 0];
+    let mut dst = [0u8; 2];
+    normalize_mask(
+        &samples,
+        2,
+        1,
+        4,
+        2,
+        1,
+        MaskNormalizeOptions {
+            kind: MaskSourceKind::NonZero,
+            ..MaskNormalizeOptions::default()
+        },
+        &mut dst,
+    )
+    .unwrap();
+    assert_eq!(dst, [0, 1]);
+
+    let samples = [0u8, 0, 0, 0, 0, 0, 0, 255];
+    let mut dst = [0u8; 1];
+    normalize_mask(
+        &samples,
+        2,
+        1,
+        4,
+        1,
+        1,
+        MaskNormalizeOptions {
+            kind: MaskSourceKind::AlphaThreshold128,
+            ..MaskNormalizeOptions::default()
+        },
+        &mut dst,
+    )
+    .unwrap();
+    assert_eq!(dst, [1]);
 }
 
 #[test]

@@ -1,120 +1,17 @@
-// P3-F02 golden: asymmetric 3x2 unique gray + RGB, full EXIF 1..8 Full/TurnsOnly,
-// mask nearest, alpha cpu_resize (area/bilinear) then >=128.
-#include "core/ImageOrient.h"
+// P3-F02 golden dumper — links *extracted* pin sources (see extract_ref.py).
+// Does not embed hand-copied cpu_resize / EXIF tables.
+#include "ImageOrient.h"
+#include "DistanceTransform.h"
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <limits>
+#include <cstring>
 #include <vector>
 
-template <typename T, int C>
-void cpu_bilinear_resize(const T* src, int sh, int sw, T* dst, int dh, int dw) {
-    const float sx = (float)sw / (float)dw;
-    const float sy = (float)sh / (float)dh;
-    for (int y = 0; y < dh; ++y) {
-        float v = ((float)y + 0.5f) * sy - 0.5f;
-        int y0 = (int)std::floor(v);
-        float fy = v - (float)y0;
-        int y0c = std::max(0, std::min(sh - 1, y0));
-        int y1c = std::max(0, std::min(sh - 1, y0 + 1));
-        for (int x = 0; x < dw; ++x) {
-            float u = ((float)x + 0.5f) * sx - 0.5f;
-            int x0 = (int)std::floor(u);
-            float fx = u - (float)x0;
-            int x0c = std::max(0, std::min(sw - 1, x0));
-            int x1c = std::max(0, std::min(sw - 1, x0 + 1));
-            float w00 = (1.0f - fx) * (1.0f - fy);
-            float w10 = fx * (1.0f - fy);
-            float w01 = (1.0f - fx) * fy;
-            float w11 = fx * fy;
-            const T* p00 = src + ((size_t)y0c * sw + x0c) * C;
-            const T* p10 = src + ((size_t)y0c * sw + x1c) * C;
-            const T* p01 = src + ((size_t)y1c * sw + x0c) * C;
-            const T* p11 = src + ((size_t)y1c * sw + x1c) * C;
-            T* q = dst + ((size_t)y * dw + x) * C;
-            for (int c = 0; c < C; ++c) {
-                float r = w00 * (float)p00[c] + w10 * (float)p10[c] + w01 * (float)p01[c] +
-                          w11 * (float)p11[c];
-                r = std::round(r);
-                if (r < 0.0f) r = 0.0f;
-                float hi = (float)std::numeric_limits<T>::max();
-                if (r > hi) r = hi;
-                q[c] = (T)r;
-            }
-        }
-    }
-}
-
-template <typename T, int C>
-void cpu_area_resize(const T* src, int sh, int sw, T* dst, int dh, int dw) {
-    const double sy = (double)sh / dh, sx = (double)sw / dw;
-    for (int y = 0; y < dh; ++y) {
-        const double v0 = y * sy, v1 = (y + 1) * sy;
-        const int y0 = (int)v0, y1 = std::min(sh, std::max((int)std::ceil(v1), y0 + 1));
-        for (int x = 0; x < dw; ++x) {
-            const double u0 = x * sx, u1 = (x + 1) * sx;
-            const int x0 = (int)u0, x1 = std::min(sw, std::max((int)std::ceil(u1), x0 + 1));
-            double acc[C] = {}, wsum = 0.0;
-            for (int yy = y0; yy < y1; ++yy) {
-                const double wy = std::min((double)yy + 1, v1) - std::max((double)yy, v0);
-                for (int xx = x0; xx < x1; ++xx) {
-                    const double wx = std::min((double)xx + 1, u1) - std::max((double)xx, u0);
-                    const double w = wy * wx;
-                    const T* p = src + ((size_t)yy * sw + xx) * C;
-                    for (int c = 0; c < C; ++c) acc[c] += w * (double)p[c];
-                    wsum += w;
-                }
-            }
-            T* q = dst + ((size_t)y * dw + x) * C;
-            for (int c = 0; c < C; ++c) {
-                double r = wsum > 0.0 ? acc[c] / wsum : 0.0;
-                r = std::round(r);
-                r = std::min(std::max(r, 0.0), (double)std::numeric_limits<T>::max());
-                q[c] = (T)r;
-            }
-        }
-    }
-}
-
-template <typename T, int C>
-void cpu_resize(const T* src, int sh, int sw, T* dst, int dh, int dw) {
-    if (dh <= sh && dw <= sw && (dh < sh || dw < sw))
-        cpu_area_resize<T, C>(src, sh, sw, dst, dh, dw);
-    else
-        cpu_bilinear_resize<T, C>(src, sh, sw, dst, dh, dw);
-}
-
-void cpu_nearest_resize_u8(const uint8_t* src, int sh, int sw, uint8_t* dst, int dh, int dw) {
-    const float sx = (float)sw / (float)dw;
-    const float sy = (float)sh / (float)dh;
-    for (int y = 0; y < dh; ++y) {
-        float v = ((float)y + 0.5f) * sy - 0.5f;
-        int ys = std::max(0, std::min(sh - 1, (int)std::floor(v + 0.5f)));
-        for (int x = 0; x < dw; ++x) {
-            float u = ((float)x + 0.5f) * sx - 0.5f;
-            int xs = std::max(0, std::min(sw - 1, (int)std::floor(u + 0.5f)));
-            dst[(size_t)y * dw + x] = src[(size_t)ys * sw + xs];
-        }
-    }
-}
-
-struct XF {
-    int turns;
-    bool mirror;
-};
-XF exif_xf(int o) {
-    switch (o) {
-        case 2: return {0, true};
-        case 3: return {2, false};
-        case 4: return {2, true};
-        case 5: return {1, true};
-        case 6: return {1, false};
-        case 7: return {3, true};
-        case 8: return {3, false};
-        default: return {0, false};
-    }
-}
+#include "cpu_resize.inc"
+#include "exif_transform.inc"
+#include "turn_normal.inc"
 
 void dump_arr(const uint8_t* p, size_t n) {
     std::printf("[");
@@ -125,23 +22,33 @@ void dump_arr(const uint8_t* p, size_t n) {
     std::printf("]");
 }
 
+void dump_u16(const uint16_t* p, size_t n) {
+    std::printf("[");
+    for (size_t i = 0; i < n; i++) {
+        if (i) std::putchar(',');
+        std::printf("%u", (unsigned)p[i]);
+    }
+    std::printf("]");
+}
+
 int main() {
-    // Asymmetric 3x2 unique gray values 1..6
     const int W = 3, H = 2;
     uint8_t gray[6] = {1, 2, 3, 4, 5, 6};
-    // RGB: unique per pixel (r=10*i,g=20*i,b=30*i) i=1..6
     uint8_t rgb[18];
     for (int i = 0; i < 6; i++) {
         rgb[i * 3] = (uint8_t)(10 * (i + 1));
         rgb[i * 3 + 1] = (uint8_t)(20 * (i + 1));
         rgb[i * 3 + 2] = (uint8_t)(30 * (i + 1));
     }
-    // Alpha 3x2 for resize golden: distinctive
     uint8_t alpha[6] = {0, 64, 128, 192, 255, 32};
+    // Counterexample: 2x1 RGBA black-opaque / red-transparent NonZero plane.
+    uint8_t rgba_ce[8] = {0, 0, 0, 255, 255, 0, 0, 0};
+    uint8_t alpha_ce[2] = {0, 255};
 
     std::printf(
-        "{\"schema\":\"spirula-image-orient-mask-cpp-golden\",\"version\":1,"
+        "{\"schema\":\"spirula-image-orient-mask-cpp-golden\",\"version\":2,"
         "\"reference_commit\":\"9a24f09927944a795e7ba1bd8243a625bf419479\","
+        "\"extraction\":\"DataManager.cpp+Exif.h+ImageOrient.h+DistanceTransform.h\","
         "\"src_w\":%d,\"src_h\":%d,\"gray\":",
         W, H);
     dump_arr(gray, 6);
@@ -153,29 +60,28 @@ int main() {
 
     for (int o = 1; o <= 8; o++) {
         if (o > 1) std::putchar(',');
-        XF xf = exif_xf(o);
+        ExifTransform xf = exifTransform(o);
         int dw = W, dh = H;
-        spirula::oriented_size(xf.turns, dw, dh);
+        spirula::oriented_size(xf.turns_cw, dw, dh);
         std::vector<uint8_t> full_g((size_t)dw * dh), turns_g((size_t)dw * dh);
         std::vector<uint8_t> full_rgb((size_t)dw * dh * 3), turns_rgb((size_t)dw * dh * 3);
-        spirula::orient_pixels(gray, W, H, 1, xf.turns, xf.mirror, full_g.data());
-        spirula::orient_pixels(gray, W, H, 1, xf.turns, false, turns_g.data());
-        spirula::orient_pixels(rgb, W, H, 3, xf.turns, xf.mirror, full_rgb.data());
-        spirula::orient_pixels(rgb, W, H, 3, xf.turns, false, turns_rgb.data());
-        // Mask nonzero from gray after turns-only, nearest to 2x3
+        spirula::orient_pixels(gray, W, H, 1, xf.turns_cw, xf.mirror, full_g.data());
+        spirula::orient_pixels(gray, W, H, 1, xf.turns_cw, false, turns_g.data());
+        spirula::orient_pixels(rgb, W, H, 3, xf.turns_cw, xf.mirror, full_rgb.data());
+        spirula::orient_pixels(rgb, W, H, 3, xf.turns_cw, false, turns_rgb.data());
         std::vector<uint8_t> bin(6);
         for (int i = 0; i < 6; i++) bin[i] = gray[i] != 0 ? 1 : 0;
         int mw = W, mh = H;
-        spirula::oriented_size(xf.turns, mw, mh);
+        spirula::oriented_size(xf.turns_cw, mw, mh);
         std::vector<uint8_t> mob((size_t)mw * mh);
-        spirula::orient_pixels(bin.data(), W, H, 1, xf.turns, false, mob.data());
+        spirula::orient_pixels(bin.data(), W, H, 1, xf.turns_cw, false, mob.data());
         std::vector<uint8_t> mdst(2 * 3);
         cpu_nearest_resize_u8(mob.data(), mh, mw, mdst.data(), 3, 2);
 
         std::printf(
             "{\"orientation\":%d,\"turns_cw\":%d,\"mirror\":%s,\"out_w\":%d,\"out_h\":%d,"
             "\"full_gray\":",
-            o, xf.turns, xf.mirror ? "true" : "false", dw, dh);
+            o, xf.turns_cw, xf.mirror ? "true" : "false", dw, dh);
         dump_arr(full_g.data(), full_g.size());
         std::printf(",\"turns_gray\":");
         dump_arr(turns_g.data(), turns_g.size());
@@ -187,8 +93,8 @@ int main() {
         dump_arr(mdst.data(), mdst.size());
         std::printf("}");
     }
+
     std::printf("],\"alpha_resize\":[");
-    // Downsample 3x2 -> 2x1 (area) and upsample 3x2 -> 5x3 (bilinear), then >=128
     uint8_t down[2], up[15];
     cpu_resize<uint8_t, 1>(alpha, H, W, down, 1, 2);
     cpu_resize<uint8_t, 1>(alpha, H, W, up, 3, 5);
@@ -203,6 +109,61 @@ int main() {
     dump_arr(up, 15);
     std::printf(",\"bin\":");
     dump_arr(up_bin, 15);
-    std::printf("}]}\n");
+    std::printf("}],\"counterexamples\":{");
+
+    // stbi gray NonZero on RGBA counterexample
+    auto luma = [](uint8_t r, uint8_t g, uint8_t b) -> uint8_t {
+        return (uint8_t)((r * 77u + g * 150u + b * 29u) >> 8);
+    };
+    uint8_t nz[2] = {
+        (uint8_t)(luma(rgba_ce[0], rgba_ce[1], rgba_ce[2]) != 0),
+        (uint8_t)(luma(rgba_ce[4], rgba_ce[5], rgba_ce[6]) != 0),
+    };
+    uint8_t araw[1], abin[1];
+    cpu_resize<uint8_t, 1>(alpha_ce, 1, 2, araw, 1, 1);
+    abin[0] = araw[0] >= 128 ? 1 : 0;
+    std::printf("\"nonzero_rgba_luma\":");
+    dump_arr(nz, 2);
+    std::printf(",\"alpha_2x1_to_1x1_raw\":");
+    dump_arr(araw, 1);
+    std::printf(",\"alpha_2x1_to_1x1_bin\":");
+    dump_arr(abin, 1);
+
+    // Boundary offset on a 5x5 plus-shaped mask, fraction -> px
+    uint8_t mask25[25] = {};
+    for (int i = 0; i < 25; i++) mask25[i] = 0;
+    mask25[12] = 1;  // center
+    mask25[7] = 1;
+    mask25[11] = 1;
+    mask25[13] = 1;
+    mask25[17] = 1;
+    float frac = 0.2f;
+    float offset_px = frac * std::sqrt(25.0f);
+    uint8_t dil[25];
+    std::memcpy(dil, mask25, 25);
+    edt::apply_mask_boundary_offset_in_place(dil, 5, 5, offset_px);
+    uint8_t ero[25];
+    std::memcpy(ero, mask25, 25);
+    edt::apply_mask_boundary_offset_in_place(ero, 5, 5, -offset_px);
+    std::printf(",\"offset_frac\":%.6g,\"offset_px\":%.6g,\"mask5_plus\":", frac, offset_px);
+    dump_arr(mask25, 25);
+    std::printf(",\"mask5_dilate\":");
+    dump_arr(dil, 25);
+    std::printf(",\"mask5_erode\":");
+    dump_arr(ero, 25);
+
+    // Normal turn 90 CW on one vector encoded as uint8
+    uint8_t nrm[3] = {200, 100, 128};
+    turn_normal_vectors(nrm, 1, 1);
+    std::printf(",\"normal_turn1\":");
+    dump_arr(nrm, 3);
+
+    // Depth bilinear 2x2 -> 1x1
+    uint16_t depth[4] = {100, 200, 300, 400};
+    uint16_t dout[1];
+    cpu_bilinear_resize<uint16_t, 1>(depth, 2, 2, dout, 1, 1);
+    std::printf(",\"depth_bilinear_2x2_to_1x1\":");
+    dump_u16(dout, 1);
+    std::printf("}}\n");
     return 0;
 }

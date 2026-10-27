@@ -229,8 +229,7 @@ Phase 2 exit stays open while surface present remains unverified — completing
 P2-F01–P2-F07 and the P6-F07 tip does not close that exit. Train/preview and
 P6-F03 navigation remain unwired. Plan current work on main is **P3-F01**
 (unmerged tip). Parallel **P3-F02** (`codex/p3-f02`;
-[phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)) adds PNG/JPEG
-header probe, EXIF Orientation bake, mask normalize in `spirula-io`, and
-admitted session commands `PrepareOrientedImage` /
-`PrepareNormalizedMask` (real IO, Idle|Ready) on the allowed
-`application → io` edge — not deferred to a later tip.
+[phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)) delivers
+C-DATA-07..10 (multi-format decode, EXIF bake, mask flip/offset EDT,
+depth/normal) in `spirula-io` with admitted session commands on the allowed
+`application → io` edge.

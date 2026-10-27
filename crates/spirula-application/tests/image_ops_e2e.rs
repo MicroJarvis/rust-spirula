@@ -99,6 +99,7 @@ fn session_command_prepare_normalized_mask_e2e() {
         turns_only: true,
         flip: false,
         alpha: false,
+        boundary_offset_milli: 0,
     })) {
         SubmitOutcome::Accepted { id } => id,
         SubmitOutcome::Rejected { error } => panic!("reject: {error}"),
@@ -144,6 +145,7 @@ fn session_command_prepare_normalized_mask_e2e() {
                 orientation: 6,
                 policy: ApplyPolicy::TurnsOnly,
                 flip: false,
+                boundary_offset_frac: 0.0,
             },
         )
         .expect("mask");

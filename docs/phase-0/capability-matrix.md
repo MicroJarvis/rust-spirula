@@ -26,7 +26,7 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-06 | train/eval split | `DatasetCommon.cpp:196-260` | camera names + config | index lists | `all/fraction/interval/filename`; empty eval legal, empty train error | P3-F03 unit tests | `spirula-io` | 未开始 |
 | C-DATA-07 | image decode (PNG/JPEG/BMP/TGA/EXR/TIFF) | `DataManager.cpp:447-518`, `DataManager.h:14-22` | file | RGB array | 8/16-bit PNG, float EXR/TIFF, no external codec runtime | fixture image + P3-F02 | `spirula-io` | 进行中 |
 | C-DATA-08 | masks and alpha | `DataManager.cpp:521-615`, `ImageProbe.cpp:60` | aux files / alpha | binary mask | white keeps, alpha >= 128 keeps, flip/offset optional | P3-F02 fixtures | `spirula-io` | 进行中 |
-| C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth, float maps, size mismatch resized later | P3-F02 | `spirula-io` | 未开始 |
+| C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth, float maps, size mismatch resized later | P3-F02 | `spirula-io` | 进行中 |
 | C-DATA-10 | EXIF orientation | `DatasetCommon.cpp:45-70`, `ImageOrient.h` | JPEG EXIF | quarter turns | `none/orient/apply`; rotation applies to all aux maps | P3-F02 | `spirula-io` | 进行中 |
 | C-DATA-11 | camera models | `core/CameraModel.h:21-26` | model + params | typed camera | PINHOLE/FISHEYE/EQUISOLID/EQUIRECTANGULAR | P3-F01 golden | `spirula-core` | 未开始 |
 | C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 未开始 |
@@ -154,15 +154,13 @@ refer to [fixtures.md](fixtures.md).
   thin-prism, and ray generation stay in P3-F01 (unmerged tip), so the row
   stays `进行中`. `C-DATA-11` through `C-DATA-13` stay `未开始` on this
   baseline.
-- `C-DATA-07` / `C-DATA-08` / `C-DATA-10` are **进行中** under P3-F02
-  ([phase-3/image-orient-mask.md](../phase-3/image-orient-mask.md)): PNG/JPEG
-  **header-only** size probe with encoded/pixel budgets before decode; JPEG
-  EXIF Orientation 1..8 (full SHORT `u16`, LE/BE, bad IFD rejected); pixel bake
-  with AD-P3-F02-01 turns-only / full policies; mask NonZero via stbi gray
-  (alpha ignored) + nearest; Alpha LA/RGBA via `cpu_resize` then ≥128; C++
-  pixel goldens + admitted `spirula-application` session commands (real IO
-  e2e). EXR/TIFF/BMP/TGA, depth/normal, and mask boundary EDT stay out of
-  this tip (plan scope; not shrunk for READY).
+- `C-DATA-07` / `C-DATA-08` / `C-DATA-09` / `C-DATA-10` are **进行中** under
+  P3-F02 ([phase-3/image-orient-mask.md](../phase-3/image-orient-mask.md)):
+  PNG/JPEG/BMP/TGA/TIFF/EXR probe+decode with encoded/pixel budgets; JPEG EXIF
+  1..8 (full SHORT `u16`); TurnsOnly/Full bake; mask NonZero (stbi gray) +
+  nearest + flip + EDT boundary offset; Alpha `cpu_resize`≥128; depth16 +
+  normal RGB/`turn_normal_vectors`; pin-extracted C++ goldens; admitted session
+  commands. Not READY until independent review — scope is not shrunk in docs.
 - `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
   inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
   P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.

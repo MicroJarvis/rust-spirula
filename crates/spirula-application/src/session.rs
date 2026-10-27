@@ -1041,6 +1041,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
             turns_only,
             flip,
             alpha,
+            boundary_offset_milli,
         } => {
             let args = crate::image_ops::PrepareMaskArgs {
                 dst_w,
@@ -1057,6 +1058,7 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                     spirula_io::ApplyPolicy::FullTransform
                 },
                 flip,
+                boundary_offset_frac: (boundary_offset_milli as f32) / 1000.0,
             };
             drop(st);
             let outcome =

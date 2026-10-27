@@ -6,6 +6,7 @@
 
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 
+use crate::image_edt::apply_mask_boundary_offset_frac;
 use crate::image_orient::{ApplyPolicy, ExifOrientation, orient_pixels, oriented_size};
 use crate::image_probe::{ensure_encoded_budget, ensure_pixel_budget, probe_image_size_bytes};
 
@@ -27,10 +28,12 @@ pub enum MaskSourceKind {
 }
 
 /// Options for [`normalize_mask`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaskNormalizeOptions {
     pub kind: MaskSourceKind,
     pub flip: bool,
+    /// `DataManagerConfig::mask_boundary_offset` (fraction of `sqrt(W*H)`).
+    pub boundary_offset_frac: f32,
     pub orientation: ExifOrientation,
     pub apply_policy: ApplyPolicy,
 }
@@ -40,6 +43,7 @@ impl Default for MaskNormalizeOptions {
         Self {
             kind: MaskSourceKind::NonZero,
             flip: false,
+            boundary_offset_frac: 0.0,
             orientation: ExifOrientation::IDENTITY,
             apply_policy: ApplyPolicy::TurnsOnly,
         }
@@ -303,11 +307,13 @@ pub fn normalize_mask(
         }
     }
 
+    // Flip before boundary offset (DataManager.cpp:547-551).
     if opts.flip {
         for v in &mut resized {
             *v = u8::from(*v == 0);
         }
     }
+    apply_mask_boundary_offset_frac(&mut resized, dst_h, dst_w, opts.boundary_offset_frac)?;
 
     let n = (dst_w as usize) * (dst_h as usize);
     if dst.len() < n {
@@ -405,6 +411,50 @@ mod tests {
         };
         normalize_mask(&samples, 2, 1, 4, 2, 1, opts, &mut dst).unwrap();
         assert_eq!(dst, [0, 0]);
+    }
+
+    /// HOLD c0b4c50 counterexample: black opaque / red transparent → [0,1] not [1,0].
+    #[test]
+    fn nonzero_black_opaque_red_transparent() {
+        let samples = [0u8, 0, 0, 255, 255, 0, 0, 0];
+        let mut dst = [0u8; 2];
+        normalize_mask(
+            &samples,
+            2,
+            1,
+            4,
+            2,
+            1,
+            MaskNormalizeOptions {
+                kind: MaskSourceKind::NonZero,
+                ..MaskNormalizeOptions::default()
+            },
+            &mut dst,
+        )
+        .unwrap();
+        assert_eq!(dst, [0, 1]);
+    }
+
+    /// HOLD c0b4c50: alpha [0,255] 2→1 via area/bilinear must gate to 1 (not nearest→0).
+    #[test]
+    fn alpha_2x1_to_1x1_is_one() {
+        let samples = [0u8, 0, 0, 0, 0, 0, 0, 255]; // 2x1 RGBA
+        let mut dst = [0u8; 1];
+        normalize_mask(
+            &samples,
+            2,
+            1,
+            4,
+            1,
+            1,
+            MaskNormalizeOptions {
+                kind: MaskSourceKind::AlphaThreshold128,
+                ..MaskNormalizeOptions::default()
+            },
+            &mut dst,
+        )
+        .unwrap();
+        assert_eq!(dst, [1]);
     }
 
     #[test]

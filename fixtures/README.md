@@ -20,7 +20,7 @@ fixtures/
   checkpoints/tiny-run/               # config.json + step-000000001.ckpt/
   render/                             # render request, golden PPM and PNG
   golden/                             # parsed expectations for each fixture
-  images/                             # P3-F02 orient/mask PNG/JPEG + C++ pixel golden
+  images/                             # P3-F02 formats/orient/mask/depth/normal + C++ golden
 ```
 
 ## Rules

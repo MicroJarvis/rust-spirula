@@ -45,6 +45,8 @@ pub enum CommandPayload {
         flip: bool,
         /// `false` → NonZero file mask; `true` → AlphaThreshold128.
         alpha: bool,
+        /// `mask_boundary_offset` as milli-fraction (`frac = milli / 1000`).
+        boundary_offset_milli: i32,
     },
     Pause,
     Resume,

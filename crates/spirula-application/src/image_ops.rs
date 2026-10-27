@@ -43,7 +43,7 @@ pub struct NormalizedMask {
 }
 
 /// Arguments for [`ApplicationService::prepare_normalized_mask_file`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PrepareMaskArgs {
     pub dst_w: u32,
     pub dst_h: u32,
@@ -51,6 +51,8 @@ pub struct PrepareMaskArgs {
     pub orientation: u8,
     pub policy: ApplyPolicy,
     pub flip: bool,
+    /// `mask_boundary_offset` fraction (`sqrt(W*H)` pixels).
+    pub boundary_offset_frac: f32,
 }
 
 pub(crate) fn run_prepare_oriented_rgb(
@@ -92,6 +94,7 @@ pub(crate) fn run_prepare_normalized_mask(
     let opts = MaskNormalizeOptions {
         kind: args.kind,
         flip: args.flip,
+        boundary_offset_frac: args.boundary_offset_frac,
         orientation: ExifOrientation::from_u8(args.orientation)?,
         apply_policy: args.policy,
     };

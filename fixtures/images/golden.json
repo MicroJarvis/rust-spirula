@@ -29,14 +29,26 @@
   "cpp_orient_mask_golden": {
     "path": "cpp_orient_mask_golden.json",
     "schema": "spirula-image-orient-mask-cpp-golden",
-    "version": 1,
+    "version": 2,
     "reference_commit": "9a24f09927944a795e7ba1bd8243a625bf419479",
-    "generator": "tools/image-orient-golden",
+    "generator": "tools/image-orient-golden (extracts pin DataManager/Exif/ImageOrient/DistanceTransform into gitignored .build/)",
     "covers": [
       "orient_full_1_8",
       "orient_turns_1_8",
       "mask_nearest",
-      "alpha_cpu_resize"
+      "alpha_cpu_resize",
+      "counterexamples",
+      "edt_offset",
+      "normal_turn",
+      "depth_bilinear"
     ]
+  },
+  "formats": {
+    "bmp": "tiny_2x2.bmp",
+    "tga": "tiny_2x2.tga",
+    "tiff": "tiny_2x2.tiff",
+    "exr": "tiny_2x2.exr",
+    "depth16": "depth_2x2.png",
+    "normal": "normal_2x2.png"
   }
 }

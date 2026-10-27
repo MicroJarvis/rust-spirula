@@ -85,13 +85,18 @@
     },
     {
       "path": "images/cpp_orient_mask_golden.json",
-      "bytes": 2887,
-      "sha256": "bccdcd7b44e0e7bde139fccc766784c0b313bee4e3a80705bd0994efe5548b59"
+      "bytes": 3354,
+      "sha256": "9d6911aecae26e9ad1f51961c1c9fd7818fd1893c0a704c6e25592f20ce3558f"
+    },
+    {
+      "path": "images/depth_2x2.png",
+      "bytes": 75,
+      "sha256": "e89632a593188fbd4e965bb0d16aef70cb2d65eb6af7dca3c16412a92bc32905"
     },
     {
       "path": "images/golden.json",
-      "bytes": 951,
-      "sha256": "3f15693ef8367470c700be0c0e47e688a74b3832fd32ee105df54582fd02c102"
+      "bytes": 1320,
+      "sha256": "76ab54d4c53c9e4cc608669987cc264d12fb02d6a9d3863ae636ec1b73d85120"
     },
     {
       "path": "images/mask_4x2.png",
@@ -104,6 +109,11 @@
       "sha256": "73b047f8c23e37a5b6897245967e1b91fa1f9ac60b2d6e7a0133b487eb5594fb"
     },
     {
+      "path": "images/normal_2x2.png",
+      "bytes": 79,
+      "sha256": "a2be19b4c5e73e92c438736ac4a049842f8bed8ab99ea3d17bd75e93e2d82a6d"
+    },
+    {
       "path": "images/orient1_1x1.jpg",
       "bytes": 195,
       "sha256": "677d168e268b3e2278ea46758d2209c14a00e6f13d7a6112f3943024dcb7022e"
@@ -112,6 +122,26 @@
       "path": "images/orient6_1x1.jpg",
       "bytes": 195,
       "sha256": "5b7f2b92a08a76154bb1f6652a9f8fb3d8bda472c556a3ab30d1deea584cb6b7"
+    },
+    {
+      "path": "images/tiny_2x2.bmp",
+      "bytes": 70,
+      "sha256": "e3e4fbdc25d4d44234ea6fe3fc856cd0587c84def9c33981430550454936931f"
+    },
+    {
+      "path": "images/tiny_2x2.exr",
+      "bytes": 449,
+      "sha256": "11816a602d99e3b40e5a709d1d9c702814a02173c9b2b057d70b665c83d98b53"
+    },
+    {
+      "path": "images/tiny_2x2.tga",
+      "bytes": 30,
+      "sha256": "41c88be8230a06b6f67355ceaac51c9b74219ba79fe4dc5d28b8339b5de8b5f3"
+    },
+    {
+      "path": "images/tiny_2x2.tiff",
+      "bytes": 152,
+      "sha256": "9ce9330e6053cb4dd60f87f76ce513ae34a53fc12bc0c9d9eff4840e72371867"
     },
     {
       "path": "render/golden.png",

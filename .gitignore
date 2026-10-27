@@ -13,3 +13,4 @@
 /.worktrees/
 /.cargo-home/
 tools/image-orient-golden/bin/
+tools/image-orient-golden/.build/
