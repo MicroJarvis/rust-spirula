@@ -45,7 +45,14 @@ back (F03 retry/lifetime unchanged).
 
 - submission record stays; **`Ok(SubmissionHandle)` is returned** so the caller
   can `wait`/reap;
-- a typed diagnostic is emitted (not silent);
+- enriched typed failure (`SP-GPU-003` / `SP-GPU-004`) is **latched on the
+  `SubmissionEntry`** (survives diagnostic ring eviction);
+- a typed diagnostic is also emitted (not silent);
+- `wait` first completes safe GPU sync and reclaims inflight/staging, then
+  returns that canonical `Err` (failed readbacks are **not** marked
+  `mapped_ready` / must not succeed on `map_readback`);
+- wait timeout keeps the latch for a later wait; if poll delivers DeviceLost,
+  wait returns `SP-GPU-002` (resources only via safe teardown/reap);
 - inflight bytes are **not** freed until wait/teardown (no premature free).
 
 Pre-mutation `inject_next_submit_error` still returns `Err` with no handle
@@ -58,30 +65,34 @@ Events live on `GpuContext` — **not** the application control history (P6-F01)
 ```text
 GpuDiagnosticEvent {
   seq, context_id, generation, kind, operation, label?, code?, message,
-  requested_bytes?, current_bytes?, budget_bytes?
+  requested_bytes?, current_bytes?, budget_bytes?, truncated
 }
 ```
 
 Ring policy: default capacity **64**; overflow **drop oldest** +
-`dropped_oldest`; `poll_diagnostics` / `filter_diagnostics` are pull copies;
-close/reopen clears so events never cross generations.
+`dropped_oldest`; UTF-8 per-field + soft payload caps mark `truncated`;
+`poll_diagnostics` / `filter_diagnostics` are pull copies; close/reopen
+clears so events never cross generations. Ring eviction must not erase a
+latched post-submit wait failure.
 
 ### Probes
 
 - Synthetic: `inject_lost`, `inject_next_submit_error`, `inject_next_scope_error`,
-  `inject_next_post_submit_scope_error`.
+  `inject_next_post_submit_scope_error`, wait-timeout retain, map-after-lost.
 - Host: `host_probe_validation_scope`; destroy/lost; upload-budget metadata;
-  post-submit scope → waitable reclaim.
-- Real host OOM: **unsupported** — not claimed.
+  post-submit Validation/OOM → waitable handle + typed wait `Err` + reclaim.
+- Real host OOM: **unsupported** — not claimed (source-scheduled inject only).
 
 ## Acceptance (pending independent review)
 
 1. Scoped validation/OOM/submit/wait/lost map to stable codes with operation +
    label (+ budget) — including upload/readback/map paths.
 2. Lost marks context Lost; prior handles reject; one lost notice + diagnostic.
-3. Diagnostic ring: ordered, bounded, drop-oldest observable, generation-isolated.
-4. Post-submit scope failure leaves a waitable handle (no orphan inflight).
-5. Dispatch/create OOM keeps `SP-GPU-004` (not remapped to input).
+3. Diagnostic ring: ordered, bounded, drop-oldest observable, generation-isolated,
+   payload caps + `truncated`.
+4. Post-submit scope: `Ok(handle)` then wait returns latched typed failure after
+   reclaim; ring cover does not hide it; failed readback not map-success.
+5. Dispatch/create OOM keeps `SP-GPU-004` (not remapped to input) with bytes.
 6. No application session subscription; no F06 surface.
 
 ## Evidence

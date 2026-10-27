@@ -333,9 +333,10 @@ P2-F05（GPU 错误与诊断事件）在 `spirula-gpu` 落地中（HOLD-MERGE �
 delta 审查；**非**已完成、**非** docs-closure），契约见
 `docs/phase-2/gpu-diagnostics.md`（error scope→`SP-GPU-001..005`、Lost+旧
 handle 拒绝、有界 diagnostic ring、upload/readback/map 元数据、post-submit
-scope 仍返回可 wait handle；真实 OOM **unsupported**；不接 application
-session）。**诚实边界**：P2-F06 仍未开始；application/train/UI/P6-F01 未接入；
-非通用 logging/P9 汇总。P2-F05 为**当前**。Phase 2 退出条件仍未满足。
+scope 返回可 wait handle 且 wait 在 reclaim 后返回 latched typed Err；真实
+OOM **unsupported**；不接 application session）。**诚实边界**：P2-F06 仍未
+开始；application/train/UI/P6-F01 未接入；非通用 logging/P9 汇总。P2-F05
+为**当前**。Phase 2 退出条件仍未满足。
 2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与 UI 实现状态没有因本次
 规划调整而提前完成。

@@ -9,6 +9,25 @@ use crate::resource::ResourceLabel;
 
 /// Default retained diagnostic events per live context generation.
 pub const DEFAULT_DIAGNOSTIC_CAPACITY: usize = 64;
+/// Per-field UTF-8 byte ceilings for retained diagnostic strings.
+pub const MAX_DIAGNOSTIC_LABEL_BYTES: usize = 256;
+pub const MAX_DIAGNOSTIC_CODE_BYTES: usize = 64;
+pub const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 1024;
+/// Soft cap on label+code+message bytes after per-field truncation.
+pub const MAX_DIAGNOSTIC_PAYLOAD_BYTES: usize = 1280;
+
+/// Truncate `s` to at most `max_bytes` on a UTF-8 char boundary.
+/// Returns `(truncated, was_truncated)`.
+pub fn utf8_truncate(s: &str, max_bytes: usize) -> (String, bool) {
+    if s.len() <= max_bytes {
+        return (s.to_owned(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_owned(), true)
+}
 
 /// GPU operation tag carried on errors and diagnostic events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -89,6 +108,18 @@ pub enum ScopeErrorInject {
 }
 
 impl ScopeErrorInject {
+    /// Known OOM byte fields when this inject is [`Self::OutOfMemory`].
+    pub fn oom_meta(&self) -> (Option<u64>, Option<u64>, Option<u64>) {
+        match self {
+            Self::OutOfMemory {
+                requested_bytes,
+                current_bytes,
+                budget_bytes,
+            } => (*requested_bytes, *current_bytes, *budget_bytes),
+            Self::Validation => (None, None, None),
+        }
+    }
+
     pub fn into_domain_error(self, class: ScopeClass) -> DomainError {
         match self {
             Self::Validation => match class {
@@ -106,19 +137,32 @@ impl ScopeErrorInject {
                 .with_user_action(UserAction::Retry),
             },
             Self::OutOfMemory {
-                requested_bytes: _,
-                current_bytes: _,
+                requested_bytes,
+                current_bytes,
                 budget_bytes,
             } => {
                 let mut msg = String::from("injected wgpu out-of-memory scope failure");
                 if let Some(b) = budget_bytes {
                     msg.push_str(&format!(" (budget_bytes={b})"));
                 }
-                // Operation/label/budget context is attached by the caller via
-                // `GpuContext::fail_gpu` (create/submit/…), not here.
-                DomainError::try_new(ErrorCode::AllocationFailed, msg)
+                let mut err = DomainError::try_new(ErrorCode::AllocationFailed, msg)
                     .expect("non-empty")
-                    .with_user_action(UserAction::Retry)
+                    .with_user_action(UserAction::Retry);
+                // Preserve known byte metadata without setting Command (caller
+                // attaches operation via fail_gpu / SubmissionEntry latch).
+                if let Some(n) = requested_bytes {
+                    let expected = match budget_bytes {
+                        Some(b) => format!("requested_bytes={n};budget_bytes={b}"),
+                        None => n.to_string(),
+                    };
+                    let _ = err.insert_context(ContextKey::Expected, expected);
+                } else if let Some(b) = budget_bytes {
+                    let _ = err.insert_context(ContextKey::Expected, format!("budget_bytes={b}"));
+                }
+                if let Some(n) = current_bytes {
+                    let _ = err.insert_context(ContextKey::Actual, n.to_string());
+                }
+                err
             }
         }
     }
@@ -138,6 +182,8 @@ pub struct GpuDiagnosticEvent {
     pub requested_bytes: Option<u64>,
     pub current_bytes: Option<u64>,
     pub budget_bytes: Option<u64>,
+    /// True when label/code/message were UTF-8-truncated for retention caps.
+    pub truncated: bool,
 }
 
 /// Observable ring counters (immutable copy).
@@ -211,18 +257,47 @@ impl DiagnosticRing {
     ) -> u64 {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
+        let (label, t_label) = match label {
+            Some(s) => {
+                let (s, t) = utf8_truncate(s, MAX_DIAGNOSTIC_LABEL_BYTES);
+                (Some(s), t)
+            }
+            None => (None, false),
+        };
+        let (code, t_code) = match code {
+            Some(s) => {
+                let (s, t) = utf8_truncate(s, MAX_DIAGNOSTIC_CODE_BYTES);
+                (Some(s), t)
+            }
+            None => (None, false),
+        };
+        let (mut message, mut truncated) =
+            utf8_truncate(&message.into(), MAX_DIAGNOSTIC_MESSAGE_BYTES);
+        truncated |= t_label || t_code;
+        let payload = label.as_ref().map_or(0, String::len)
+            + code.as_ref().map_or(0, String::len)
+            + message.len();
+        if payload > MAX_DIAGNOSTIC_PAYLOAD_BYTES {
+            let keep = MAX_DIAGNOSTIC_PAYLOAD_BYTES
+                .saturating_sub(label.as_ref().map_or(0, String::len))
+                .saturating_sub(code.as_ref().map_or(0, String::len));
+            let (msg, t) = utf8_truncate(&message, keep);
+            message = msg;
+            truncated |= t;
+        }
         let event = GpuDiagnosticEvent {
             seq,
             context_id: self.context_id,
             generation: self.generation,
             kind,
             operation,
-            label: label.map(str::to_owned),
-            code: code.map(str::to_owned),
-            message: message.into(),
+            label,
+            code,
+            message,
             requested_bytes,
             current_bytes,
             budget_bytes,
+            truncated,
         };
         if self.events.len() >= self.capacity {
             self.events.pop_front();
@@ -443,5 +518,55 @@ mod tests {
                 .code(),
             ErrorCode::ValueOutOfRange
         );
+    }
+
+    #[test]
+    fn utf8_truncate_respects_char_boundaries() {
+        let (s, t) = utf8_truncate("aéï", 2);
+        assert!(t);
+        assert_eq!(s, "a");
+        assert!(s.is_char_boundary(s.len()));
+    }
+
+    #[test]
+    fn ring_marks_truncated_and_honors_payload_cap() {
+        let mut ring =
+            DiagnosticRing::new(ContextId::for_test(1), ContextGeneration::for_test(1), 4);
+        let long_msg = "m".repeat(MAX_DIAGNOSTIC_MESSAGE_BYTES + 64);
+        let seq = ring.push(
+            DiagnosticKind::Error,
+            GpuOperation::Submit,
+            Some(&"L".repeat(MAX_DIAGNOSTIC_LABEL_BYTES + 8)),
+            Some("SP-GPU-003"),
+            long_msg,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(seq, 1);
+        let ev = &ring.since(0)[0];
+        assert!(ev.truncated);
+        assert!(ev.label.as_ref().unwrap().len() <= MAX_DIAGNOSTIC_LABEL_BYTES);
+        assert!(ev.message.len() <= MAX_DIAGNOSTIC_MESSAGE_BYTES);
+        let payload = ev.label.as_ref().map_or(0, String::len)
+            + ev.code.as_ref().map_or(0, String::len)
+            + ev.message.len();
+        assert!(payload <= MAX_DIAGNOSTIC_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn inject_oom_carries_expected_actual_bytes() {
+        let err = ScopeErrorInject::OutOfMemory {
+            requested_bytes: Some(128),
+            current_bytes: Some(64),
+            budget_bytes: Some(1024),
+        }
+        .into_domain_error(ScopeClass::Submit);
+        assert_eq!(err.code(), ErrorCode::AllocationFailed);
+        assert_eq!(
+            err.context_value(ContextKey::Expected),
+            Some("requested_bytes=128;budget_bytes=1024")
+        );
+        assert_eq!(err.context_value(ContextKey::Actual), Some("64"));
     }
 }

@@ -272,10 +272,145 @@ fn synthetic_post_submit_scope_returns_waitable_handle() {
     assert_eq!(events[0].code.as_deref(), Some("SP-GPU-003"));
     assert_eq!(events[0].operation, GpuOperation::Submit);
     drop(buf);
-    ctx.wait(handle, None).unwrap();
+    // Ring eviction must not erase the latched wait failure.
+    ctx.set_diagnostic_capacity(1);
+    ctx.inject_next_submit_error();
+    let _ = ctx.submit().unwrap_err();
+    assert_eq!(ctx.diagnostic_stats().dropped_oldest, 1);
+    let err = ctx.wait(handle, None).unwrap_err();
+    assert_eq!(err.code().as_str(), "SP-GPU-003");
+    assert_eq!(err.context_value(ContextKey::Command), Some("submit"));
     assert_eq!(ctx.retained_submission_count(), 0);
     assert_eq!(ctx.resource_accounting().current_bytes, 0);
     assert_eq!(ctx.status(), ContextStatus::Live);
+}
+
+#[test]
+fn synthetic_post_submit_oom_wait_returns_typed_failure_after_reclaim() {
+    let mut ctx = open_ctx();
+    ctx.set_resource_budget(Some(1 << 20));
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:post-oom").unwrap(),
+            size: 64,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[7u8; 64]).unwrap();
+    ctx.inject_next_post_submit_scope_error(ScopeErrorInject::OutOfMemory {
+        requested_bytes: Some(64),
+        current_bytes: Some(64),
+        budget_bytes: Some(1 << 20),
+    });
+    let handle = ctx.submit().expect("post-submit OOM still returns handle");
+    let err = ctx.wait(handle, None).unwrap_err();
+    assert_eq!(err.code().as_str(), "SP-GPU-004");
+    assert_eq!(err.context_value(ContextKey::Command), Some("submit"));
+    assert!(
+        err.context_value(ContextKey::Expected)
+            .is_some_and(|s| s.contains("requested_bytes=64"))
+    );
+    assert_eq!(err.context_value(ContextKey::Actual), Some("64"));
+    drop(buf);
+    assert_eq!(ctx.retained_submission_count(), 0);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_post_submit_failed_readback_not_mapped_ready() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:post-rb").unwrap(),
+            size: 16,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[9u8; 16]).unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 16).unwrap();
+    ctx.inject_next_post_submit_scope_error(ScopeErrorInject::Validation);
+    let handle = ctx.submit().unwrap();
+    let err = ctx.wait(handle, None).unwrap_err();
+    assert_eq!(err.code().as_str(), "SP-GPU-003");
+    let map_err = ctx.map_readback(&ticket).unwrap_err();
+    assert_ne!(map_err.code().as_str(), "SP-GPU-003");
+    assert!(
+        map_err.message().contains("unknown") || map_err.message().contains("not ready"),
+        "failed submission must not yield successful map: {}",
+        map_err.message()
+    );
+    drop(ticket);
+    drop(buf);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    assert_eq!(ctx.retained_submission_count(), 0);
+}
+
+#[test]
+fn synthetic_map_after_lost_returns_sp_gpu_002() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:map-loss").unwrap(),
+            size: 8,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[1u8; 8]).unwrap();
+    let ticket = ctx.readback_buffer(&buf, 0, 8).unwrap();
+    let handle = ctx.submit().unwrap();
+    ctx.wait(handle, None).unwrap();
+    ctx.inject_lost("map-loss probe");
+    let err = ctx.map_readback(&ticket).unwrap_err();
+    assert_eq!(err.code().as_str(), "SP-GPU-002");
+    drop(ticket);
+    drop(buf);
+}
+
+#[test]
+fn synthetic_wait_timeout_retains_latched_post_submit_failure() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:wait-to").unwrap(),
+            size: 32,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[2u8; 32]).unwrap();
+    ctx.inject_next_post_submit_scope_error(ScopeErrorInject::Validation);
+    let handle = ctx.submit().unwrap();
+    ctx.inject_next_wait_timeout();
+    let timeout = ctx.wait(handle, None).unwrap_err();
+    assert_eq!(timeout.code().as_str(), "SP-GPU-003");
+    assert_eq!(timeout.context_value(ContextKey::Command), Some("wait"));
+    assert_eq!(ctx.retained_submission_count(), 1);
+    let latched = ctx.wait(handle, None).unwrap_err();
+    assert_eq!(latched.code().as_str(), "SP-GPU-003");
+    assert_eq!(latched.context_value(ContextKey::Command), Some("submit"));
+    drop(buf);
+    assert_eq!(ctx.retained_submission_count(), 0);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn synthetic_lost_during_wait_beats_latched_scope_failure() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:lost-wait").unwrap(),
+            size: 32,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[4u8; 32]).unwrap();
+    ctx.inject_next_post_submit_scope_error(ScopeErrorInject::Validation);
+    let handle = ctx.submit().unwrap();
+    assert_eq!(ctx.retained_submission_count(), 1);
+    ctx.inject_lost("lost beats latched scope");
+    let err = ctx.wait(handle, None).unwrap_err();
+    assert_eq!(err.code().as_str(), "SP-GPU-002");
+    assert_eq!(ctx.status(), ContextStatus::Lost);
+    drop(buf);
 }
 
 #[test]

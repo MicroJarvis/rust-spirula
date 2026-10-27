@@ -112,8 +112,9 @@ adds session-owned WGSL compute pipeline key/cache and a minimal affine-u32
 proof on top of P2-F03 staging (layout epochs v1/v2 same ABI for key
 invalidation only). P2-F05 (当前 / HOLD pending review) maps wgpu error scopes /
 submit / lost to stable `SP-GPU-*` with a GPU-local bounded diagnostic ring
-(not application session history; P6-F01). Surface smoke remains P2-F06
-(未开始 until F05 approved). Application does not own GPU resources yet;
+and latched post-submit wait failures (not application session history;
+P6-F01). Surface smoke remains P2-F06 (未开始 until F05 approved). Application
+does not own GPU resources yet;
 diagnose `--resources` / `--compute` are not train/preview/UI readiness.
 Bindings: [phase-2/gpu-pipelines.md](phase-2/gpu-pipelines.md),
 [phase-2/gpu-diagnostics.md](phase-2/gpu-diagnostics.md).

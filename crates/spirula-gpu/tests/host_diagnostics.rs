@@ -183,17 +183,27 @@ fn host_post_submit_scope_waitable_reclaim_or_unavailable() {
                 ctx.poll_diagnostics(0)[0].code.as_deref(),
                 Some("SP-GPU-003")
             );
+            // Capacity-1 ring + unrelated submit error must not erase latched failure.
+            ctx.set_diagnostic_capacity(1);
+            ctx.inject_next_submit_error();
+            let _ = ctx.submit().unwrap_err();
+            assert!(ctx.diagnostic_stats().dropped_oldest >= 1);
             drop(buf);
             let empty = ctx.submit().unwrap();
             ctx.wait(empty, Some(Duration::from_secs(5))).unwrap();
             // Prior scoped submission still held until its handle is waited.
             assert_eq!(ctx.retained_submission_count(), 1);
-            ctx.wait(handle, Some(Duration::from_secs(5))).unwrap();
+            let err = ctx
+                .wait(handle, Some(Duration::from_secs(5)))
+                .expect_err("post-submit Validation must surface on wait");
+            assert_eq!(err.code().as_str(), "SP-GPU-003");
+            assert_eq!(err.context_value(ContextKey::Command), Some("submit"));
             eprintln!(
-                "host_post_submit_scope afterwait records={} current={} status={:?}",
+                "host_post_submit_scope afterwait records={} current={} status={:?} code={}",
                 ctx.retained_submission_count(),
                 ctx.resource_accounting().current_bytes,
-                ctx.status()
+                ctx.status(),
+                err.code().as_str()
             );
             assert_eq!(ctx.retained_submission_count(), 0);
             assert_eq!(ctx.resource_accounting().current_bytes, 0);
@@ -203,6 +213,49 @@ fn host_post_submit_scope_waitable_reclaim_or_unavailable() {
         Err(failure) => {
             eprintln!(
                 "host_post_submit_unavailable stage={:?} {}",
+                failure.stage,
+                failure.error.message()
+            );
+        }
+    }
+}
+
+#[test]
+fn host_post_submit_oom_wait_typed_failure_or_unavailable() {
+    use std::time::Duration;
+    let request = CapabilityRequest::diagnose_default();
+    match GpuContext::open(&request) {
+        Ok(mut ctx) => {
+            let buf = ctx
+                .create_buffer(BufferDesc {
+                    label: ResourceLabel::parse("spirula:gpu:buffer:post-oom").unwrap(),
+                    size: 64,
+                    usage: BufferUsage::COPY_SRC_DST,
+                })
+                .unwrap();
+            ctx.upload_buffer(&buf, 0, &[5u8; 64]).unwrap();
+            ctx.inject_next_post_submit_scope_error(ScopeErrorInject::OutOfMemory {
+                requested_bytes: Some(64),
+                current_bytes: Some(64),
+                budget_bytes: Some(1 << 20),
+            });
+            let handle = ctx
+                .submit()
+                .expect("post-submit OOM must return waitable handle");
+            assert_eq!(ctx.retained_submission_count(), 1);
+            let err = ctx
+                .wait(handle, Some(Duration::from_secs(5)))
+                .expect_err("post-submit OOM must surface on wait");
+            assert_eq!(err.code().as_str(), "SP-GPU-004");
+            assert_eq!(err.context_value(ContextKey::Command), Some("submit"));
+            drop(buf);
+            assert_eq!(ctx.retained_submission_count(), 0);
+            assert_eq!(ctx.resource_accounting().current_bytes, 0);
+            ctx.close();
+        }
+        Err(failure) => {
+            eprintln!(
+                "host_post_submit_oom_unavailable stage={:?} {}",
                 failure.stage,
                 failure.error.message()
             );

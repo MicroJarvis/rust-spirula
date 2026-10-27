@@ -502,6 +502,10 @@ struct SubmissionEntry {
     texture_ids: Vec<u64>,
     wgpu_index: Option<wgpu::SubmissionIndex>,
     completed: bool,
+    /// Enriched post-submit scope failure (SP-GPU-003/004). Survives diagnostic
+    /// ring eviction; wait reclaims then returns this as the canonical Err.
+    /// Stored without local `source` chain ([`DomainError::without_source`]).
+    scope_failure: Option<DomainError>,
 }
 
 pub(crate) struct ResourceLedger {
@@ -1881,6 +1885,10 @@ impl GpuContext {
             ));
         }
         let post_inject = self.take_post_submit_scope_inject();
+        let post_oom_meta = post_inject
+            .as_ref()
+            .map(crate::diagnostics::ScopeErrorInject::oom_meta)
+            .unwrap_or((None, None, None));
 
         let mut led = self.resource_ledger.lock().expect("ledger");
         let sub_id = NEXT_SUBMISSION_ID.fetch_add(1, Ordering::SeqCst);
@@ -1937,13 +1945,25 @@ impl GpuContext {
             }
             None => {
                 led.pending_commands.clear();
-                // Synthetic: no host queue; post-submit inject still surfaces as
-                // a diagnostic while returning a waitable (immediate) handle.
+                // Synthetic: no host queue; post-submit inject still latches a
+                // waitable handle with canonical failure.
                 let err = post_inject
                     .map(|inj| inj.into_domain_error(crate::diagnostics::ScopeClass::Submit));
                 (None, err)
             }
         };
+
+        let (req, cur, bud) = post_oom_meta;
+        let latched_failure = scope_err.map(|err| {
+            crate::diagnostics::enrich_gpu_error(
+                err,
+                crate::diagnostics::GpuOperation::Submit,
+                None,
+                req,
+                cur,
+                bud,
+            )
+        });
 
         led.submissions.insert(
             sub_id,
@@ -1953,6 +1973,7 @@ impl GpuContext {
                 texture_ids,
                 wgpu_index,
                 completed: false,
+                scope_failure: latched_failure.as_ref().map(DomainError::without_source),
             },
         );
         drop(led);
@@ -1963,17 +1984,15 @@ impl GpuContext {
             id: sub_id,
         };
 
-        if let Some(err) = scope_err {
-            // GPU (or synthetic) already accepted the submission — never return
-            // Err without a reclaimable handle. Emit typed diagnostic; caller
-            // waits on Ok(handle) to reap. Do not free inflight before wait.
-            let _ = self.fail_gpu(
+        if let Some(ref err) = latched_failure {
+            // Diagnostic may be ring-evicted; SubmissionEntry keeps the failure.
+            self.record_error_diagnostic(
                 err,
                 crate::diagnostics::GpuOperation::Submit,
                 None,
-                None,
-                None,
-                None,
+                req,
+                cur,
+                bud,
             );
         }
 
@@ -1986,11 +2005,12 @@ impl GpuContext {
     /// accounted bytes are retained so a later `wait` (or context teardown)
     /// can finish safely. Timeout is not a free/reclaim signal.
     ///
-    /// After a successful wait the submission record is **reaped** (ID vectors
-    /// dropped). A later `wait` on the same handle returns `SP-INP-001`
-    /// (unknown submission) — not a retained history Ok. Device loss delivered
-    /// by this wait's own `device.poll` is observed before reporting success
-    /// (`SP-GPU-002`).
+    /// After GPU sync completes the submission is **reaped**. If submit latched
+    /// a post-submit scope failure (`SP-GPU-003`/`SP-GPU-004`), wait returns
+    /// that canonical Err **after** reclaim (readbacks are not marked
+    /// `mapped_ready`). Device loss delivered by this wait's own `device.poll`
+    /// is observed before reclaim/Ok and returns `SP-GPU-002` (resources freed
+    /// only via Lost teardown).
     pub fn wait(
         &mut self,
         submission: SubmissionHandle,
@@ -2005,7 +2025,8 @@ impl GpuContext {
         if led.inject_wait_timeout {
             led.inject_wait_timeout = false;
             // Release the ledger so unrelated handles may Drop during the
-            // unlocked window (same as a real poll); this submission is kept.
+            // unlocked window (same as a real poll); this submission is kept
+            // (including any latched scope_failure) for a later wait.
             drop(led);
             for _ in 0..64 {
                 std::thread::yield_now();
@@ -2043,7 +2064,8 @@ impl GpuContext {
                 submission_index: Some(index),
                 timeout,
             });
-            // Host Destroyed/lost callbacks fire during poll — observe before Ok.
+            // Host Destroyed/lost callbacks fire during poll — Lost wins over
+            // latched scope failure / Ok.
             self.poll_host_lost();
             if self.status() != ContextStatus::Live {
                 return Err(handle_unavailable(self.status()));
@@ -2052,10 +2074,6 @@ impl GpuContext {
             match poll {
                 Ok(_) => {}
                 Err(wgpu::PollError::Timeout) => {
-                    // Do not assert whole-ledger current_bytes: other threads may
-                    // have freed unrelated idle resources while the lock was down.
-                    // This submission's staging/resources stay reserved until a
-                    // later successful wait or teardown.
                     drop(led);
                     return Err(self.fail_gpu(
                         submit_err(
@@ -2080,7 +2098,6 @@ impl GpuContext {
                     ));
                 }
             }
-            // Loss may have invalidated the ledger during poll_host_lost.
             led.ensure_live(submission.context_id, submission.generation)?;
             let entry = led
                 .submissions
@@ -2094,16 +2111,30 @@ impl GpuContext {
             let staging_ids = std::mem::take(&mut entry.staging_ids);
             let buffer_ids = std::mem::take(&mut entry.buffer_ids);
             let texture_ids = std::mem::take(&mut entry.texture_ids);
+            let scope_failure = entry.scope_failure.take();
             led.submissions.remove(&submission.id);
-            return self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids);
+            let failed = scope_failure.is_some();
+            self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids, failed)?;
+            drop(led);
+            return match scope_failure {
+                Some(err) => Err(err),
+                None => Ok(()),
+            };
         }
 
         // Synthetic / no wgpu index: complete immediately.
         let staging_ids = std::mem::take(&mut entry.staging_ids);
         let buffer_ids = std::mem::take(&mut entry.buffer_ids);
         let texture_ids = std::mem::take(&mut entry.texture_ids);
+        let scope_failure = entry.scope_failure.take();
         led.submissions.remove(&submission.id);
-        self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids)
+        let failed = scope_failure.is_some();
+        self.finish_wait_locked(&mut led, staging_ids, buffer_ids, texture_ids, failed)?;
+        drop(led);
+        match scope_failure {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 
     fn finish_wait_locked(
@@ -2112,6 +2143,7 @@ impl GpuContext {
         staging_ids: Vec<u64>,
         buffer_ids: Vec<u64>,
         texture_ids: Vec<u64>,
+        submission_failed: bool,
     ) -> Result<(), DomainError> {
         for sid in staging_ids {
             if let Some(st) = led.stagings.get_mut(&sid) {
@@ -2124,7 +2156,8 @@ impl GpuContext {
                         led.stagings.remove(&sid);
                     }
                     StagingKind::Readback { .. } => {
-                        if st.abandon_when_complete {
+                        // Failed submissions must not become successful maps.
+                        if submission_failed || st.abandon_when_complete {
                             let accounted = st.accounted;
                             st.gpu = None;
                             let _ = led.tracker.free(accounted);
@@ -2252,6 +2285,17 @@ impl GpuContext {
                         }
                     }
                 };
+                // Poll may have delivered device-lost; observe before choosing map Err/Ok.
+                self.poll_host_lost();
+                if self.status() != ContextStatus::Live {
+                    // Restore staging for teardown/drop reclaim; do not invent map success.
+                    let mut led = self.resource_ledger.lock().expect("ledger");
+                    if let Some(st) = led.stagings.get_mut(&staging_id) {
+                        st.gpu = Some(GpuBuffer::Wgpu(buf));
+                    }
+                    drop(led);
+                    return Err(handle_unavailable(self.status()));
+                }
                 match map_result {
                     Ok(()) => {
                         let data = match slice.get_mapped_range() {
@@ -2288,6 +2332,15 @@ impl GpuContext {
                         buf.unmap();
                         let _ = device.poll(wgpu::PollType::Poll);
                         let _ = rx.try_recv(); // MapAborted or empty — never block
+                        self.poll_host_lost();
+                        if self.status() != ContextStatus::Live {
+                            let mut led = self.resource_ledger.lock().expect("ledger");
+                            if let Some(st) = led.stagings.get_mut(&staging_id) {
+                                st.gpu = Some(GpuBuffer::Wgpu(buf));
+                            }
+                            drop(led);
+                            return Err(handle_unavailable(self.status()));
+                        }
                         let mut led = self.resource_ledger.lock().expect("ledger");
                         if let Some(st) = led.stagings.get_mut(&staging_id) {
                             st.gpu = Some(GpuBuffer::Wgpu(buf));

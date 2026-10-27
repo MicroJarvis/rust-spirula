@@ -375,6 +375,10 @@ impl GpuContext {
         };
 
         let mut scope_inject = self.take_scope_inject();
+        let inject_oom_meta = scope_inject
+            .as_ref()
+            .map(crate::diagnostics::ScopeErrorInject::oom_meta)
+            .unwrap_or((None, None, None));
         let mut cache = self.pipeline_cache.lock().expect("pipeline cache");
         cache.ensure_live(self.id(), self.generation())?;
 
@@ -436,9 +440,9 @@ impl GpuContext {
                             err,
                             crate::diagnostics::GpuOperation::Create,
                             Some(&desc.label),
-                            None,
-                            None,
-                            None,
+                            inject_oom_meta.0,
+                            inject_oom_meta.1,
+                            inject_oom_meta.2,
                         ));
                     }
                 };
@@ -497,9 +501,9 @@ impl GpuContext {
                             err,
                             crate::diagnostics::GpuOperation::Create,
                             Some(&desc.label),
-                            None,
-                            None,
-                            None,
+                            inject_oom_meta.0,
+                            inject_oom_meta.1,
+                            inject_oom_meta.2,
                         ));
                     }
                 };
@@ -523,9 +527,9 @@ impl GpuContext {
                             err,
                             crate::diagnostics::GpuOperation::Create,
                             Some(&desc.label),
-                            None,
-                            None,
-                            None,
+                            inject_oom_meta.0,
+                            inject_oom_meta.1,
+                            inject_oom_meta.2,
                         ));
                     }
                 };
@@ -562,9 +566,9 @@ impl GpuContext {
                             err,
                             crate::diagnostics::GpuOperation::Create,
                             Some(&desc.label),
-                            None,
-                            None,
-                            None,
+                            inject_oom_meta.0,
+                            inject_oom_meta.1,
+                            inject_oom_meta.2,
                         ));
                     }
                 };
@@ -673,14 +677,15 @@ impl GpuContext {
 
         let scope_inject = self.take_scope_inject();
         if let Some(inj) = scope_inject {
-            // Deterministic probe on both host and synthetic — preserve typed code.
+            let (req, cur, bud) = inj.oom_meta();
+            // Deterministic probe on both host and synthetic — preserve typed code + bytes.
             return Err(self.fail_gpu(
                 inj.into_domain_error(crate::diagnostics::ScopeClass::Resource),
                 crate::diagnostics::GpuOperation::Dispatch,
                 None,
-                None,
-                None,
-                None,
+                req,
+                cur,
+                bud,
             ));
         }
         let is_synthetic = self.backend_device_queue().is_none();

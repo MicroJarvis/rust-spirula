@@ -795,8 +795,9 @@ impl GpuContext {
     }
 
     /// After a real `queue.submit`, treat the next scope observation as this
-    /// error. The submission remains recorded and the returned handle is
-    /// waitable (GPU work already accepted) — diagnostics carry the typed code.
+    /// error. Submit still returns `Ok(handle)` (GPU work already accepted);
+    /// the enriched typed failure is latched on the submission and returned
+    /// from a later `wait` **after** safe GPU sync + inflight/staging reclaim.
     pub fn inject_next_post_submit_scope_error(&mut self, inject: ScopeErrorInject) {
         self.pending_post_submit_scope_inject = Some(inject);
     }
