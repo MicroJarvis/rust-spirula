@@ -216,6 +216,27 @@ pub(crate) fn bound_command_payload(
                 label: omit_label(label.len()),
             }
         }
+        CommandPayload::LoadDataset {
+            path,
+            recon_dir,
+            eval_mode,
+            split,
+        } if path.len() > limits.label_max_bytes || recon_dir.len() > limits.label_max_bytes => {
+            CommandPayload::LoadDataset {
+                path: if path.len() > limits.label_max_bytes {
+                    omit_label(path.len())
+                } else {
+                    path
+                },
+                recon_dir: if recon_dir.len() > limits.label_max_bytes {
+                    omit_label(recon_dir.len())
+                } else {
+                    recon_dir
+                },
+                eval_mode,
+                split,
+            }
+        }
         CommandPayload::PrepareOrientedImage {
             path,
             orientation,
@@ -346,6 +367,37 @@ pub(crate) fn sanitize_worker_event(
                 Err(error) => Err(bound_error(&error, limits)),
             };
             Some(WorkerEvent::ImagePrepareDone {
+                run_id,
+                command_id,
+                result,
+            })
+        }
+        WorkerEvent::DatasetLoadDone {
+            run_id,
+            command_id,
+            result,
+        } => {
+            let result = match result {
+                Ok(crate::worker::DatasetLoadOk::Summary {
+                    path,
+                    format,
+                    num_cameras,
+                    num_images,
+                    num_points,
+                    num_train,
+                    num_eval,
+                }) => Ok(crate::worker::DatasetLoadOk::Summary {
+                    path: bound_image_path(path),
+                    format: bound_retained_label(format, limits),
+                    num_cameras,
+                    num_images,
+                    num_points,
+                    num_train,
+                    num_eval,
+                }),
+                Err(error) => Err(bound_error(&error, limits)),
+            };
+            Some(WorkerEvent::DatasetLoadDone {
                 run_id,
                 command_id,
                 result,

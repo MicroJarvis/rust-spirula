@@ -265,7 +265,7 @@ pub(crate) fn run_prepare_normalized_mask_cancelable(
 }
 
 impl ApplicationService {
-    fn require_idle_or_ready(&self) -> Result<(), DomainError> {
+    pub(crate) fn require_idle_or_ready(&self) -> Result<(), DomainError> {
         let phase = self.snapshot().state;
         match phase {
             SessionState::Idle | SessionState::Ready => Ok(()),

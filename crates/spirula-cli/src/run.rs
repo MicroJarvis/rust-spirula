@@ -108,6 +108,7 @@ pub fn run_action(action: CliAction) -> CliExit {
         }
         CliAction::ProbeLoad { label, log_dir } => run_session(SessionPlan {
             load_label: Some(label),
+            dataset: None,
             steps: None,
             log_dir,
             step_delay_ms: None,
@@ -121,6 +122,7 @@ pub fn run_action(action: CliAction) -> CliExit {
             save_on_stop,
         } => run_session(SessionPlan {
             load_label,
+            dataset: None,
             steps: Some(steps),
             log_dir,
             step_delay_ms,
@@ -134,16 +136,44 @@ pub fn run_action(action: CliAction) -> CliExit {
             save_on_stop,
         } => run_session(SessionPlan {
             load_label: Some(label),
+            dataset: None,
             steps,
             log_dir,
             step_delay_ms,
             save_on_stop,
         }),
+        CliAction::LoadDataset {
+            path,
+            recon_dir,
+            eval_mode,
+            split,
+            log_dir,
+        } => run_session(SessionPlan {
+            load_label: None,
+            dataset: Some(DatasetPlan {
+                path,
+                recon_dir: recon_dir.unwrap_or_default(),
+                eval_mode,
+                split,
+            }),
+            steps: None,
+            log_dir,
+            step_delay_ms: None,
+            save_on_stop: true,
+        }),
     }
+}
+
+struct DatasetPlan {
+    path: PathBuf,
+    recon_dir: String,
+    eval_mode: String,
+    split: String,
 }
 
 struct SessionPlan {
     load_label: Option<String>,
+    dataset: Option<DatasetPlan>,
     steps: Option<u64>,
     log_dir: Option<PathBuf>,
     step_delay_ms: Option<u64>,
@@ -260,6 +290,52 @@ fn run_session(plan: SessionPlan) -> CliExit {
     let mut cancel = CancelGate::new(plan.save_on_stop);
     let mut saw_cancel_exit = false;
     let mut present = PresentTracker::new(snap.session_id);
+
+    if let Some(ds) = &plan.dataset {
+        cancel.try_admit_stop(&app, &out);
+        if cancel.intent {
+            return abort_canceled(&app, &sub, &out, &mut cancel, &mut present, saw_cancel_exit);
+        }
+        let id = match app.submit(Command::new(CommandPayload::LoadDataset {
+            path: ds.path.display().to_string(),
+            recon_dir: ds.recon_dir.clone(),
+            eval_mode: ds.eval_mode.clone(),
+            split: ds.split.clone(),
+        })) {
+            SubmitOutcome::Accepted { id } => id,
+            SubmitOutcome::Rejected { error } => {
+                let _ = out.shutdown(Duration::from_millis(200));
+                return CliExit::Error {
+                    error,
+                    stage: ProcessStage::InSession,
+                };
+            }
+        };
+        cancel.try_admit_stop(&app, &out);
+        match wait_for_command(
+            &app,
+            &sub,
+            &out,
+            id,
+            &mut cancel,
+            &mut present,
+            &mut saw_cancel_exit,
+        ) {
+            WaitEnd::Exit(exit) => {
+                return finalize_wait(&app, &out, WaitEnd::Exit(exit), saw_cancel_exit);
+            }
+            WaitEnd::Success => {
+                return finish_idle_success(
+                    &app,
+                    &sub,
+                    &out,
+                    &mut cancel,
+                    &mut present,
+                    saw_cancel_exit,
+                );
+            }
+        }
+    }
 
     if let Some(label) = &plan.load_label {
         cancel.try_admit_stop(&app, &out);

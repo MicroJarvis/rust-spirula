@@ -138,8 +138,8 @@ Phase 3 执行要点（2026-10-27 评审；P3-F02 已落地 main）：
   admitted `PrepareOrientedImage` / `PrepareNormalizedMask`；focused/e2e、
   after-start cancel、wide probe、golden cmp、xtask verify 8/8 与
   `git diff --check` 通过。第三方 `image` 解码 mid-call 不可抢占为诚实
-  Non-claim/boundary，不阻塞 READY。计划当前为 **P3-F03**（未开始；无
-  COLMAP 实现代码）。
+  Non-claim/boundary，不阻塞 READY。计划当前为 **P3-F03**（进行中 / HOLD；
+  见 [phase-3/colmap.md](phase-3/colmap.md)）。
 - **P3-F03 是数据侧关键路径**，P3-F04、P3-F08、P5-F08、P4-F01 以及 P5/P6 的
   大部分真实流程都经由它。P3-F03 应优先推进；P3-F05、P3-F06 不得排在
   P3-F03 之前阻塞主线。
@@ -245,7 +245,7 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
 P3-F01、P3-F02；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P3-F03**（未开始实现）。后续按依赖推进，每个编号
+出口通过）。**当前功能为 P3-F03**（进行中 / HOLD）。后续按依赖推进，每个编号
 独立 worktree、实现和验收；下列分组只是执行顺序，不会把组内多个编号合并成
 一个已完成功能：
 
@@ -257,7 +257,7 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    [phase-3/camera.md](phase-3/camera.md)）→ P3-F02（已完成并落地，tip
    `6f2b79ca5da9af5d8b14f5b2e2cd9b16cdacbc90`；契约
    [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)）→
-   **P3-F03（当前，未开始）**–P3-F08：微型数据集、格式和有界加载继续各自前置。
+   **P3-F03（当前，进行中 / HOLD）**–P3-F08：微型数据集、格式和有界加载继续各自前置。
    正交在参考中无 `CameraModelType` → AD-P3-F01-01 显式 unsupported
    （`SP-INP-004`）；CPU host golden 与后续 GPU 容差分离；exact-fit active
    source `-1` 保留 original metadata。其中 **P3-F03（COLMAP 读取）是数据侧
@@ -415,7 +415,7 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 `6f2b79ca5da9af5d8b14f5b2e2cd9b16cdacbc90`；merge `da0ea36…`；契约
 [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)；C-DATA-07..10；
 第三方 `image` mid-decode Non-claim 不阻塞 READY）。按原路线 **当前功能为
-P3-F03**（未开始实现）。**诚实边界**：P2-F01–P2-F07 与 P6-F07 tip 全部完成
+P3-F03**（进行中 / HOLD）。**诚实边界**：P2-F01–P2-F07 与 P6-F07 tip 全部完成
 **不** 等于 Phase 2 出口通过——surface present 仍未验证（**P2-F08 未开始**）；
 正式 UI / train/preview / P6-F03 导航未接入；不声称真实硬件 OOM；60 s
 watchdog 仍 deferred。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与

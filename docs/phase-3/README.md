@@ -4,7 +4,7 @@
 |---|---|---|
 | P3-F01 camera projection / coordinates | [camera.md](camera.md) | 已完成 |
 | P3-F02 image orientation / mask | [image-orient-mask.md](image-orient-mask.md) | 已完成 |
-| P3-F03 COLMAP dataset read | (not started) | 当前 |
+| P3-F03 COLMAP dataset read | [colmap.md](colmap.md) | 进行中 / HOLD |
 | P3-F04..F08 | (not started) | 未开始 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
@@ -34,4 +34,4 @@ decode is non-preemptible mid-call (runtime §5 per-image decode checkpoint);
 owned prepare-path CPU uses bounded-chunk `CancelCheckpoint::tick` (≤250 ms
 gap). Drop drain deadline ≠ proven hard worker join — see
 [image-orient-mask.md](image-orient-mask.md). Current plan work is **P3-F03**
-(COLMAP read; not implemented yet).
+([colmap.md](colmap.md); 进行中 / HOLD for independent review).

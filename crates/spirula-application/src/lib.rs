@@ -9,6 +9,7 @@
 
 mod bound;
 mod command;
+mod dataset_ops;
 mod disk_log;
 mod event;
 mod history;
@@ -39,4 +40,4 @@ pub use presentation::{
 };
 pub use session::{ApplicationService, SubscribeHandoffError};
 pub use state::SessionState;
-pub use worker::{FakeWorkerBehavior, ImagePrepareOk, StallGate, WorkerEvent};
+pub use worker::{DatasetLoadOk, FakeWorkerBehavior, ImagePrepareOk, StallGate, WorkerEvent};
