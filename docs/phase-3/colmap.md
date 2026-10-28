@@ -52,12 +52,16 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 | Condition | Code |
 |---|---|
 | Missing dataset / recon / images | `SP-IO-001` |
-| Truncated / malformed tables | `SP-FMT-002` |
+| Truncated / malformed tables; duplicate `camera_id` / `image_id` / `point3D_id`; text camera param arity mismatch | `SP-FMT-002` |
 | Unknown model / unsupported dataset | `SP-FMT-001` |
-| Nonfinite pose/params, illegal `..` path, budgets | `SP-INP-003` / `SP-INP-001` |
+| Nonfinite pose/params; illegal image path (`..`, absolute, root, prefix); budgets | `SP-INP-003` / `SP-INP-001` |
 | Nerfstudio / Metashape detected | `SP-INP-004` |
 | Empty train split | `SP-INP-001` |
 | Cancel | `SP-CAN-001` |
+
+Text `cameras.txt` validates model **name** against the 18-model table and
+requires **exact** parameter arity before bake (same arity binary already
+enforces via model id). Duplicate ids never silently overwrite.
 
 ## Fixtures
 

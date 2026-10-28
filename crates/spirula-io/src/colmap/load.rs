@@ -1,7 +1,7 @@
 //! Production COLMAP load pipeline (P3-F03). No scene center/normalize (P3-F05).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use spirula_core::{CancelToken, ErrorCode};
 
@@ -74,6 +74,39 @@ struct FrameBuild {
     im: ColmapImage,
     path: PathBuf,
     sort_key: String,
+}
+
+/// Reject names that could escape `image_dir` via `Path::join` (absolute / `..` /
+/// root / prefix). Relative `Normal` and `.` components only.
+pub(crate) fn validate_image_name(name: &str) -> Result<(), spirula_core::DomainError> {
+    let name_path = Path::new(name);
+    if name.is_empty() || name_path.as_os_str().is_empty() {
+        return Err(err(
+            ErrorCode::InvalidArgument,
+            "name",
+            "illegal empty image path",
+        ));
+    }
+    if name_path.is_absolute() {
+        return Err(err(
+            ErrorCode::InvalidArgument,
+            "name",
+            format!("illegal absolute image path `{name}`"),
+        ));
+    }
+    for component in name_path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(err(
+                    ErrorCode::InvalidArgument,
+                    "name",
+                    format!("illegal image path `{name}`"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Load a COLMAP dataset. Points optional. Nerfstudio/Metashape → typed unavailable.
@@ -161,18 +194,7 @@ pub fn load_colmap_dataset(
     let mut builds = Vec::new();
     for im in images.values() {
         cp.tick(1)?;
-        // Reject illegal path components that escape the image root.
-        let name_path = Path::new(&im.name);
-        if name_path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return Err(err(
-                ErrorCode::InvalidArgument,
-                "name",
-                format!("illegal image path `{}`", im.name),
-            ));
-        }
+        validate_image_name(&im.name)?;
         let mut path = image_dir.join(&im.name);
         if !path.is_file() {
             let alt = dataset_dir.join(&im.name);
@@ -366,4 +388,28 @@ pub fn load_dataset(
     cancel: Option<&CancelToken>,
 ) -> Result<ParsedDataset, spirula_core::DomainError> {
     load_colmap_dataset(dataset_dir, cfg, cancel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_image_name;
+    use spirula_core::ErrorCode;
+
+    #[test]
+    fn rejects_parent_absolute_and_root_names() {
+        assert!(validate_image_name("ok/rel.png").is_ok());
+        assert!(validate_image_name("./ok.png").is_ok());
+        assert_eq!(
+            validate_image_name("../secret.png").unwrap_err().code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            validate_image_name("/abs/secret.png").unwrap_err().code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            validate_image_name("/").unwrap_err().code(),
+            ErrorCode::InvalidArgument
+        );
+    }
 }

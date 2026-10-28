@@ -25,7 +25,10 @@ pub use budget::{
 };
 pub use config::ColmapLoadConfig;
 pub use load::{load_colmap_dataset, load_dataset};
-pub use models::{COLMAP_MODELS, ColmapModelInfo, model_by_id, model_id_by_name};
+pub use models::{
+    COLMAP_MODELS, ColmapModelInfo, model_by_id, model_id_by_name, require_exact_param_count,
+    require_model_by_name,
+};
 pub use pose::{colmap_to_c2w, qvec2rotmat};
 pub use probe::{colmap_model_fmt, colmap_model_num_images, find_colmap_recon, probe_dataset};
 pub use split::{SplitConfig, assign_val_split, compute_splits, linspace_indices, train_subset};

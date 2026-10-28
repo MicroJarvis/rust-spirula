@@ -45,8 +45,8 @@
     },
     {
       "path": "datasets/colmap-goldens/nontrivial/images.txt",
-      "bytes": 193,
-      "sha256": "2a753e4fe0d5d4cedf03f48c3142bc69b1a463ef4f94ab6e8c71be7205df396c"
+      "bytes": 192,
+      "sha256": "6009b9100038817b6265a393c23996ce3b0704f42a837b662a16a577243b51f2"
     },
     {
       "path": "datasets/colmap-goldens/nontrivial/images/img_eval_b.png",

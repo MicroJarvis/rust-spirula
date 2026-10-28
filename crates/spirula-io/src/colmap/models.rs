@@ -126,18 +126,51 @@ pub fn require_model_by_id(id: i32) -> Result<&'static ColmapModelInfo, DomainEr
     })
 }
 
+pub fn require_model_by_name(name: &str) -> Result<&'static ColmapModelInfo, DomainError> {
+    COLMAP_MODELS
+        .iter()
+        .find(|m| m.name == name)
+        .ok_or_else(|| {
+            DomainError::try_new(
+                ErrorCode::UnsupportedFormat,
+                format!("unknown camera model {name}"),
+            )
+            .expect("msg")
+            .with_context(ContextKey::Field, "model")
+            .expect("field")
+            .with_context(ContextKey::Actual, name.to_owned())
+            .expect("actual")
+        })
+}
+
 pub fn require_model_id_by_name(name: &str) -> Result<i32, DomainError> {
-    model_id_by_name(name).ok_or_else(|| {
-        DomainError::try_new(
-            ErrorCode::UnsupportedFormat,
-            format!("unknown camera model {name}"),
+    Ok(require_model_by_name(name)?.id)
+}
+
+/// Exact parameter arity from the 18-model table (text/binary consistency).
+pub fn require_exact_param_count(
+    info: &ColmapModelInfo,
+    params: &[f64],
+) -> Result<(), DomainError> {
+    if params.len() != info.num_params {
+        return Err(DomainError::try_new(
+            ErrorCode::MalformedRecord,
+            format!(
+                "camera model {} needs exactly {} parameters, got {}",
+                info.name,
+                info.num_params,
+                params.len()
+            ),
         )
         .expect("msg")
-        .with_context(ContextKey::Field, "model")
+        .with_context(ContextKey::Field, "params")
         .expect("field")
-        .with_context(ContextKey::Actual, name.to_owned())
-        .expect("actual")
-    })
+        .with_context(ContextKey::Expected, info.num_params.to_string())
+        .expect("expected")
+        .with_context(ContextKey::Actual, params.len().to_string())
+        .expect("actual"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

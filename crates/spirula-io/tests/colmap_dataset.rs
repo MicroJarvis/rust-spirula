@@ -249,6 +249,152 @@ fn illegal_parent_path_rejected() {
 }
 
 #[test]
+fn illegal_absolute_image_path_rejected() {
+    let h = TempHarness::new().unwrap();
+    let d = h.path().join("ds");
+    fs::create_dir_all(d.join("images")).unwrap();
+    fs::write(d.join("cameras.txt"), "1 PINHOLE 64 48 100 100 32 24\n").unwrap();
+    fs::write(
+        d.join("images.txt"),
+        "1 1 0 0 0 0 0 0 1 /tmp/escape.png\n\n",
+    )
+    .unwrap();
+    let err = load_colmap_dataset(&d, &ColmapLoadConfig::default(), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+}
+
+fn push_f64(buf: &mut Vec<u8>, v: f64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_i32(buf: &mut Vec<u8>, v: i32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_pinhole_camera_bin(buf: &mut Vec<u8>, camera_id: i32) {
+    push_i32(buf, camera_id);
+    push_i32(buf, 1); // PINHOLE
+    push_u64(buf, 64);
+    push_u64(buf, 48);
+    for v in [100.0, 100.0, 32.0, 24.0] {
+        push_f64(buf, v);
+    }
+}
+
+fn write_image_bin(buf: &mut Vec<u8>, image_id: i32, camera_id: i32, name: &str) {
+    push_i32(buf, image_id);
+    for v in [1.0, 0.0, 0.0, 0.0] {
+        push_f64(buf, v);
+    }
+    for v in [0.0, 0.0, 0.0] {
+        push_f64(buf, v);
+    }
+    push_i32(buf, camera_id);
+    buf.extend_from_slice(name.as_bytes());
+    buf.push(0);
+    push_u64(buf, 0); // no POINTS2D
+}
+
+fn write_point3d_bin(buf: &mut Vec<u8>, point3d_id: u64) {
+    push_u64(buf, point3d_id);
+    for v in [0.0, 0.0, 0.0] {
+        push_f64(buf, v);
+    }
+    buf.extend_from_slice(&[1u8, 2, 3]);
+    push_f64(buf, 0.0);
+    push_u64(buf, 0); // empty track
+}
+
+#[test]
+fn duplicate_ids_text_and_binary_error() {
+    let h = TempHarness::new().unwrap();
+    let d = h.path();
+
+    // cameras text
+    fs::write(
+        d.join("dup_cam.txt"),
+        "1 PINHOLE 64 48 100 100 32 24\n1 PINHOLE 64 48 100 100 32 24\n",
+    )
+    .unwrap();
+    let err = read_cameras_text(&d.join("dup_cam.txt"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // cameras binary
+    let mut cam_bin = Vec::new();
+    push_u64(&mut cam_bin, 2);
+    write_pinhole_camera_bin(&mut cam_bin, 7);
+    write_pinhole_camera_bin(&mut cam_bin, 7);
+    fs::write(d.join("dup_cam.bin"), &cam_bin).unwrap();
+    let err = read_cameras_binary(&d.join("dup_cam.bin"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // images text
+    fs::write(
+        d.join("dup_img.txt"),
+        "1 1 0 0 0 0 0 0 1 a.png\n\n1 1 0 0 0 0 0 0 1 b.png\n\n",
+    )
+    .unwrap();
+    let err = read_images_text(&d.join("dup_img.txt"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // images binary
+    let mut img_bin = Vec::new();
+    push_u64(&mut img_bin, 2);
+    write_image_bin(&mut img_bin, 3, 1, "a.png");
+    write_image_bin(&mut img_bin, 3, 1, "b.png");
+    fs::write(d.join("dup_img.bin"), &img_bin).unwrap();
+    let err = read_images_binary(&d.join("dup_img.bin"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // points3D text
+    fs::write(
+        d.join("dup_pts.txt"),
+        "9 0 0 0 1 2 3 0.0\n9 1 1 1 4 5 6 0.1\n",
+    )
+    .unwrap();
+    let err = read_points3d_text(&d.join("dup_pts.txt"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // points3D binary
+    let mut pts_bin = Vec::new();
+    push_u64(&mut pts_bin, 2);
+    write_point3d_bin(&mut pts_bin, 42);
+    write_point3d_bin(&mut pts_bin, 42);
+    fs::write(d.join("dup_pts.bin"), &pts_bin).unwrap();
+    let err = read_points3d_binary(&d.join("dup_pts.bin"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+}
+
+#[test]
+fn text_camera_model_name_and_exact_arity() {
+    let h = TempHarness::new().unwrap();
+    let d = h.path();
+
+    fs::write(d.join("bad_model.txt"), "1 NOT_A_MODEL 64 48 1 2 3\n").unwrap();
+    let err = read_cameras_text(&d.join("bad_model.txt"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::UnsupportedFormat);
+
+    // PINHOLE needs exactly 4 params — surplus rejected.
+    fs::write(d.join("surplus.txt"), "1 PINHOLE 64 48 100 100 32 24 999\n").unwrap();
+    let err = read_cameras_text(&d.join("surplus.txt"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // missing param
+    fs::write(d.join("missing.txt"), "1 PINHOLE 64 48 100 100 32\n").unwrap();
+    let err = read_cameras_text(&d.join("missing.txt"), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+
+    // exact arity still ok
+    fs::write(d.join("ok.txt"), "1 PINHOLE 64 48 100 100 32 24\n").unwrap();
+    let cams = read_cameras_text(&d.join("ok.txt"), None).unwrap();
+    assert_eq!(cams[&1].params.len(), 4);
+}
+
+#[test]
 fn points_optional() {
     let h = TempHarness::new().unwrap();
     let d = h.path().join("ds");

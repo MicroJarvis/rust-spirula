@@ -1,6 +1,6 @@
 //! Little-endian COLMAP binary readers (`cameras.bin` / `images.bin` / `points3D.bin`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -151,6 +151,13 @@ pub fn read_cameras_binary(
         for _ in 0..info.num_params {
             params.push(r.f64()?);
         }
+        if cameras.contains_key(&camera_id) {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "camera_id",
+                format!("duplicate camera_id {camera_id}"),
+            ));
+        }
         cameras.insert(
             camera_id,
             ColmapCamera {
@@ -209,6 +216,13 @@ pub fn read_images_binary(
             // COLMAP uses u64; invalid sentinel is often all-bits / max — keep as i64 bit pattern.
             observations.push(ColmapObservation { x, y, point3d_id });
         }
+        if images.contains_key(&image_id) {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "image_id",
+                format!("duplicate image_id {image_id}"),
+            ));
+        }
         images.insert(
             image_id,
             ColmapImage {
@@ -233,11 +247,19 @@ pub fn read_points3d_binary(
     let n = r.u64()?;
     ensure_count(n, MAX_POINTS, "points3D")?;
     let mut points = Vec::with_capacity(usize::try_from(n).unwrap_or(0));
+    let mut seen_ids = BTreeSet::new();
     let mut track_budget = 0u64;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
         let point3d_id = r.u64()?;
+        if !seen_ids.insert(point3d_id) {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "point3d_id",
+                format!("duplicate point3D_id {point3d_id}"),
+            ));
+        }
         let xyz = [r.f64()?, r.f64()?, r.f64()?];
         let rgb = [r.u8()?, r.u8()?, r.u8()?];
         let error = r.f64()?;

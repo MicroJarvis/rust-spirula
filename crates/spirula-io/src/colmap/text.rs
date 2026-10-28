@@ -1,6 +1,6 @@
 //! COLMAP text table readers (`cameras.txt` / `images.txt` / `points3D.txt`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -10,6 +10,7 @@ use super::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_OBSERVATIONS, MAX_POINTS, MAX_TRACK_ELEMS,
     ParseCancel, ensure_count, err, err_path,
 };
+use super::models::{require_exact_param_count, require_model_by_name};
 use super::types::{
     ColmapCamera, ColmapImage, ColmapObservation, ColmapPoint3D, ColmapPoints3D, ColmapTrackElem,
 };
@@ -139,7 +140,7 @@ fn parse_u8(tok: &str, field: &str) -> Result<u8, spirula_core::DomainError> {
     Ok(v as u8)
 }
 
-/// Read `cameras.txt` into an id-keyed map (last duplicate wins).
+/// Read `cameras.txt` into an id-keyed map. Duplicate `camera_id` → MalformedRecord.
 pub fn read_cameras_text(
     path: &Path,
     cancel: Option<&CancelToken>,
@@ -182,6 +183,7 @@ pub fn read_cameras_text(
                 "malformed cameras.txt line",
             ));
         }
+        let info = require_model_by_name(&model)?;
         let width = parse_u64(
             it.next().ok_or_else(|| {
                 err(
@@ -206,8 +208,16 @@ pub fn read_cameras_text(
         for tok in it {
             params.push(parse_f64(tok, "params")?);
         }
+        require_exact_param_count(info, &params)?;
         let camera_id = parse_i32(id_s, "camera_id")?;
         ensure_count(cameras.len() as u64 + 1, MAX_CAMERAS, "cameras")?;
+        if cameras.contains_key(&camera_id) {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "camera_id",
+                format!("duplicate camera_id {camera_id}"),
+            ));
+        }
         cameras.insert(
             camera_id,
             ColmapCamera {
@@ -344,6 +354,13 @@ pub fn read_images_text(
         let obs_line = lines.next_raw_line().unwrap_or("");
         let observations = parse_observations(trim_line(obs_line), &mut obs_budget)?;
         ensure_count(images.len() as u64 + 1, MAX_IMAGES, "images")?;
+        if images.contains_key(&image_id) {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "image_id",
+                format!("duplicate image_id {image_id}"),
+            ));
+        }
         images.insert(
             image_id,
             ColmapImage {
@@ -375,6 +392,7 @@ pub fn read_points3d_text(
     })?;
     let mut lines = TextLines::new(text);
     let mut points = Vec::new();
+    let mut seen_ids = BTreeSet::new();
     let mut track_budget = 0u64;
     let mut cp = ParseCancel::new(cancel);
     while let Some(line) = lines.next_data_line() {
@@ -390,6 +408,13 @@ pub fn read_points3d_text(
             })?,
             "point3d_id",
         )?;
+        if !seen_ids.insert(point3d_id) {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "point3d_id",
+                format!("duplicate point3D_id {point3d_id}"),
+            ));
+        }
         let xyz = [
             parse_f64(
                 it.next().ok_or_else(|| {
