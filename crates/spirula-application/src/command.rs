@@ -123,17 +123,20 @@ impl CommandPayload {
             }
             Self::LoadDataset {
                 path,
+                recon_dir,
                 eval_mode,
                 split,
-                ..
             } => {
                 crate::bound::check_image_path(path)?;
+                crate::bound::check_recon_dir(recon_dir)?;
+                crate::bound::check_load_dataset_enum("eval_mode", eval_mode)?;
+                crate::bound::check_load_dataset_enum("split", split)?;
                 match eval_mode.as_str() {
                     "all" | "fraction" | "interval" | "filename" => {}
-                    other => {
+                    _ => {
                         return Err(DomainError::try_new(
                             ErrorCode::InvalidArgument,
-                            format!("unknown eval_mode {other}"),
+                            "unknown eval_mode (expected all|fraction|interval|filename)",
                         )
                         .expect("message")
                         .with_context(ContextKey::Field, "eval_mode")
@@ -142,10 +145,10 @@ impl CommandPayload {
                 }
                 match split.as_str() {
                     "train" | "eval" | "all" => {}
-                    other => {
+                    _ => {
                         return Err(DomainError::try_new(
                             ErrorCode::InvalidArgument,
-                            format!("unknown split {other}"),
+                            "unknown split (expected train|eval|all)",
                         )
                         .expect("message")
                         .with_context(ContextKey::Field, "split")

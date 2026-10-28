@@ -1,4 +1,12 @@
 //! Train / eval / validation splits (`DatasetCommon.cpp:183-258`).
+//!
+//! # Index domain
+//!
+//! [`SplitPlan::train`] / [`SplitPlan::eval`] / [`SplitPlan::validation`] are
+//! indices into the **emitted** frame list (`SplitPlan::emit` → sorted frames
+//! that become [`crate::colmap::ParsedDataset::frames`]). Validation is carved
+//! **once** from the true train keep-set; load must not re-apply
+//! [`assign_val_split`].
 
 use std::path::Path;
 
@@ -12,7 +20,7 @@ pub fn linspace_indices(n: i64, count: i64) -> Vec<i64> {
     if count <= 0 || n <= 0 {
         return out;
     }
-    out.reserve(count as usize);
+    let _ = out.try_reserve(count as usize);
     for k in 0..count {
         if count == 1 {
             out.push(0);
@@ -33,7 +41,7 @@ pub struct SplitConfig {
     pub eval_mode: String,
     pub train_split_fraction: f32,
     pub eval_interval: i32,
-    /// `"train"` | `"eval"` | `"all"` — `"all"` returns every index (Rust extension for summaries).
+    /// `"train"` | `"eval"` | `"all"` — `"all"` emits every frame (Rust summary).
     pub split: String,
     pub validation_fraction: f32,
 }
@@ -50,8 +58,10 @@ impl Default for SplitConfig {
     }
 }
 
-/// Train keep-set, then optionally return eval complement (`train_subset`).
-pub fn train_subset(
+/// True training keep-set from `eval_mode` (global indices into the sorted
+/// name list). Never mixes eval-complement frames for `filename` / `interval`
+/// / `fraction`. Empty keep → error. Does **not** apply validation.
+pub fn train_keep_set(
     n: i64,
     names: &[String],
     cfg: &SplitConfig,
@@ -126,25 +136,44 @@ pub fn train_subset(
             "eval_mode split left no training images",
         ));
     }
+    Ok(keep)
+}
 
-    match cfg.split.as_str() {
-        "eval" => {
-            if cfg.eval_mode == "all" {
-                return Ok(keep);
-            }
-            let mut is_train = vec![false; n as usize];
-            for i in &keep {
-                is_train[*i as usize] = true;
-            }
-            let mut other = Vec::new();
-            for i in 0..n {
-                if !is_train[i as usize] {
-                    other.push(i);
-                }
-            }
-            // Empty eval is legal.
-            Ok(other)
+/// Eval keep-set in the global sorted-name domain.
+///
+/// - `eval_mode=all`: coincides with every frame (reference coincidence).
+/// - otherwise: complement of the true train keep-set (may be empty — legal).
+fn eval_keep_set(n: i64, train_keep: &[i64], eval_mode: &str) -> Vec<i64> {
+    if eval_mode == "all" {
+        return (0..n).collect();
+    }
+    let mut is_train = vec![false; n as usize];
+    for i in train_keep {
+        if (0..n).contains(i) {
+            is_train[*i as usize] = true;
         }
+    }
+    let mut other = Vec::new();
+    for i in 0..n {
+        if !is_train[i as usize] {
+            other.push(i);
+        }
+    }
+    other
+}
+
+/// Train keep-set, then optionally return eval complement (`train_subset`).
+///
+/// Prefer [`compute_splits`] for load: this helper does not apply validation and
+/// returns **global** indices into `names`, not the emitted-frame domain.
+pub fn train_subset(
+    n: i64,
+    names: &[String],
+    cfg: &SplitConfig,
+) -> Result<Vec<i64>, spirula_core::DomainError> {
+    let keep = train_keep_set(n, names, cfg)?;
+    match cfg.split.as_str() {
+        "eval" => Ok(eval_keep_set(n, &keep, &cfg.eval_mode)),
         "train" => Ok(keep),
         "all" => Ok((0..n).collect()),
         other => Err(err(
@@ -155,7 +184,9 @@ pub fn train_subset(
     }
 }
 
-/// Validation hold-out over the current subset (`assign_val_split`).
+/// Validation hold-out over a contiguous local domain of length `n`
+/// (`assign_val_split`). Local indices `0..n` map onto whatever keep-set the
+/// caller passes in.
 pub fn assign_val_split(
     n: i64,
     validation_fraction: f32,
@@ -188,40 +219,95 @@ pub fn assign_val_split(
     Ok((train, val))
 }
 
-type SplitTriple = (Vec<usize>, Vec<usize>, Vec<usize>);
+/// Full split plan: which global frames to emit, plus train/eval/validation
+/// indices into that emitted list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitPlan {
+    /// Global indices (into the sorted name/frame list) to emit, in order.
+    pub emit: Vec<usize>,
+    /// Indices into [`Self::emit`].
+    pub train: Vec<usize>,
+    pub eval: Vec<usize>,
+    pub validation: Vec<usize>,
+}
 
-/// Compute train + eval index lists for a sorted name list, then validation on the selected split.
+fn remap_into_emitted(emitted: &[usize], global: &[usize]) -> Vec<usize> {
+    let mut pos = vec![None; emitted.iter().copied().max().map(|m| m + 1).unwrap_or(0)];
+    for (local, &g) in emitted.iter().enumerate() {
+        if g >= pos.len() {
+            pos.resize(g + 1, None);
+        }
+        pos[g] = Some(local);
+    }
+    global
+        .iter()
+        .filter_map(|&g| pos.get(g).and_then(|p| *p))
+        .collect()
+}
+
+/// Compute the emit list plus train / eval / validation in the **emitted**
+/// domain. Validation is applied once to the true train keep-set.
+///
+/// - `all`: emit every sorted frame; train/eval/val are global (== local).
+/// - `train`: emit original train keep; train/val remapped; eval empty.
+/// - `eval`: emit eval keep; train/val empty; eval = `0..len`.
 pub fn compute_splits(
     names: &[String],
     cfg: &SplitConfig,
-) -> Result<SplitTriple, spirula_core::DomainError> {
+) -> Result<SplitPlan, spirula_core::DomainError> {
     let n = names.len() as i64;
-    let selected = train_subset(n, names, cfg)?;
-    // Also compute the complementary eval set for summaries (when split=train).
-    let eval_cfg = SplitConfig {
-        split: "eval".into(),
-        ..cfg.clone()
-    };
-    let eval_idx = train_subset(n, names, &eval_cfg)?;
-    let train_all_cfg = SplitConfig {
-        split: "train".into(),
-        ..cfg.clone()
-    };
-    let train_idx = train_subset(n, names, &train_all_cfg)?;
+    match cfg.split.as_str() {
+        "train" | "eval" | "all" => {}
+        other => {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                "split",
+                format!("unknown split '{other}' (expected 'train', 'eval', or 'all')"),
+            ));
+        }
+    }
 
-    let selected_usize: Vec<usize> = selected.iter().map(|i| *i as usize).collect();
-    let val_frac = if cfg.split == "eval" {
-        0.0
-    } else {
-        cfg.validation_fraction
-    };
-    let (train_local, val_local) = assign_val_split(selected_usize.len() as i64, val_frac)?;
-    // Map local subset indices back to global frame indices.
-    let train_global: Vec<usize> = train_local.iter().map(|i| selected_usize[*i]).collect();
-    let val_global: Vec<usize> = val_local.iter().map(|i| selected_usize[*i]).collect();
-    let eval_global: Vec<usize> = eval_idx.iter().map(|i| *i as usize).collect();
-    let _ = train_idx; // train_global already reflects selected split
-    Ok((train_global, eval_global, val_global))
+    let train_keep = train_keep_set(n, names, cfg)?;
+    let eval_keep = eval_keep_set(n, &train_keep, &cfg.eval_mode);
+
+    // Validation once on the true train keep (never on eval / never twice).
+    let (train_local, val_local) =
+        assign_val_split(train_keep.len() as i64, cfg.validation_fraction)?;
+    let train_global: Vec<usize> = train_local
+        .iter()
+        .map(|i| train_keep[*i] as usize)
+        .collect();
+    let val_global: Vec<usize> = val_local.iter().map(|i| train_keep[*i] as usize).collect();
+    let eval_global: Vec<usize> = eval_keep.iter().map(|i| *i as usize).collect();
+
+    match cfg.split.as_str() {
+        "all" => Ok(SplitPlan {
+            emit: (0..names.len()).collect(),
+            train: train_global,
+            eval: eval_global,
+            validation: val_global,
+        }),
+        "train" => {
+            let emit: Vec<usize> = train_keep.iter().map(|i| *i as usize).collect();
+            Ok(SplitPlan {
+                train: remap_into_emitted(&emit, &train_global),
+                eval: Vec::new(),
+                validation: remap_into_emitted(&emit, &val_global),
+                emit,
+            })
+        }
+        "eval" => {
+            let emit = eval_global;
+            let local_eval: Vec<usize> = (0..emit.len()).collect();
+            Ok(SplitPlan {
+                emit,
+                train: Vec::new(),
+                eval: local_eval,
+                validation: Vec::new(),
+            })
+        }
+        _ => unreachable!("validated above"),
+    }
 }
 
 #[cfg(test)]
@@ -245,7 +331,6 @@ mod tests {
             split: "train".into(),
             ..Default::default()
         };
-        // all names have neither train nor eval → error before empty-train
         let names2 = vec!["a.png".into()];
         assert!(train_subset(1, &names2, &bad).is_err());
     }
@@ -261,5 +346,119 @@ mod tests {
         };
         let keep = train_subset(8, &names, &cfg).unwrap();
         assert_eq!(keep, vec![1, 2, 3, 5, 6, 7]);
+    }
+
+    #[test]
+    fn filename_all_does_not_mark_eval_as_train() {
+        // Probe counterexample: sorted [img_eval_b, img_train_a].
+        let names = vec!["img_eval_b.png".into(), "img_train_a.png".into()];
+        let cfg = SplitConfig {
+            eval_mode: "filename".into(),
+            split: "all".into(),
+            validation_fraction: 0.0,
+            ..Default::default()
+        };
+        let plan = compute_splits(&names, &cfg).unwrap();
+        assert_eq!(plan.emit, vec![0, 1]);
+        assert_eq!(plan.train, vec![1]);
+        assert_eq!(plan.eval, vec![0]);
+        assert!(plan.validation.is_empty());
+    }
+
+    #[test]
+    fn filename_eval_split_has_empty_train() {
+        let names = vec!["img_eval_b.png".into(), "img_train_a.png".into()];
+        let cfg = SplitConfig {
+            eval_mode: "filename".into(),
+            split: "eval".into(),
+            validation_fraction: 0.25, // must not leak into eval emit
+            ..Default::default()
+        };
+        let plan = compute_splits(&names, &cfg).unwrap();
+        assert_eq!(plan.emit, vec![0]);
+        assert!(plan.train.is_empty());
+        assert_eq!(plan.eval, vec![0]);
+        assert!(plan.validation.is_empty());
+    }
+
+    #[test]
+    fn table_driven_split_mode_validation() {
+        // 3 split kinds × 4 eval modes × nonzero validation.
+        let names_filename = vec![
+            "img_eval_b.png".into(),
+            "img_train_a.png".into(),
+            "img_train_c.png".into(),
+            "img_train_d.png".into(),
+        ];
+        let names_plain: Vec<String> = (0..8).map(|i| format!("f{i}.png")).collect();
+        let modes = ["all", "fraction", "interval", "filename"];
+        let splits = ["all", "train", "eval"];
+        for mode in modes {
+            for split in splits {
+                let names = if mode == "filename" {
+                    names_filename.clone()
+                } else {
+                    names_plain.clone()
+                };
+                let cfg = SplitConfig {
+                    eval_mode: mode.into(),
+                    train_split_fraction: 0.75,
+                    eval_interval: 4,
+                    split: split.into(),
+                    validation_fraction: 0.25,
+                };
+                let plan = compute_splits(&names, &cfg).unwrap();
+                let n_emitted = plan.emit.len();
+                for idx in plan
+                    .train
+                    .iter()
+                    .chain(plan.eval.iter())
+                    .chain(plan.validation.iter())
+                {
+                    assert!(
+                        *idx < n_emitted,
+                        "mode={mode} split={split}: index {idx} >= emitted {n_emitted}"
+                    );
+                }
+                let train_set: std::collections::BTreeSet<_> = plan.train.iter().copied().collect();
+                let val_set: std::collections::BTreeSet<_> =
+                    plan.validation.iter().copied().collect();
+                assert!(train_set.is_disjoint(&val_set), "mode={mode} split={split}");
+                if mode != "all" || split != "all" {
+                    let eval_set: std::collections::BTreeSet<_> =
+                        plan.eval.iter().copied().collect();
+                    assert!(
+                        train_set.is_disjoint(&eval_set),
+                        "mode={mode} split={split}: train mixes eval"
+                    );
+                }
+                if split == "eval" {
+                    assert!(plan.train.is_empty() && plan.validation.is_empty());
+                }
+                if split == "train" {
+                    assert!(plan.eval.is_empty());
+                    assert!(!plan.train.is_empty(), "empty train illegal");
+                }
+                if split == "all" && mode == "filename" {
+                    assert!(!plan.train.contains(&0), "eval frame wrongly in train");
+                    assert!(plan.eval.contains(&0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eval_mode_all_coincidence_on_all_split() {
+        let names: Vec<String> = (0..4).map(|i| format!("f{i}.png")).collect();
+        let cfg = SplitConfig {
+            eval_mode: "all".into(),
+            split: "all".into(),
+            validation_fraction: 0.25,
+            ..Default::default()
+        };
+        let plan = compute_splits(&names, &cfg).unwrap();
+        assert_eq!(plan.eval, vec![0, 1, 2, 3]);
+        assert!(!plan.train.is_empty());
+        assert!(plan.train.iter().all(|i| !plan.validation.contains(i)));
     }
 }

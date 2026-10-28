@@ -30,8 +30,14 @@ pub use models::{
     require_model_by_name,
 };
 pub use pose::{colmap_to_c2w, qvec2rotmat};
-pub use probe::{colmap_model_fmt, colmap_model_num_images, find_colmap_recon, probe_dataset};
-pub use split::{SplitConfig, assign_val_split, compute_splits, linspace_indices, train_subset};
+pub use probe::{
+    colmap_model_fmt, colmap_model_num_images, find_colmap_recon, find_colmap_recon_cancelable,
+    probe_dataset, probe_dataset_cancelable,
+};
+pub use split::{
+    SplitConfig, SplitPlan, assign_val_split, compute_splits, linspace_indices, train_keep_set,
+    train_subset,
+};
 pub use types::{
     BakedIntrinsics, ColmapCamera, ColmapFileFmt, ColmapImage, ColmapModelFmt, ColmapObservation,
     ColmapPoint3D, ColmapPoints3D, ColmapTrackElem, DatasetFormat, DatasetLoadSummary,
@@ -39,6 +45,6 @@ pub use types::{
 };
 
 // Re-export low-level readers for tests / tooling (not the fixture checker).
-pub use bake::{bake_and_fit, bake_colmap_intrinsics};
+pub use bake::{bake_and_fit, bake_colmap_intrinsics, validate_source_camera};
 pub use binary::{read_cameras_binary, read_images_binary, read_points3d_binary};
 pub use text::{read_cameras_text, read_images_text, read_points3d_text};

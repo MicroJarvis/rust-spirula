@@ -1182,6 +1182,13 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                         CancelReason::User
                     }
                 });
+                // Leave Loading so a fresh LoadDataset can admit (Idle).
+                transition(
+                    &mut st,
+                    &shared.notifier,
+                    SessionState::Idle,
+                    "dataset_canceled",
+                );
                 finish_active(
                     &mut st,
                     &shared.notifier,
@@ -1238,6 +1245,14 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 }
                 Err(error) => {
                     let error = bound_error(&error, &st.limits);
+                    // Panic / parse failure must land in Failed so Reset works
+                    // (RunTerminal::Failed is dropped for dataset payloads).
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Failed,
+                        "dataset_failed",
+                    );
                     finish_active(
                         &mut st,
                         &shared.notifier,
@@ -1417,6 +1432,16 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 if !matches!(outcome, RunOutcome::Canceled { .. }) {
                     st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                     return;
+                }
+                // LoadDataset entered Loading; leave it so a fresh load admits.
+                // Image prepare never leaves Idle/Ready, so skip transition.
+                if matches!(st.active_payload, Some(CommandPayload::LoadDataset { .. })) {
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Idle,
+                        "dataset_canceled",
+                    );
                 }
                 finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
                 complete_pending_stop(&mut st, &shared.notifier);

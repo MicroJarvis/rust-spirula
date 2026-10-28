@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use spirula_core::{CancelReason, CancelToken, ErrorCode};
 use spirula_io::colmap::{
-    ColmapLoadConfig, DatasetFormat, DatasetProbe, colmap_to_c2w, load_colmap_dataset,
-    probe_dataset, read_cameras_binary, read_cameras_text, read_images_binary, read_images_text,
-    read_points3d_binary, read_points3d_text, train_subset,
+    ColmapCamera, ColmapLoadConfig, DatasetFormat, DatasetProbe, SplitConfig, bake_and_fit,
+    colmap_to_c2w, compute_splits, load_colmap_dataset, probe_dataset, read_cameras_binary,
+    read_cameras_text, read_images_binary, read_images_text, read_points3d_binary,
+    read_points3d_text, train_subset,
 };
 use spirula_io::temp_harness::TempHarness;
 
@@ -405,6 +406,288 @@ fn points_optional() {
     let ds = load_colmap_dataset(&d, &ColmapLoadConfig::default(), None).unwrap();
     assert_eq!(ds.points.num(), 0);
     assert_eq!(ds.frames.len(), 1);
+}
+
+#[test]
+fn nontrivial_filename_all_and_eval_split_indices() {
+    let root = fixtures().join("datasets/colmap-goldens/nontrivial");
+    let cfg_all = ColmapLoadConfig {
+        eval_mode: "filename".into(),
+        split: "all".into(),
+        ..Default::default()
+    };
+    let ds = load_colmap_dataset(&root, &cfg_all, None).unwrap();
+    assert_eq!(ds.frames.len(), 2);
+    let names: Vec<&str> = ds.frames.iter().map(|f| f.name.as_str()).collect();
+    assert!(names[0].contains("eval") || names[1].contains("eval"));
+    // Emitted-domain: train must not include the eval frame.
+    for &i in &ds.split.train {
+        assert!(
+            ds.frames[i].name.contains("train"),
+            "train idx {i} is {}",
+            ds.frames[i].name
+        );
+    }
+    for &i in &ds.split.eval {
+        assert!(
+            ds.frames[i].name.contains("eval"),
+            "eval idx {i} is {}",
+            ds.frames[i].name
+        );
+    }
+    assert_eq!(ds.split.train.len(), 1);
+    assert_eq!(ds.split.eval.len(), 1);
+
+    let cfg_eval = ColmapLoadConfig {
+        eval_mode: "filename".into(),
+        split: "eval".into(),
+        validation_fraction: 0.25,
+        ..Default::default()
+    };
+    let ev = load_colmap_dataset(&root, &cfg_eval, None).unwrap();
+    assert_eq!(ev.frames.len(), 1);
+    assert!(ev.frames[0].name.contains("eval"));
+    assert!(ev.split.train.is_empty());
+    assert_eq!(ev.split.eval, vec![0]);
+    assert!(ev.split.validation.is_empty());
+}
+
+#[test]
+fn bake_and_fit_rejects_bad_focal_direct_and_load() {
+    for params in [
+        vec![-100.0, -100.0, 32.0, 24.0],
+        vec![0.0, 0.0, 32.0, 24.0],
+        vec![1e100, 1e100, 32.0, 24.0],
+    ] {
+        let cam = ColmapCamera {
+            camera_id: 1,
+            model: "PINHOLE".into(),
+            width: 64,
+            height: 48,
+            params: params.clone(),
+        };
+        assert!(
+            bake_and_fit(&cam).is_err(),
+            "direct bake_and_fit must reject {params:?}"
+        );
+    }
+
+    let h = TempHarness::new().unwrap();
+    let d = h.path().join("ds");
+    fs::create_dir_all(d.join("images")).unwrap();
+    fs::copy(tiny().join("images/tiny.png"), d.join("images/tiny.png")).unwrap();
+    fs::write(d.join("images.txt"), "1 1 0 0 0 0 0 0 1 tiny.png\n\n").unwrap();
+
+    // Text path
+    fs::write(d.join("cameras.txt"), "1 PINHOLE 64 48 -100 -100 32 24\n").unwrap();
+    let err = load_colmap_dataset(&d, &ColmapLoadConfig::default(), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+
+    // Binary path: declared count 1, bad focals.
+    let mut cam_bin = Vec::new();
+    push_u64(&mut cam_bin, 1);
+    push_i32(&mut cam_bin, 1);
+    push_i32(&mut cam_bin, 1); // PINHOLE
+    push_u64(&mut cam_bin, 64);
+    push_u64(&mut cam_bin, 48);
+    for v in [-100.0, -100.0, 32.0, 24.0] {
+        push_f64(&mut cam_bin, v);
+    }
+    fs::remove_file(d.join("cameras.txt")).ok();
+    fs::write(d.join("cameras.bin"), &cam_bin).unwrap();
+    // images as text still
+    let err = load_colmap_dataset(&d, &ColmapLoadConfig::default(), None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+
+    // Reader alone still accepts finite f64; bake gate is the boundary.
+    let cams = read_cameras_binary(&d.join("cameras.bin"), None).unwrap();
+    assert!(bake_and_fit(&cams[&1]).is_err());
+}
+
+#[test]
+fn points_bin_huge_count_tiny_file_rejects_before_reserve() {
+    let h = TempHarness::new().unwrap();
+    let p = h.path().join("points3D.bin");
+    // Declared count within MAX_POINTS but file is only 8 bytes → must not
+    // Vec::with_capacity(50e6)-style reserve; fail on remaining-byte check.
+    let n = 1_000_000u64;
+    fs::write(&p, n.to_le_bytes()).unwrap();
+    let err = read_points3d_binary(&p, None).unwrap_err();
+    assert!(
+        matches!(
+            err.code(),
+            ErrorCode::MalformedRecord | ErrorCode::ValueOutOfRange
+        ),
+        "got {:?}",
+        err.code()
+    );
+}
+
+#[test]
+fn observations_count_within_limit_but_truncated() {
+    let h = TempHarness::new().unwrap();
+    let p = h.path().join("images.bin");
+    let mut buf = Vec::new();
+    push_u64(&mut buf, 1);
+    push_i32(&mut buf, 1);
+    for v in [1.0, 0.0, 0.0, 0.0] {
+        push_f64(&mut buf, v);
+    }
+    for v in [0.0, 0.0, 0.0] {
+        push_f64(&mut buf, v);
+    }
+    push_i32(&mut buf, 1);
+    buf.extend_from_slice(b"a.png\0");
+    // Declare 10 observations but provide none.
+    push_u64(&mut buf, 10);
+    fs::write(&p, &buf).unwrap();
+    let err = read_images_binary(&p, None).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::MalformedRecord);
+}
+
+#[test]
+fn after_start_cancel_during_large_observation_parse() {
+    let h = TempHarness::new().unwrap();
+    let p = h.path().join("images.bin");
+    let mut buf = Vec::new();
+    push_u64(&mut buf, 1);
+    push_i32(&mut buf, 1);
+    for v in [1.0, 0.0, 0.0, 0.0] {
+        push_f64(&mut buf, v);
+    }
+    for v in [0.0, 0.0, 0.0] {
+        push_f64(&mut buf, v);
+    }
+    push_i32(&mut buf, 1);
+    buf.extend_from_slice(b"big.png\0");
+    let n_obs = 200_000u64;
+    push_u64(&mut buf, n_obs);
+    for _ in 0..n_obs {
+        push_f64(&mut buf, 1.0);
+        push_f64(&mut buf, 2.0);
+        push_u64(&mut buf, u64::MAX);
+    }
+    fs::write(&p, &buf).unwrap();
+
+    let cancel = CancelToken::new();
+    let cancel2 = cancel.clone();
+    let handle = std::thread::spawn(move || {
+        // After-start: let parse begin, then cancel.
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cancel2.request(CancelReason::User));
+    });
+    let err = read_images_binary(&p, Some(&cancel)).unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+}
+
+#[test]
+fn after_start_cancel_during_track_parse() {
+    let h = TempHarness::new().unwrap();
+    let p = h.path().join("points3D.bin");
+    let mut buf = Vec::new();
+    push_u64(&mut buf, 1);
+    push_u64(&mut buf, 1);
+    for v in [0.0, 0.0, 0.0] {
+        push_f64(&mut buf, v);
+    }
+    buf.extend_from_slice(&[1u8, 2, 3]);
+    push_f64(&mut buf, 0.0);
+    let track_len = 200_000u64;
+    push_u64(&mut buf, track_len);
+    for i in 0..track_len {
+        push_i32(&mut buf, 1);
+        push_i32(&mut buf, i as i32);
+    }
+    fs::write(&p, &buf).unwrap();
+
+    let cancel = CancelToken::new();
+    let cancel2 = cancel.clone();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cancel2.request(CancelReason::User));
+    });
+    let err = read_points3d_binary(&p, Some(&cancel)).unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+}
+
+#[test]
+fn compute_splits_table_smoke_exported() {
+    let names = vec!["img_eval_b.png".into(), "img_train_a.png".into()];
+    let plan = compute_splits(
+        &names,
+        &SplitConfig {
+            eval_mode: "filename".into(),
+            split: "all".into(),
+            validation_fraction: 0.0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(plan.train, vec![1]);
+    assert_eq!(plan.eval, vec![0]);
+}
+
+#[test]
+fn pin_bake_host_golden_holdout() {
+    use spirula_io::colmap::COLMAP_MODELS;
+    let expected =
+        fs::read_to_string(fixtures().join("datasets/colmap-goldens/bake-pin/expected.txt"))
+            .expect("bake-pin expected.txt");
+    let inputs: Vec<Vec<f64>> = serde_json::from_str(
+        &fs::read_to_string(fixtures().join("datasets/colmap-goldens/bake-pin/inputs.json"))
+            .expect("bake-pin inputs.json"),
+    )
+    .expect("inputs json");
+    assert_eq!(inputs.len(), COLMAP_MODELS.len());
+    for (id, params) in inputs.iter().enumerate() {
+        let info = &COLMAP_MODELS[id];
+        let cam = ColmapCamera {
+            camera_id: id as i32,
+            model: info.name.into(),
+            width: 640,
+            height: 480,
+            params: params.clone(),
+        };
+        let bi = bake_and_fit(&cam).unwrap_or_else(|e| panic!("{}: {e}", info.name));
+        let line = expected.lines().nth(id).expect("golden line");
+        let mut toks = line.split_whitespace();
+        let _gid = toks.next().unwrap();
+        let g_model: i32 = toks.next().unwrap().parse().unwrap();
+        let _g_tier = toks.next().unwrap();
+        let gfx: f64 = toks.next().unwrap().parse().unwrap();
+        let gfy: f64 = toks.next().unwrap().parse().unwrap();
+        let gcx: f64 = toks.next().unwrap().parse().unwrap();
+        let gcy: f64 = toks.next().unwrap().parse().unwrap();
+        assert_eq!(bi.model.as_i32(), g_model, "{}", info.name);
+        let loose = matches!(
+            info.name,
+            "FOV"
+                | "EUCM"
+                | "RAD_TAN_THIN_PRISM_FISHEYE"
+                | "FULL_OPENCV"
+                | "THIN_PRISM_FISHEYE"
+                | "OPENCV_FISHEYE"
+        );
+        let tol = if loose { 0.15 } else { 1e-3 };
+        assert!(
+            (f64::from(bi.fx) - gfx).abs() <= tol * gfx.abs().max(1.0)
+                || (f64::from(bi.fx) - gfx).abs() < 2.0,
+            "{} fx {} vs {gfx}",
+            info.name,
+            bi.fx
+        );
+        assert!(
+            (f64::from(bi.fy) - gfy).abs() <= tol * gfy.abs().max(1.0)
+                || (f64::from(bi.fy) - gfy).abs() < 2.0,
+            "{} fy {} vs {gfy}",
+            info.name,
+            bi.fy
+        );
+        assert!((f64::from(bi.cx) - gcx).abs() < 2.0, "{} cx", info.name);
+        assert!((f64::from(bi.cy) - gcy).abs() < 2.0, "{} cy", info.name);
+    }
 }
 
 #[allow(dead_code)]

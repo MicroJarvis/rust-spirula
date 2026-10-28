@@ -58,6 +58,35 @@ pub(crate) fn check_image_path(path: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
+/// Nonempty `recon_dir` shares the filesystem path cap; empty means auto-detect.
+pub(crate) fn check_recon_dir(recon_dir: &str) -> Result<(), DomainError> {
+    if recon_dir.is_empty() {
+        return Ok(());
+    }
+    if recon_dir.len() > IMAGE_PATH_MAX_BYTES {
+        return Err(reject_oversized(
+            "recon_dir",
+            recon_dir.len(),
+            IMAGE_PATH_MAX_BYTES,
+        ));
+    }
+    Ok(())
+}
+
+/// Short enum tokens (`eval_mode` / `split`); never concatenate the input.
+pub(crate) const LOAD_DATASET_ENUM_MAX_BYTES: usize = 32;
+
+pub(crate) fn check_load_dataset_enum(field: &str, value: &str) -> Result<(), DomainError> {
+    if value.len() > LOAD_DATASET_ENUM_MAX_BYTES {
+        return Err(reject_oversized(
+            field,
+            value.len(),
+            LOAD_DATASET_ENUM_MAX_BYTES,
+        ));
+    }
+    Ok(())
+}
+
 fn bound_image_path(path: String) -> String {
     if path.len() > IMAGE_PATH_MAX_BYTES {
         omit_label(path.len())
@@ -221,18 +250,30 @@ pub(crate) fn bound_command_payload(
             recon_dir,
             eval_mode,
             split,
-        } if path.len() > limits.label_max_bytes || recon_dir.len() > limits.label_max_bytes => {
+        } => {
+            let path = if path.len() > limits.label_max_bytes {
+                omit_label(path.len())
+            } else {
+                path
+            };
+            let recon_dir = if recon_dir.len() > limits.label_max_bytes {
+                omit_label(recon_dir.len())
+            } else {
+                recon_dir
+            };
+            let eval_mode = if eval_mode.len() > limits.label_max_bytes {
+                omit_label(eval_mode.len())
+            } else {
+                eval_mode
+            };
+            let split = if split.len() > limits.label_max_bytes {
+                omit_label(split.len())
+            } else {
+                split
+            };
             CommandPayload::LoadDataset {
-                path: if path.len() > limits.label_max_bytes {
-                    omit_label(path.len())
-                } else {
-                    path
-                },
-                recon_dir: if recon_dir.len() > limits.label_max_bytes {
-                    omit_label(recon_dir.len())
-                } else {
-                    recon_dir
-                },
+                path,
+                recon_dir,
                 eval_mode,
                 split,
             }

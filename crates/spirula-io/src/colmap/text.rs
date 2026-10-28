@@ -8,7 +8,7 @@ use spirula_core::{CancelToken, ErrorCode};
 
 use super::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_OBSERVATIONS, MAX_POINTS, MAX_TRACK_ELEMS,
-    ParseCancel, ensure_count, err, err_path,
+    ParseCancel, ensure_count, err, err_path, try_reserve_elems,
 };
 use super::models::{require_exact_param_count, require_model_by_name};
 use super::types::{
@@ -41,13 +41,25 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, spirula_core::DomainError> {
             ),
         ));
     }
-    fs::read(path).map_err(|e| {
+    let data = fs::read(path).map_err(|e| {
         err_path(
             ErrorCode::ReadFailed,
             &path.display().to_string(),
             format!("cannot read: {e}"),
         )
-    })
+    })?;
+    // TOCTOU: reject growth past the metadata-gated budget after read.
+    if data.len() as u64 > MAX_COLMAP_FILE_BYTES {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "file_size",
+            format!(
+                "COLMAP file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
+                path.display()
+            ),
+        ));
+    }
+    Ok(data)
 }
 
 fn trim_line(s: &str) -> &str {
@@ -236,6 +248,7 @@ pub fn read_cameras_text(
 fn parse_observations(
     line: &str,
     budget: &mut u64,
+    cp: &mut ParseCancel<'_>,
 ) -> Result<Vec<ColmapObservation>, spirula_core::DomainError> {
     let toks: Vec<&str> = line.split_whitespace().collect();
     if toks.is_empty() {
@@ -251,8 +264,15 @@ fn parse_observations(
     let n = (toks.len() / 3) as u64;
     *budget = budget.saturating_add(n);
     ensure_count(*budget, MAX_OBSERVATIONS, "observations")?;
-    let mut out = Vec::with_capacity(toks.len() / 3);
-    for chunk in toks.as_chunks::<3>().0 {
+    let mut out = Vec::new();
+    let mut mem = 0u64;
+    try_reserve_elems(&mut out, toks.len() / 3, &mut mem, "observations")?;
+    for (i, chunk) in toks.as_chunks::<3>().0.iter().enumerate() {
+        cp.tick(1)?;
+        // Extra poll on long lines so after-start cancel wins before chunk ceiling.
+        if i > 0 && i % 4096 == 0 {
+            cp.poll_now()?;
+        }
         let x = parse_f64(chunk[0], "obs_x")?;
         let y = parse_f64(chunk[1], "obs_y")?;
         let point3d_id: i64 = chunk[2].parse().map_err(|_| {
@@ -352,7 +372,7 @@ pub fn read_images_text(
         }
         // POINTS2D line — may be empty; always consume one raw line (pin).
         let obs_line = lines.next_raw_line().unwrap_or("");
-        let observations = parse_observations(trim_line(obs_line), &mut obs_budget)?;
+        let observations = parse_observations(trim_line(obs_line), &mut obs_budget, &mut cp)?;
         ensure_count(images.len() as u64 + 1, MAX_IMAGES, "images")?;
         if images.contains_key(&image_id) {
             return Err(err(
@@ -494,8 +514,14 @@ pub fn read_points3d_text(
         let n = (rest.len() / 2) as u64;
         track_budget = track_budget.saturating_add(n);
         ensure_count(track_budget, MAX_TRACK_ELEMS, "track")?;
-        let mut track = Vec::with_capacity(rest.len() / 2);
-        for chunk in rest.as_chunks::<2>().0 {
+        let mut track = Vec::new();
+        let mut mem = 0u64;
+        try_reserve_elems(&mut track, rest.len() / 2, &mut mem, "track")?;
+        for (i, chunk) in rest.as_chunks::<2>().0.iter().enumerate() {
+            cp.tick(1)?;
+            if i > 0 && i % 4096 == 0 {
+                cp.poll_now()?;
+            }
             track.push(ColmapTrackElem {
                 image_id: parse_i32(chunk[0], "track_image_id")?,
                 point2d_idx: parse_i32(chunk[1], "track_point2d_idx")?,

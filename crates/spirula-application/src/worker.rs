@@ -290,6 +290,7 @@ fn worker_loop(
                         &progress_tx,
                         &result_tx,
                         &limits,
+                        &behavior,
                         run_id,
                         command_id,
                         path,
@@ -301,6 +302,9 @@ fn worker_loop(
                     );
                 }));
                 if result.is_err() {
+                    // Route via DatasetLoadDone so the owner can arbitrate
+                    // Stop/Shutdown vs Failed (RunTerminal Failed is dropped for
+                    // image/dataset payloads — see session apply_worker_event).
                     let err = spirula_core::DomainError::try_new(
                         spirula_core::ErrorCode::Internal,
                         "dataset load worker panicked",
@@ -309,13 +313,10 @@ fn worker_loop(
                     forward_result(
                         &result_tx,
                         &limits,
-                        WorkerEvent::RunTerminal {
+                        WorkerEvent::DatasetLoadDone {
                             run_id,
                             command_id,
-                            outcome: TerminalOutcome::Failed { error: err },
-                            checkpoint_label: None,
-                            save_failed: false,
-                            final_progress: None,
+                            result: Err(err),
                         },
                     );
                 }
@@ -656,6 +657,7 @@ fn run_dataset_load(
     progress_tx: &SyncSender<WorkerEvent>,
     result_tx: &SyncSender<WorkerEvent>,
     limits: &SessionLimits,
+    behavior: &Arc<Mutex<FakeWorkerBehavior>>,
     run_id: RunId,
     command_id: CommandId,
     path: String,
@@ -671,6 +673,11 @@ fn run_dataset_load(
             result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
         );
         return;
+    }
+
+    // Test injection: panic after the stall gate so after-start cancel races work.
+    if matches!(*lock(behavior), FakeWorkerBehavior::Panic) {
+        panic!("injected dataset load worker panic");
     }
 
     let outcome = match crate::dataset_ops::run_load_colmap_cancelable(

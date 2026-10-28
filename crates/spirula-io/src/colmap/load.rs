@@ -5,12 +5,14 @@ use std::path::{Component, Path, PathBuf};
 
 use spirula_core::{CancelToken, ErrorCode};
 
-use super::bake::{bake_and_fit, validate_equirectangular};
+use super::bake::bake_and_fit;
 use super::binary::{read_cameras_binary, read_images_binary, read_points3d_binary};
 use super::budget::{ParseCancel, err, err_path};
 use super::config::ColmapLoadConfig;
 use super::pose::colmap_to_c2w;
-use super::probe::{colmap_model_fmt, find_colmap_recon, preferred_table_path, probe_dataset};
+use super::probe::{
+    colmap_model_fmt, find_colmap_recon_cancelable, preferred_table_path, probe_dataset_cancelable,
+};
 use super::split::compute_splits;
 use super::text::{read_cameras_text, read_images_text, read_points3d_text};
 use super::types::DatasetProbe;
@@ -119,7 +121,7 @@ pub fn load_colmap_dataset(
     cp.poll_now()?;
 
     // Auto-detect / typed unavailable for other formats.
-    match probe_dataset(dataset_dir, cfg.recon_dir.as_deref())? {
+    match probe_dataset_cancelable(dataset_dir, cfg.recon_dir.as_deref(), cancel)? {
         DatasetProbe::Unavailable { format, reason } => {
             return Err(err(
                 ErrorCode::UnimplementedOption,
@@ -140,7 +142,7 @@ pub fn load_colmap_dataset(
     }
 
     let recon_hint = cfg.recon_dir.as_deref();
-    let (recon_dir, _, _) = find_colmap_recon(dataset_dir, recon_hint)?;
+    let (recon_dir, _, _) = find_colmap_recon_cancelable(dataset_dir, recon_hint, cancel)?;
     // Prefer live fmt from the chosen recon (bin preferred per file).
     let fmt = colmap_model_fmt(&recon_dir);
     if !fmt.has_recon() {
@@ -159,34 +161,13 @@ pub fn load_colmap_dataset(
     let points = read_points(&recon_dir, fmt.points3d, cancel)?;
     cp.poll_now()?;
 
-    for cam in cameras.values() {
-        validate_equirectangular(cam)?;
-        for (i, v) in cam.params.iter().enumerate() {
-            if !v.is_finite() {
-                return Err(err(
-                    ErrorCode::ValueOutOfRange,
-                    "params",
-                    format!("camera {} param {i} is nonfinite", cam.camera_id),
-                ));
-            }
-        }
-        if cam.width == 0 || cam.height == 0 {
-            return Err(err(
-                ErrorCode::ValueOutOfRange,
-                "size",
-                format!(
-                    "camera {} has non-positive size {}x{}",
-                    cam.camera_id, cam.width, cam.height
-                ),
-            ));
-        }
-    }
-
-    // Bake once per camera id (fit can be expensive).
+    // Bake once per camera id. `bake_and_fit` owns arity / finite / focal gates.
+    // `fit_camera_auto` (inside fit path) is non-preemptible; poll around each cam.
     let mut baked = BTreeMap::new();
     for (id, cam) in &cameras {
-        cp.tick(1)?;
+        cp.poll_now()?;
         baked.insert(*id, bake_and_fit(cam)?);
+        cp.poll_now()?;
     }
 
     let image_dir = dataset_dir.join(&cfg.image_dir);
@@ -278,18 +259,12 @@ pub fn load_colmap_dataset(
         .map(|b| b.path.display().to_string())
         .collect();
     let split_cfg = cfg.split_config();
-    let (train_idx, eval_idx, val_idx) = compute_splits(&names, &split_cfg)?;
-
-    // Which frames to emit depends on cfg.split.
-    let selected = match cfg.split.as_str() {
-        "eval" => eval_idx.clone(),
-        "all" => (0..builds.len()).collect(),
-        _ => train_idx.clone(),
-    };
+    // Indices in the emitted-frame domain; validation applied once inside.
+    let plan = compute_splits(&names, &split_cfg)?;
 
     // Empty eval split is legal (caller skips eval); empty train already erred.
-    let mut frames = Vec::with_capacity(selected.len());
-    for &i in &selected {
+    let mut frames = Vec::with_capacity(plan.emit.len());
+    for &i in &plan.emit {
         cp.tick(1)?;
         let b = &builds[i];
         let cam = &cameras[&b.im.camera_id];
@@ -326,34 +301,10 @@ pub fn load_colmap_dataset(
         });
     }
 
-    // Remap split indices into the emitted frame list when split != all.
-    let split = if cfg.split == "all" {
-        SplitIndices {
-            train: train_idx,
-            eval: eval_idx,
-            validation: val_idx,
-        }
-    } else {
-        // Emitted frames are already the selected subset; train/val are local,
-        // eval listing stays global over the pre-split sorted set for summaries.
-        let local_n = frames.len();
-        let (local_train, local_val) = super::split::assign_val_split(
-            local_n as i64,
-            if cfg.split == "eval" {
-                0.0
-            } else {
-                cfg.validation_fraction
-            },
-        )?;
-        SplitIndices {
-            train: local_train,
-            eval: if cfg.split == "eval" {
-                (0..local_n).collect()
-            } else {
-                Vec::new()
-            },
-            validation: local_val,
-        }
+    let split = SplitIndices {
+        train: plan.train,
+        eval: plan.eval,
+        validation: plan.validation,
     };
 
     let summary = DatasetLoadSummary {

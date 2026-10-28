@@ -8,7 +8,8 @@ use spirula_core::{CancelToken, ErrorCode};
 
 use super::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_OBSERVATIONS, MAX_POINTS, MAX_TRACK_ELEMS,
-    ParseCancel, checked_mul_u64, ensure_count, err, err_path,
+    MIN_POINT3D_RECORD_BYTES, OBSERVATION_RECORD_BYTES, ParseCancel, TRACK_ELEM_BYTES,
+    checked_mul_u64, ensure_count, ensure_remaining, err, err_path, try_reserve_elems,
 };
 use super::models::require_model_by_id;
 use super::types::{
@@ -54,6 +55,17 @@ impl BinReader {
                 format!("cannot read: {e}"),
             )
         })?;
+        // TOCTOU: file may have grown past the metadata budget after open.
+        if data.len() as u64 > MAX_COLMAP_FILE_BYTES {
+            return Err(err(
+                ErrorCode::ValueOutOfRange,
+                "file_size",
+                format!(
+                    "COLMAP file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
+                    path.display()
+                ),
+            ));
+        }
         Ok(Self {
             data,
             pos: 0,
@@ -107,10 +119,14 @@ impl BinReader {
         Ok(v)
     }
 
-    fn cstring(&mut self) -> Result<String, spirula_core::DomainError> {
+    fn cstring(&mut self, cp: &mut ParseCancel<'_>) -> Result<String, spirula_core::DomainError> {
         let start = self.pos;
         while self.pos < self.data.len() && self.data[self.pos] != 0 {
             self.pos += 1;
+            // Bound cancel observation during long names.
+            if (self.pos - start).is_multiple_of(4096) {
+                cp.tick(4096)?;
+            }
         }
         if self.pos >= self.data.len() {
             return Err(err_path(
@@ -139,6 +155,7 @@ pub fn read_cameras_binary(
     let n = r.u64()?;
     ensure_count(n, MAX_CAMERAS, "cameras")?;
     let mut cameras = BTreeMap::new();
+    let mut mem_used = 0u64;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
@@ -147,7 +164,8 @@ pub fn read_cameras_binary(
         let width = r.u64()?;
         let height = r.u64()?;
         let info = require_model_by_id(model_id)?;
-        let mut params = Vec::with_capacity(info.num_params);
+        let mut params = Vec::new();
+        try_reserve_elems(&mut params, info.num_params, &mut mem_used, "params")?;
         for _ in 0..info.num_params {
             params.push(r.f64()?);
         }
@@ -182,6 +200,7 @@ pub fn read_images_binary(
     ensure_count(n, MAX_IMAGES, "images")?;
     let mut images = BTreeMap::new();
     let mut obs_budget = 0u64;
+    let mut mem_used = 0u64;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
@@ -195,7 +214,7 @@ pub fn read_images_binary(
             *t = r.f64()?;
         }
         let camera_id = r.i32()?;
-        let name = r.cstring()?;
+        let name = r.cstring(&mut cp)?;
         if name.is_empty() {
             return Err(err_path(
                 ErrorCode::MalformedRecord,
@@ -206,14 +225,22 @@ pub fn read_images_binary(
         let num_points2d = r.u64()?;
         obs_budget = obs_budget.saturating_add(num_points2d);
         ensure_count(obs_budget, MAX_OBSERVATIONS, "observations")?;
-        // Each observation: 2×f64 + u64 point3D_id.
-        let mut observations = Vec::with_capacity(usize::try_from(num_points2d).unwrap_or(0));
+        let need = checked_mul_u64(num_points2d, OBSERVATION_RECORD_BYTES, "observations")?;
+        ensure_remaining(r.remaining() as u64, need, "observations")?;
+        let n_obs = usize::try_from(num_points2d).map_err(|_| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "observations",
+                format!("observation count {num_points2d} exceeds usize"),
+            )
+        })?;
+        let mut observations = Vec::new();
+        try_reserve_elems(&mut observations, n_obs, &mut mem_used, "observations")?;
         for _ in 0..num_points2d {
             cp.tick(1)?;
             let x = r.f64()?;
             let y = r.f64()?;
             let point3d_id = r.u64()? as i64;
-            // COLMAP uses u64; invalid sentinel is often all-bits / max — keep as i64 bit pattern.
             observations.push(ColmapObservation { x, y, point3d_id });
         }
         if images.contains_key(&image_id) {
@@ -246,7 +273,19 @@ pub fn read_points3d_binary(
     let mut r = BinReader::open(path)?;
     let n = r.u64()?;
     ensure_count(n, MAX_POINTS, "points3D")?;
-    let mut points = Vec::with_capacity(usize::try_from(n).unwrap_or(0));
+    // Reject multi-GB reserve from a tiny file declaring huge `n`.
+    let need = checked_mul_u64(n, MIN_POINT3D_RECORD_BYTES, "points3D")?;
+    ensure_remaining(r.remaining() as u64, need, "points3D")?;
+    let mut points = Vec::new();
+    let mut mem_used = 0u64;
+    let n_usize = usize::try_from(n).map_err(|_| {
+        err(
+            ErrorCode::ValueOutOfRange,
+            "points3D",
+            format!("point count {n} exceeds usize"),
+        )
+    })?;
+    try_reserve_elems(&mut points, n_usize, &mut mem_used, "points3D")?;
     let mut seen_ids = BTreeSet::new();
     let mut track_budget = 0u64;
     let mut cp = ParseCancel::new(cancel);
@@ -266,16 +305,17 @@ pub fn read_points3d_binary(
         let track_len = r.u64()?;
         track_budget = track_budget.saturating_add(track_len);
         ensure_count(track_budget, MAX_TRACK_ELEMS, "track")?;
-        // Pre-check remaining bytes for track: track_len * 2 * i32.
-        let track_bytes = checked_mul_u64(track_len, 8, "track")?;
-        if (r.remaining() as u64) < track_bytes {
-            return Err(err_path(
-                ErrorCode::MalformedRecord,
-                &r.path,
-                "truncated file",
-            ));
-        }
-        let mut track = Vec::with_capacity(usize::try_from(track_len).unwrap_or(0));
+        let track_bytes = checked_mul_u64(track_len, TRACK_ELEM_BYTES, "track")?;
+        ensure_remaining(r.remaining() as u64, track_bytes, "track")?;
+        let n_track = usize::try_from(track_len).map_err(|_| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "track",
+                format!("track length {track_len} exceeds usize"),
+            )
+        })?;
+        let mut track = Vec::new();
+        try_reserve_elems(&mut track, n_track, &mut mem_used, "track")?;
         for _ in 0..track_len {
             cp.tick(1)?;
             track.push(ColmapTrackElem {

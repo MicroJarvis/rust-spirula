@@ -1,10 +1,11 @@
 # P3-F03: COLMAP dataset reading
 
-Status: **进行中 / HOLD** (awaiting independent review). Owner:
-`spirula-io` (production parsers) + admitted `spirula-application` /
+Status: **进行中 / HOLD** (awaiting independent re-review after A–E fixes).
+Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
 Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
 scene center/normalize (P3-F05), not training cache (P3-F08), not UI.
+**P2-F08** remains 未开始.
 
 Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 (`ColmapParser.cpp`, `DatasetCommon.cpp`, `DatasetParser.h`).
@@ -24,10 +25,11 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 |---|---|---|
 | Model table | `ColmapParser.cpp:72-100` | 18 ids / names / param counts |
 | Bin/text prefer | `ColmapParser.cpp:615-628` | Per-file `.bin` else `.txt` |
-| Recon probe | `ColmapParser.cpp:633-708` | sparse enumeration + fallbacks |
+| Recon probe | `ColmapParser.cpp:633-708` | sparse enumeration + fallbacks; count desc, path asc |
+| Image count header | `ColmapParser.cpp:600` | `atoll` leading prefix (`10, mean…` → 10) |
 | Auto-detect | `ColmapParser.cpp:1019-1077` | NS > COLMAP > Metashape |
 | Pose | `ColmapParser.cpp:509-530` | qvec wxyz w2c → OpenGL c2w (y/z flip) |
-| Splits | `DatasetCommon.cpp:183-258` | linspace / interval / filename |
+| Splits | `DatasetCommon.cpp:183-258` | linspace / interval / filename; val once on train |
 | Intrinsics bake | `ColmapParser.cpp:309-407` | exact tiers + fit ladder |
 
 ## Architecture
@@ -37,8 +39,43 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
   `fit_camera_auto` reused for unrepresentable lenses.
 - `spirula-application`: `LoadDataset` → worker → `DatasetLoaded` summary;
   Stop/Shutdown → exactly one `Canceled` terminal; **never** `DatasetLoaded`
-  after cancel.
+  after cancel. Panic routes through `DatasetLoadDone{Err(Internal)}` (not
+  `RunTerminal::Failed`, which the owner drops for image/dataset payloads).
 - `spirula-cli`: `load-dataset --path …` shares the same owner path.
+
+### Split index domain (pin)
+
+`SplitPlan::{train,eval,validation}` are indices into the **emitted** frame
+list (`SplitPlan::emit` → `ParsedDataset::frames`). Validation is carved
+**once** from the true train keep-set; `filename` / `interval` / `fraction`
+never mix eval-complement frames into train. `eval_mode=all` keeps reference
+coincidence (`eval` covers every sorted frame on `split=all`).
+
+### Numeric bake boundary
+
+`bake_and_fit` rejects non-positive / non-finite focals and f32 overflow
+(no silent sanitize). EQUIRECTANGULAR bake requires finite positive derived
+focals from params. Host pin holdout:
+`fixtures/datasets/colmap-goldens/bake-pin/`.
+
+### Bounded IO / cancel
+
+- Binary `points` / observations: remaining-byte check before fallible reserve;
+  `MAX_POINTS` must not allow multi-GB reserve from an 8-byte file.
+- Probe reads bounded prefixes only (`images.bin` 8 bytes; Metashape XML
+  **8192** dual-marker window; `images.txt` header prefix).
+- `metadata` + `fs::read` re-checks size (TOCTOU growth).
+- Cancel checkpoints in text observation/track tokenization, binary cstring,
+  track association, probe dir scan/sort, and around each camera bake.
+- **`fit_camera_auto` is non-preemptible** (dense CPU ladder in `spirula-core`);
+  cancel is polled before/after each camera fit only.
+
+### Admission (`LoadDataset`)
+
+All variable fields are capped: `path` / nonempty `recon_dir` ≤ 4096 bytes;
+`eval_mode` / `split` ≤ 32 bytes. Invalid enum errors never concatenate the
+input. Rejected payloads are UTF-8-safe length-limited via
+`bound_command_payload`.
 
 ## Non-goals (this feature)
 
@@ -46,29 +83,37 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 - Nerfstudio / Metashape parse (P3-F04).
 - Image decode cache / batch loader (P3-F08).
 - UI dataset browser (P6-F04).
+- Chunked cancel inside `fit_camera_auto` (core change; documented boundary).
 
 ## Errors (typed, no panic)
 
 | Condition | Code |
 |---|---|
 | Missing dataset / recon / images | `SP-IO-001` |
-| Truncated / malformed tables; duplicate `camera_id` / `image_id` / `point3D_id`; text camera param arity mismatch | `SP-FMT-002` |
+| Truncated / malformed tables; duplicate ids; text camera param arity | `SP-FMT-002` |
 | Unknown model / unsupported dataset | `SP-FMT-001` |
-| Nonfinite pose/params; illegal image path (`..`, absolute, root, prefix); budgets | `SP-INP-003` / `SP-INP-001` |
+| Nonfinite / illegal focal / illegal image path; budgets; admission | `SP-INP-003` / `SP-INP-001` |
 | Nerfstudio / Metashape detected | `SP-INP-004` |
 | Empty train split | `SP-INP-001` |
 | Cancel | `SP-CAN-001` |
-
-Text `cameras.txt` validates model **name** against the 18-model table and
-requires **exact** parameter arity before bake (same arity binary already
-enforces via model id). Duplicate ids never silently overwrite.
+| Worker panic on load | `SP-INT-001` via `DatasetLoadDone` |
 
 ## Fixtures
 
 - `fixtures/datasets/tiny-colmap/` text + LE binary (bin preferred).
 - `fixtures/datasets/colmap-goldens/nontrivial/` non-identity pose, OPENCV
   lens, no points, filename train/eval split.
+- `fixtures/datasets/colmap-goldens/bake-pin/` host-only bake/fit pin rows
+  (no C++ sources).
 - `fixtures/golden/dataset.json` retained; `fixtures.rs` remains a checker only.
+
+## Remaining gaps (HOLD)
+
+- Independent re-review of A–E + image-count `atoll` + recon sort.
+- Fitted-model numeric tolerance vs host pin rows may need tightening after
+  review (loose tol on FOV/EUCM/thin-prism ladder).
+- `fit_camera_auto` still non-cancelable mid-fit.
+- P3-F04/F05/F08 and P2-F08 deliberately untouched.
 
 ## Verification
 
@@ -76,4 +121,4 @@ enforces via model id). Duplicate ids never silently overwrite.
 - `cargo test -p spirula-application --test dataset_load_e2e`
 - CLI: `spirula load-dataset --path fixtures/datasets/tiny-colmap`
 - `cargo run -p spirula-xtask -- verify` → 8/8
-- `git diff --check`
+- `git diff --check 5bd2b16..HEAD`
