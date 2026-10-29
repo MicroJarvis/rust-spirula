@@ -1,7 +1,7 @@
 //! Reconstruction directory probing and format auto-detection.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use spirula_core::{CancelToken, ErrorCode};
@@ -12,8 +12,13 @@ use super::types::{ColmapFileFmt, ColmapModelFmt, DatasetFormat, DatasetProbe};
 /// Metashape header scan window (pin `ColmapParser.cpp:977-1005`).
 const METASHAPE_SCAN_BYTES: usize = 8192;
 
-/// Line-buffered stream chunk for cancel checkpoints while counting images.txt.
-const IMAGE_COUNT_CANCEL_LINES: usize = 4096;
+/// Byte chunk for cancel checkpoints while streaming `images.txt` counts.
+const IMAGE_COUNT_READ_CHUNK: usize = 64 * 1024;
+
+/// Cap on comment-line prefix retained for `# Number of images:` atoll.
+/// COLMAP headers are short; excess bytes are discarded until newline so a
+/// single huge comment line cannot grow an unbounded `String`.
+const IMAGE_COUNT_HEADER_CAP: usize = 8192;
 
 fn file_fmt(dir: &Path, base: &str) -> ColmapFileFmt {
     if dir.join(format!("{base}.bin")).is_file() {
@@ -68,10 +73,18 @@ fn parse_leading_i64(s: &str) -> Option<i64> {
 ///
 /// When `images.bin` exists it is preferred; a truncated/bad bin returns `-1`
 /// and does **not** fall back to `images.txt` (pin per-file bin preference).
-/// Text path streams the whole file (memory-bounded `BufRead`) unless a
-/// standard `# Number of images:` header early-returns via atoll.
+/// Text path streams the whole file in byte chunks (no `read_line` into a
+/// growing `String`) unless a standard `# Number of images:` header
+/// early-returns via atoll.
 pub fn colmap_model_num_images(dir: &Path) -> i64 {
     colmap_model_num_images_cancelable(dir, None).unwrap_or(-1)
+}
+
+/// Parse `# Number of images:` from a capped comment-line prefix.
+fn header_image_count(comment_prefix: &str) -> Option<i64> {
+    let idx = comment_prefix.find("Number of images:")?;
+    let after = &comment_prefix[idx + "Number of images:".len()..];
+    parse_leading_i64(after)
 }
 
 /// Same as [`colmap_model_num_images`] with cancel checkpoints on the text stream.
@@ -102,15 +115,21 @@ pub fn colmap_model_num_images_cancelable(
             format!("cannot open images.txt: {e}"),
         )
     })?;
-    // Small reusable buffer — never load the whole table for ranking.
-    let mut reader = BufReader::with_capacity(64 * 1024, f);
-    let mut line = String::new();
-    let mut rows: i64 = 0;
+    // Byte-chunk stream — never `read_line` into an unbounded String.
+    let mut reader = BufReader::with_capacity(IMAGE_COUNT_READ_CHUNK, f);
     let mut cp = ParseCancel::new(cancel);
-    let mut lines_seen = 0usize;
+    cp.poll_now()?;
+
+    let mut rows: i64 = 0;
+    // Line FSM: at start → classify `#` comment vs data; `\r` ignored (CRLF).
+    let mut at_line_start = true;
+    let mut in_comment = false;
+    let mut saw_nonempty = false;
+    let mut header_prefix = String::new();
+    let mut chunk = [0u8; IMAGE_COUNT_READ_CHUNK];
+
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).map_err(|e| {
+        let n = reader.read(&mut chunk).map_err(|e| {
             err_path(
                 ErrorCode::ReadFailed,
                 &txt.display().to_string(),
@@ -120,28 +139,56 @@ pub fn colmap_model_num_images_cancelable(
         if n == 0 {
             break;
         }
-        lines_seen += 1;
-        if lines_seen.is_multiple_of(IMAGE_COUNT_CANCEL_LINES) {
-            cp.poll_now()?;
-        }
-        // Strip trailing newline(s) without allocating.
-        while line.ends_with('\n') || line.ends_with('\r') {
-            line.pop();
-        }
-        if line.is_empty() {
-            continue;
-        }
-        if line.as_bytes()[0] == b'#' {
-            if let Some(idx) = line.find("Number of images:") {
-                let after = &line[idx + "Number of images:".len()..];
-                if let Some(n) = parse_leading_i64(after) {
-                    return Ok(n);
-                }
+        cp.tick(n)?;
+
+        for &b in &chunk[..n] {
+            if b == b'\r' {
+                continue;
             }
-            continue;
+            if b == b'\n' {
+                if in_comment {
+                    if let Some(count) = header_image_count(&header_prefix) {
+                        return Ok(count);
+                    }
+                    header_prefix.clear();
+                } else if saw_nonempty {
+                    rows += 1;
+                    cp.tick(1)?;
+                }
+                at_line_start = true;
+                in_comment = false;
+                saw_nonempty = false;
+                continue;
+            }
+            if at_line_start {
+                at_line_start = false;
+                if b == b'#' {
+                    in_comment = true;
+                    header_prefix.clear();
+                    header_prefix.push('#');
+                    continue;
+                }
+                saw_nonempty = true;
+                continue;
+            }
+            if in_comment {
+                if header_prefix.len() < IMAGE_COUNT_HEADER_CAP {
+                    // COLMAP headers are ASCII; lossy push keeps the cap byte-sized.
+                    header_prefix.push(char::from(b));
+                }
+            } else {
+                saw_nonempty = true;
+            }
         }
+    }
+
+    // Final line without trailing newline (same as former read_line EOF).
+    if in_comment {
+        if let Some(count) = header_image_count(&header_prefix) {
+            return Ok(count);
+        }
+    } else if saw_nonempty {
         rows += 1;
-        cp.tick(1)?;
     }
     Ok(rows / 2)
 }
@@ -524,6 +571,40 @@ mod tests {
             preferred_table_path(&dir, "images", fmt.images),
             Some(dir.join("images.bin"))
         );
+    }
+
+    #[test]
+    fn huge_comment_line_stays_bounded_and_counts_data() {
+        let h = TempHarness::new().unwrap();
+        let dir = h.path().join("m");
+        std::fs::create_dir_all(&dir).unwrap();
+        // One oversized comment (no early header match past cap) + two image rows.
+        let mut body = String::from("# ");
+        body.push_str(&"x".repeat(IMAGE_COUNT_HEADER_CAP + 64 * 1024));
+        body.push_str("\n0 1 0 0 0 0 0 0 1 a.png\n0 0 -1\n1 1 0 0 0 0 0 0 1 b.png\n0 0 -1\n");
+        std::fs::write(dir.join("images.txt"), body).unwrap();
+        assert_eq!(colmap_model_num_images(&dir), 2);
+    }
+
+    #[test]
+    fn cancel_during_image_count_stream_observes_token() {
+        use spirula_core::{CancelReason, ErrorCode};
+        let h = TempHarness::new().unwrap();
+        let dir = h.path().join("m");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Larger than one read chunk so tick(n) fires on the first fill.
+        let mut body = String::new();
+        for i in 0..2_000 {
+            body.push_str(&format!(
+                "{i} 1 0 0 0 0 0 0 1 {}.png\n0 0 -1\n",
+                "a".repeat(40)
+            ));
+        }
+        std::fs::write(dir.join("images.txt"), body).unwrap();
+        let cancel = spirula_core::CancelToken::new();
+        assert!(cancel.request(CancelReason::User));
+        let err = colmap_model_num_images_cancelable(&dir, Some(&cancel)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Canceled);
     }
 
     fn write_recon(root: &Path, rel: &str, count_header: i64) {

@@ -1,6 +1,6 @@
 # P3-F03: COLMAP dataset reading
 
-Status: **进行中 / HOLD** (awaiting independent re-review after round-3 fixes).
+Status: **进行中 / HOLD** (awaiting independent re-review after round-4 cancel/IO fixes).
 Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
 Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
@@ -70,8 +70,10 @@ Host pin holdout: `fixtures/datasets/colmap-goldens/bake-pin/` (regen via
   reset per line).
 - Probe: `images.bin` 8 bytes; Metashape **8192** requires `<document` and
   (`psx:` + `path=` for `.psx` / `<chunk` for xml); `images.txt` full streaming
-  count (header atoll early-return; no 64 KiB approximate fallback).
-- `metadata` + `fs::read` re-checks size (TOCTOU growth).
+  count (header atoll early-return; no 64 KiB approximate fallback; byte-chunk
+  cancel; comment prefix capped — no `read_line` into an unbounded `String`).
+- Text tables: `metadata` + **chunked** cancel-aware read (not whole-file
+  `fs::read`) re-checks size (TOCTOU growth) and ticks `ParseCancel` per chunk.
 - Cancel checkpoints in text observation/track tokenization, binary cstring,
   track association, probe dir scan/sort / image-count stream, and around
   each camera bake.
@@ -118,8 +120,11 @@ input. Rejected payloads are UTF-8-safe length-limited via
 
 ## Remaining gaps (HOLD)
 
-- Independent re-review of round-3 HOLD fixes (streaming count, Metashape
-  sniff, bake arity, eval-local train, ParseMem, holdout, fit cancel docs).
+- Independent re-review of round-3/4 HOLD fixes (streaming count, Metashape
+  sniff, bake arity, eval-local train, ParseMem, holdout, fit cancel docs,
+  text `read_capped` cancel chunks, probe image-count bounded stream).
+- Binary table `BinReader::open` still uses whole-file `fs::read` (cancel only
+  after bytes are resident); text path is chunked.
 - Fitted-model numeric tolerance vs host pin rows may need tightening after
   review (loose tol on FOV/EUCM/thin-prism ladder); regen may rewrite
   `expected.txt` pose to the documented host q/t.

@@ -1,7 +1,8 @@
 //! COLMAP text table readers (`cameras.txt` / `images.txt` / `points3D.txt`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use spirula_core::{CancelToken, ErrorCode};
@@ -15,21 +16,37 @@ use super::types::{
     ColmapCamera, ColmapImage, ColmapObservation, ColmapPoint3D, ColmapPoints3D, ColmapTrackElem,
 };
 
-fn read_capped(path: &Path, mem: &mut ParseMem) -> Result<Vec<u8>, spirula_core::DomainError> {
-    let meta = fs::metadata(path).map_err(|e| {
-        let code = if e.kind() == std::io::ErrorKind::NotFound {
-            ErrorCode::NotFound
-        } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-            ErrorCode::PermissionDenied
-        } else {
-            ErrorCode::ReadFailed
-        };
-        err_path(
-            code,
-            &path.display().to_string(),
-            format!("cannot open: {e}"),
-        )
-    })?;
+/// Chunk size for cancel-aware capped text table reads (avoids whole-file
+/// `fs::read` blocking cancel for up to [`MAX_COLMAP_FILE_BYTES`]).
+const TEXT_READ_CHUNK: usize = 256 * 1024;
+
+fn open_err(path: &Path, e: std::io::Error) -> spirula_core::DomainError {
+    let code = if e.kind() == std::io::ErrorKind::NotFound {
+        ErrorCode::NotFound
+    } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+        ErrorCode::PermissionDenied
+    } else {
+        ErrorCode::ReadFailed
+    };
+    err_path(
+        code,
+        &path.display().to_string(),
+        format!("cannot open: {e}"),
+    )
+}
+
+/// Metadata-gated, budget-charged, cancel-checkpointed table read.
+///
+/// Does **not** call `fs::read`: bytes are streamed in [`TEXT_READ_CHUNK`]
+/// slices so an already-canceled (or mid-read canceled) token is observed
+/// before/while filling the Vec, while still enforcing
+/// [`MAX_COLMAP_FILE_BYTES`] and cumulative [`ParseMem`] charges.
+fn read_capped(
+    path: &Path,
+    mem: &mut ParseMem,
+    cancel: Option<&CancelToken>,
+) -> Result<Vec<u8>, spirula_core::DomainError> {
+    let meta = std::fs::metadata(path).map_err(|e| open_err(path, e))?;
     let len = meta.len();
     if len > MAX_COLMAP_FILE_BYTES {
         return Err(err(
@@ -44,26 +61,58 @@ fn read_capped(path: &Path, mem: &mut ParseMem) -> Result<Vec<u8>, spirula_core:
     // Charge metadata length before allocating so a huge file fails on budget,
     // not only after a successful read.
     mem.charge(len, "file")?;
-    let data = fs::read(path).map_err(|e| {
-        err_path(
-            ErrorCode::ReadFailed,
-            &path.display().to_string(),
-            format!("cannot read: {e}"),
-        )
-    })?;
-    // TOCTOU: reject growth past the metadata-gated budget after read.
-    if data.len() as u64 > MAX_COLMAP_FILE_BYTES {
-        return Err(err(
-            ErrorCode::ValueOutOfRange,
-            "file_size",
-            format!(
-                "COLMAP file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
-                path.display()
-            ),
-        ));
+    let mut charged = len;
+
+    let mut file = File::open(path).map_err(|e| open_err(path, e))?;
+    let mut data = Vec::new();
+    if len > 0 {
+        data.try_reserve(len as usize).map_err(|_| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "file",
+                format!(
+                    "COLMAP file {} reservation of {len} bytes failed",
+                    path.display()
+                ),
+            )
+        })?;
     }
-    if (data.len() as u64) > len {
-        mem.charge((data.len() as u64) - len, "file")?;
+
+    let mut cp = ParseCancel::new(cancel);
+    // Observe cancel before the first blocking read.
+    cp.poll_now()?;
+
+    let mut buf = [0u8; TEXT_READ_CHUNK];
+    let mut read_total = 0u64;
+    loop {
+        let n = file.read(&mut buf).map_err(|e| {
+            err_path(
+                ErrorCode::ReadFailed,
+                &path.display().to_string(),
+                format!("cannot read: {e}"),
+            )
+        })?;
+        if n == 0 {
+            break;
+        }
+        read_total = read_total.saturating_add(n as u64);
+        // TOCTOU: reject growth past the metadata-gated budget during stream.
+        if read_total > MAX_COLMAP_FILE_BYTES {
+            return Err(err(
+                ErrorCode::ValueOutOfRange,
+                "file_size",
+                format!(
+                    "COLMAP file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
+                    path.display()
+                ),
+            ));
+        }
+        if read_total > charged {
+            mem.charge(read_total - charged, "file")?;
+            charged = read_total;
+        }
+        data.extend_from_slice(&buf[..n]);
+        cp.tick(n)?;
     }
     Ok(data)
 }
@@ -164,7 +213,7 @@ pub fn read_cameras_text(
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapCamera>, spirula_core::DomainError> {
     let mut mem = ParseMem::new();
-    let bytes = read_capped(path, &mut mem)?;
+    let bytes = read_capped(path, &mut mem, cancel)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         err_path(
             ErrorCode::MalformedRecord,
@@ -309,7 +358,7 @@ pub fn read_images_text(
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapImage>, spirula_core::DomainError> {
     let mut mem = ParseMem::new();
-    let bytes = read_capped(path, &mut mem)?;
+    let bytes = read_capped(path, &mut mem, cancel)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         err_path(
             ErrorCode::MalformedRecord,
@@ -424,7 +473,7 @@ pub fn read_points3d_text(
     cancel: Option<&CancelToken>,
 ) -> Result<ColmapPoints3D, spirula_core::DomainError> {
     let mut mem = ParseMem::new();
-    let bytes = read_capped(path, &mut mem)?;
+    let bytes = read_capped(path, &mut mem, cancel)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         err_path(
             ErrorCode::MalformedRecord,
