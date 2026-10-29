@@ -33,8 +33,8 @@ use crate::notify::SubscribeError;
 use crate::notify::{Notifier, Subscription};
 use crate::state::SessionState;
 use crate::worker::{
-    FakeWorkerBehavior, ImagePrepareOk, ImagePrepareRequest, StallGate, WorkerEvent, WorkerHandle,
-    WorkerRequest,
+    DatasetLoadOk, FakeWorkerBehavior, ImagePrepareOk, ImagePrepareRequest, StallGate, WorkerEvent,
+    WorkerHandle, WorkerRequest,
 };
 
 struct LogTail {
@@ -507,6 +507,7 @@ impl ApplicationService {
             event,
             WorkerEvent::LoadDone { .. }
                 | WorkerEvent::ImagePrepareDone { .. }
+                | WorkerEvent::DatasetLoadDone { .. }
                 | WorkerEvent::RunTerminal { .. }
         );
         let tx = if is_result {
@@ -767,7 +768,7 @@ fn admit_shutdown(st: &mut State, notifier: &Arc<Notifier>) -> SubmitOutcome {
 
 fn validate_in_state(phase: SessionState, payload: &CommandPayload) -> Result<(), DomainError> {
     let ok = match payload {
-        CommandPayload::ProbeLoad { .. } => {
+        CommandPayload::ProbeLoad { .. } | CommandPayload::LoadDataset { .. } => {
             matches!(
                 phase,
                 SessionState::Idle | SessionState::Ready | SessionState::Failed
@@ -950,6 +951,31 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 cancel,
             });
         }
+        CommandPayload::LoadDataset {
+            path,
+            recon_dir,
+            eval_mode,
+            split,
+        } => {
+            transition(
+                &mut st,
+                &shared.notifier,
+                SessionState::Loading,
+                "load_dataset",
+            );
+            let stall = shared.stall.clone_arc();
+            drop(st);
+            lock(&shared.worker).send(WorkerRequest::LoadDataset {
+                run_id,
+                command_id: id,
+                path,
+                recon_dir,
+                eval_mode,
+                split,
+                cancel,
+                stall,
+            });
+        }
         CommandPayload::ProbeRun { steps } => {
             transition(
                 &mut st,
@@ -1062,6 +1088,9 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
         | WorkerEvent::ImagePrepareDone {
             run_id, command_id, ..
         }
+        | WorkerEvent::DatasetLoadDone {
+            run_id, command_id, ..
+        }
         | WorkerEvent::RunTerminal {
             run_id, command_id, ..
         } => (*run_id, *command_id),
@@ -1134,6 +1163,105 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 RunOutcome::Completed { step: 0 },
                 Some(run_id),
             );
+            complete_pending_stop(&mut st, &shared.notifier);
+        }
+        WorkerEvent::DatasetLoadDone { result, .. } => {
+            let is_load = matches!(st.active_payload, Some(CommandPayload::LoadDataset { .. }));
+            if !is_load || st.phase != SessionState::Loading {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            if st.cancel.is_cancelled()
+                || st.pending_stop.is_some()
+                || st.pending_shutdown.is_some()
+            {
+                let reason = st.cancel.reason().unwrap_or_else(|| {
+                    if st.pending_shutdown.is_some() {
+                        CancelReason::Shutdown
+                    } else {
+                        CancelReason::User
+                    }
+                });
+                // Leave Loading so a fresh LoadDataset can admit (Idle).
+                transition(
+                    &mut st,
+                    &shared.notifier,
+                    SessionState::Idle,
+                    "dataset_canceled",
+                );
+                finish_active(
+                    &mut st,
+                    &shared.notifier,
+                    command_id,
+                    RunOutcome::Canceled {
+                        step: 0,
+                        reason,
+                        saved_checkpoint: None,
+                    },
+                    Some(run_id),
+                );
+                complete_pending_stop(&mut st, &shared.notifier);
+                return;
+            }
+            match result {
+                Ok(DatasetLoadOk::Summary {
+                    path,
+                    format,
+                    num_cameras,
+                    num_images,
+                    num_points,
+                    num_train,
+                    num_eval,
+                }) => {
+                    st.loaded_label = Some(path.clone());
+                    publish_control(
+                        &mut st,
+                        &shared.notifier,
+                        Some(command_id),
+                        Some(run_id),
+                        Event::DatasetLoaded {
+                            path,
+                            format,
+                            num_cameras,
+                            num_images,
+                            num_points,
+                            num_train,
+                            num_eval,
+                        },
+                    );
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Ready,
+                        "dataset_loaded",
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Completed { step: 0 },
+                        Some(run_id),
+                    );
+                }
+                Err(error) => {
+                    let error = bound_error(&error, &st.limits);
+                    // Panic / parse failure must land in Failed so Reset works
+                    // (RunTerminal::Failed is dropped for dataset payloads).
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Failed,
+                        "dataset_failed",
+                    );
+                    finish_active(
+                        &mut st,
+                        &shared.notifier,
+                        command_id,
+                        RunOutcome::Failed { error },
+                        Some(run_id),
+                    );
+                }
+            }
             complete_pending_stop(&mut st, &shared.notifier);
         }
         WorkerEvent::ImagePrepareDone { result, .. } => {
@@ -1287,22 +1415,33 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                 return;
             }
-            // Image prepare cancel arrives as RunTerminal only (never Prepared).
+            // Image/dataset cancel arrives as RunTerminal only (never Prepared/Loaded).
             // Keep Idle|Ready phase; do not run probe checkpoint/save machine.
-            let is_image = matches!(
+            let is_image_or_dataset = matches!(
                 st.active_payload,
                 Some(
                     CommandPayload::PrepareOrientedImage { .. }
                         | CommandPayload::PrepareNormalizedMask { .. }
+                        | CommandPayload::LoadDataset { .. }
                 )
             );
-            if is_image {
+            if is_image_or_dataset {
                 let _ = (checkpoint_label, save_failed, final_progress);
                 let outcome = outcome_from_terminal(outcome);
                 // Exactly-once cancel terminal; never Completed after cancel.
                 if !matches!(outcome, RunOutcome::Canceled { .. }) {
                     st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                     return;
+                }
+                // LoadDataset entered Loading; leave it so a fresh load admits.
+                // Image prepare never leaves Idle/Ready, so skip transition.
+                if matches!(st.active_payload, Some(CommandPayload::LoadDataset { .. })) {
+                    transition(
+                        &mut st,
+                        &shared.notifier,
+                        SessionState::Idle,
+                        "dataset_canceled",
+                    );
                 }
                 finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
                 complete_pending_stop(&mut st, &shared.notifier);

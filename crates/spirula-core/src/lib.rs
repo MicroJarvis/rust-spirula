@@ -51,7 +51,7 @@ pub use config_doc::{
 };
 pub use distortion_fit::{
     FitOptions, FitResult, FitTarget, FittedWithSource, K_EXACT_FIT_PX, SourceProject,
-    fallback_fisheye_none, fit_camera, fit_camera_auto,
+    fallback_fisheye_none, fit_camera, fit_camera_auto, fit_camera_auto_cancelable,
 };
 pub use error::{
     ContextKey, DomainError, DuplicateContextKey, EXIT_CANCELED, EXIT_FAILURE, EXIT_SUCCESS,

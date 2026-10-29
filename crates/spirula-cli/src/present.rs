@@ -44,7 +44,10 @@ pub fn help_text() -> String {
         "  spirula probe-run --steps <n> [--load-label <name>] [--log-dir <path>] [--step-delay-ms <n>] [--save|--no-save]\n",
     );
     out.push_str(
-        "  spirula probe --label <name> [--steps <n>] [--log-dir <path>] [--step-delay-ms <n>]\n\n",
+        "  spirula probe --label <name> [--steps <n>] [--log-dir <path>] [--step-delay-ms <n>]\n",
+    );
+    out.push_str(
+        "  spirula load-dataset --path <dir> [--recon-dir <rel>] [--eval-mode all|fraction|interval|filename] [--split train|eval|all] [--log-dir <path>]\n\n",
     );
     out.push_str("Unavailable in this build:\n");
     out.push_str("  train     (P5-F07)\n");
@@ -60,9 +63,9 @@ pub fn help_text() -> String {
 pub fn capabilities_text() -> String {
     let mut out = String::new();
     out.push_str("capabilities:\n");
-    out.push_str("  available: help, capabilities, probe-load, probe-run, probe\n");
+    out.push_str("  available: help, capabilities, probe-load, probe-run, probe, load-dataset\n");
     out.push_str("  unavailable: train, preview\n");
-    out.push_str("  session: shared spirula-application (fake probes only)\n");
+    out.push_str("  session: shared spirula-application (probes + COLMAP load)\n");
     out.push_str("  disk_log: optional --log-dir (application-owned rotated sink)\n");
     out.push_str("  errors: DomainError codes; SPIRULA_ERROR_CODES=1 appends (code: …)\n");
     out
@@ -280,6 +283,17 @@ fn format_event_line(envelope: &EventEnvelope) -> String {
         Event::Completed { outcome } => format!("completed {}\n", format_outcome(outcome)),
         Event::ProbeLoaded { label } => format!("probe-loaded {label}\n"),
         Event::ProbeStarted { steps } => format!("probe-started steps={steps}\n"),
+        Event::DatasetLoaded {
+            path,
+            format,
+            num_cameras,
+            num_images,
+            num_points,
+            num_train,
+            num_eval,
+        } => format!(
+            "dataset-loaded path={path} format={format} cameras={num_cameras} images={num_images} points={num_points} train={num_train} eval={num_eval}\n"
+        ),
         Event::ImagePrepared {
             path,
             width,

@@ -30,6 +30,14 @@ pub enum CliAction {
         step_delay_ms: Option<u64>,
         save_on_stop: bool,
     },
+    /// Real COLMAP dataset load through the application owner (P3-F03).
+    LoadDataset {
+        path: PathBuf,
+        recon_dir: Option<String>,
+        eval_mode: String,
+        split: String,
+        log_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug)]
@@ -56,6 +64,7 @@ pub fn parse_args(args: &[&str]) -> Result<CliAction, ParseError> {
         "probe-load" => parse_probe_load(&mut iter),
         "probe-run" => parse_probe_run(&mut iter),
         "probe" => parse_probe(&mut iter),
+        "load-dataset" => parse_load_dataset(&mut iter),
         "train" | "preview" => Err(ParseError::Usage(
             usage_error(
                 ErrorCode::UnimplementedOption,
@@ -197,6 +206,74 @@ where
         log_dir,
         step_delay_ms,
         save_on_stop,
+    })
+}
+
+fn parse_load_dataset<'a, I>(iter: &mut std::iter::Peekable<I>) -> Result<CliAction, ParseError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut path: Option<PathBuf> = None;
+    let mut recon_dir: Option<String> = None;
+    let mut eval_mode = "all".to_string();
+    let mut split = "train".to_string();
+    let mut log_dir: Option<PathBuf> = None;
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--path" => {
+                path = Some(PathBuf::from(require_value(iter, "--path")?));
+            }
+            "--recon-dir" => {
+                recon_dir = Some(require_value(iter, "--recon-dir")?.to_string());
+            }
+            "--eval-mode" => {
+                eval_mode = require_value(iter, "--eval-mode")?.to_string();
+            }
+            "--split" => {
+                split = require_value(iter, "--split")?.to_string();
+            }
+            "--log-dir" => {
+                log_dir = Some(PathBuf::from(require_value(iter, "--log-dir")?));
+            }
+            "--help" | "-h" => return Err(ParseError::Help),
+            other => {
+                return Err(ParseError::Usage(usage_error(
+                    ErrorCode::UnknownCommand,
+                    &format!("unknown load-dataset flag '{other}'"),
+                )));
+            }
+        }
+    }
+    let path = path.ok_or_else(|| {
+        ParseError::Usage(usage_error(
+            ErrorCode::InvalidArgument,
+            "load-dataset requires --path",
+        ))
+    })?;
+    match eval_mode.as_str() {
+        "all" | "fraction" | "interval" | "filename" => {}
+        other => {
+            return Err(ParseError::Usage(usage_error(
+                ErrorCode::InvalidArgument,
+                &format!("unknown eval_mode '{other}'"),
+            )));
+        }
+    }
+    match split.as_str() {
+        "train" | "eval" | "all" => {}
+        other => {
+            return Err(ParseError::Usage(usage_error(
+                ErrorCode::InvalidArgument,
+                &format!("unknown split '{other}'"),
+            )));
+        }
+    }
+    Ok(CliAction::LoadDataset {
+        path,
+        recon_dir,
+        eval_mode,
+        split,
+        log_dir,
     })
 }
 

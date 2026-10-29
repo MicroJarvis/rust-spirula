@@ -39,9 +39,64 @@
       "sha256": "50259f7b2d854bcb681474153f727b0f95466a24a77881a49cfc33b8deb04a74"
     },
     {
+      "path": "datasets/colmap-goldens/bake-pin/README.md",
+      "bytes": 1117,
+      "sha256": "36433abc5a4d9d2ee28cad6c61cbd7cf246d8f2d7c5989926059f34649be2898"
+    },
+    {
+      "path": "datasets/colmap-goldens/bake-pin/expected.txt",
+      "bytes": 4169,
+      "sha256": "4a85ed8e2fc60ad6bd96d027cd92a3c8fc103349685d0f3ed20c85303b889ab8"
+    },
+    {
+      "path": "datasets/colmap-goldens/bake-pin/inputs.json",
+      "bytes": 694,
+      "sha256": "e0c15e7d5f547e4f262053f4c937c65ce4de12816219cadbe12a4096edac26fb"
+    },
+    {
+      "path": "datasets/colmap-goldens/bake-pin/provenance.txt",
+      "bytes": 378,
+      "sha256": "07ffff5544067b5b37f5729036b6c8d0dbe70da20830f11c4a103a1665ba417f"
+    },
+    {
+      "path": "datasets/colmap-goldens/nontrivial/cameras.txt",
+      "bytes": 96,
+      "sha256": "4998030a7db9358819e4db94f49ccd8d678c7bf68cc0e14c8d3776d5b259cce1"
+    },
+    {
+      "path": "datasets/colmap-goldens/nontrivial/images.txt",
+      "bytes": 192,
+      "sha256": "6009b9100038817b6265a393c23996ce3b0704f42a837b662a16a577243b51f2"
+    },
+    {
+      "path": "datasets/colmap-goldens/nontrivial/images/img_eval_b.png",
+      "bytes": 8494,
+      "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
+    },
+    {
+      "path": "datasets/colmap-goldens/nontrivial/images/img_train_a.png",
+      "bytes": 8494,
+      "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
+    },
+    {
+      "path": "datasets/tiny-colmap/cameras.bin",
+      "bytes": 64,
+      "sha256": "2b068d2f3df87a9a89d4707a2bba6c2d6caaebdc5f8c103e39f134767e6a5ab0"
+    },
+    {
       "path": "datasets/tiny-colmap/cameras.txt",
       "bytes": 155,
       "sha256": "5fe6aaf8ce3c92ce8e17fe9362e3d840f81911dde4860928baf6c32368e8c611"
+    },
+    {
+      "path": "datasets/tiny-colmap/images.bin",
+      "bytes": 89,
+      "sha256": "4f00549fce9133b5ca725fa73e79901aecf69bde0507df93a81e258b06434554"
+    },
+    {
+      "path": "datasets/tiny-colmap/images.txt",
+      "bytes": 206,
+      "sha256": "1ee640b9e9e44a46af215f1b33b44a313832226745274fd3ff31a2f42547fadf"
     },
     {
       "path": "datasets/tiny-colmap/images/tiny.png",
@@ -49,9 +104,9 @@
       "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
     },
     {
-      "path": "datasets/tiny-colmap/images.txt",
-      "bytes": 206,
-      "sha256": "1ee640b9e9e44a46af215f1b33b44a313832226745274fd3ff31a2f42547fadf"
+      "path": "datasets/tiny-colmap/points3D.bin",
+      "bytes": 244,
+      "sha256": "49eb5b189690e49a84bb46f986bf6e05f086d82eb851c5b8514cc8850015a7e3"
     },
     {
       "path": "datasets/tiny-colmap/points3D.txt",

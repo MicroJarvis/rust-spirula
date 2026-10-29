@@ -5,11 +5,13 @@
 //! report persistence (JSON + atomic publish) and content hashing helpers.
 //! P3-F02 owns image decode (PNG/JPEG/BMP/TGA/TIFF/EXR), EXIF orientation,
 //! mask normalize (flip/offset), and depth/normal aux maps.
+//! P3-F03 owns COLMAP text/binary dataset reading (not `fixtures` checkers).
 //! Checkpoint bundle schema and completion markers stay in P5-F05.
 
 pub mod atomic;
 pub mod camera_catalog;
 pub mod cancel_checkpoint;
+pub mod colmap;
 pub mod config_fs;
 pub mod fixtures;
 pub mod hash;
@@ -25,6 +27,10 @@ pub mod temp_harness;
 
 pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entry};
 pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CANCEL_WORK_CHUNK, CancelCheckpoint};
+pub use colmap::{
+    ColmapLoadConfig, DatasetFormat, DatasetLoadSummary, DatasetProbe, ParsedDataset,
+    load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset, probe_dataset,
+};
 
 pub use atomic::{
     PublishLease, PublishOptions, PublishOutcome, acquire_publish_lease, is_publish_temp,

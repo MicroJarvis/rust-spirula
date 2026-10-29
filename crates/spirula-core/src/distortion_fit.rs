@@ -484,6 +484,16 @@ fn scan_domain(
     h: f64,
     cap: f64,
 ) -> Domain {
+    scan_domain_cancelable(src, w, h, cap, None).expect("scan without cancel")
+}
+
+fn scan_domain_cancelable(
+    src: &(dyn Fn(f64, f64, f64) -> Result<(f64, f64), DomainError> + '_),
+    w: f64,
+    h: f64,
+    cap: f64,
+    cancel: Option<&crate::CancelToken>,
+) -> Result<Domain, DomainError> {
     let mut dom = Domain::new();
     let (mut cu, mut cv) = (0.5 * w, 0.5 * h);
     if let Some((u, v)) = call_src(src, 0.0, 0.0, 1.0) {
@@ -491,6 +501,9 @@ fn scan_domain(
         cv = v;
     }
     for a in 0..Domain::AZ {
+        if let Some(c) = cancel {
+            c.check()?;
+        }
         let phi = 2.0 * PI * a as f64 / Domain::AZ as f64;
         let cp = phi.cos();
         let sp = phi.sin();
@@ -547,7 +560,7 @@ fn scan_domain(
         }
         dom.theta[a] = lo.max(0.0);
     }
-    dom
+    Ok(dom)
 }
 
 fn domain_max(d: &Domain) -> f64 {
@@ -840,6 +853,19 @@ pub fn fit_camera_auto(
     height: u32,
     opt: FitOptions,
 ) -> Result<FitResult, DomainError> {
+    fit_camera_auto_cancelable(src, width, height, opt, None)
+}
+
+/// Same as [`fit_camera_auto`] with cancel checkpoints between domain-scan
+/// azimuth steps and between candidate models. Dense mid-`fit_model` work is
+/// still non-preemptible.
+pub fn fit_camera_auto_cancelable(
+    src: &(dyn Fn(f64, f64, f64) -> Result<(f64, f64), DomainError> + '_),
+    width: u32,
+    height: u32,
+    opt: FitOptions,
+    cancel: Option<&crate::CancelToken>,
+) -> Result<FitResult, DomainError> {
     if width == 0 || height == 0 {
         return Err(out_of_range(
             "image_size",
@@ -849,7 +875,7 @@ pub fn fit_camera_auto(
     }
     let w = f64::from(width);
     let h = f64::from(height);
-    let dom = scan_domain(src, w, h, WIDEST_THETA);
+    let dom = scan_domain_cancelable(src, w, h, WIDEST_THETA, cancel)?;
     let half_fov = domain_max(&dom);
     let fov_deg = 2.0 * half_fov * 180.0 / PI;
 
@@ -868,6 +894,9 @@ pub fn fit_camera_auto(
     res.fov_deg = fov_deg;
     let mut have = false;
     for &cand in &cands {
+        if let Some(c) = cancel {
+            c.check()?;
+        }
         let r = fit_model(src, w, h, cand, &opt, &dom);
         if r.samples == 0 {
             continue;
@@ -1121,5 +1150,37 @@ mod tests {
         let wrapped = FittedWithSource::from_fit(r, COLMAP_FOV, params).unwrap();
         assert_eq!(wrapped.source_model, -1);
         assert_eq!(wrapped.original_source_model, COLMAP_FOV);
+    }
+
+    #[test]
+    fn fit_camera_auto_cancelable_observes_token_and_is_bounded() {
+        use crate::{CancelReason, CancelToken};
+        use std::time::Instant;
+
+        let params = {
+            let mut p = [0.0f32; MAX_PARAMS];
+            p[0] = 500.0;
+            p[1] = 510.0;
+            p[2] = 320.0;
+            p[3] = 240.0;
+            p[4] = 0.9;
+            p
+        };
+        let src = |x, y, z| source_camera::project(COLMAP_FOV, &params, x, y, z);
+
+        let t0 = Instant::now();
+        let _ = fit_camera_auto(&src, 64, 48, FitOptions::default()).unwrap();
+        let uncanceled_ms = t0.elapsed().as_millis();
+        // Documented host cost: tens of ms at 64×48; keep soft upper bound.
+        assert!(
+            uncanceled_ms < 5_000,
+            "uncanceled FOV fit took {uncanceled_ms}ms (expected <<5s)"
+        );
+
+        let cancel = CancelToken::new();
+        assert!(cancel.request(CancelReason::User));
+        let err = fit_camera_auto_cancelable(&src, 64, 48, FitOptions::default(), Some(&cancel))
+            .unwrap_err();
+        assert_eq!(err.code(), crate::ErrorCode::Canceled);
     }
 }

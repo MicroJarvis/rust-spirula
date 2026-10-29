@@ -50,6 +50,7 @@ pub enum LogLevel {
 
 /// Control and progress event bodies.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // terminal/control payloads carry owned strings
 pub enum Event {
     StateChanged {
         from: SessionState,
@@ -79,6 +80,16 @@ pub enum Event {
     },
     ProbeStarted {
         steps: u64,
+    },
+    /// Real P3-F03 COLMAP load finished (before command terminal). Never after cancel.
+    DatasetLoaded {
+        path: String,
+        format: String,
+        num_cameras: u64,
+        num_images: u64,
+        num_points: u64,
+        num_train: u64,
+        num_eval: u64,
     },
     /// Real P3-F02 orient bake finished (before command terminal).
     ImagePrepared {
@@ -133,6 +144,23 @@ impl Clone for Event {
                 label: label.clone(),
             },
             Self::ProbeStarted { steps } => Self::ProbeStarted { steps: *steps },
+            Self::DatasetLoaded {
+                path,
+                format,
+                num_cameras,
+                num_images,
+                num_points,
+                num_train,
+                num_eval,
+            } => Self::DatasetLoaded {
+                path: path.clone(),
+                format: format.clone(),
+                num_cameras: *num_cameras,
+                num_images: *num_images,
+                num_points: *num_points,
+                num_train: *num_train,
+                num_eval: *num_eval,
+            },
             Self::ImagePrepared {
                 path,
                 width,
@@ -196,6 +224,7 @@ impl Event {
             },
             Self::ProbeLoaded { label } => 32 + label.len(),
             Self::ProbeStarted { .. } => 32,
+            Self::DatasetLoaded { path, format, .. } => 64 + path.len() + format.len(),
             Self::ImagePrepared { path, .. } => 48 + path.len(),
             Self::MaskPrepared { path, .. } => 48 + path.len(),
             Self::CheckpointSaved { label, .. } => 48 + label.len(),
@@ -273,6 +302,7 @@ pub enum ReplayOutcome {
 
 /// Lookup of a prior command's terminal.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // Ready retains a full control envelope
 pub enum CommandResult {
     Pending,
     Ready(EventEnvelope),

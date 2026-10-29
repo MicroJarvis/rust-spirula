@@ -17,7 +17,7 @@ impl Command {
     }
 }
 
-/// Session command surface. Probe* stay fake; P3-F02 image prepare is real IO.
+/// Session command surface. Probe* stay fake; P3-F02/P3-F03 paths are real IO.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandPayload {
     /// Fake dataset load. `label` is a non-empty probe tag, not a path read.
@@ -27,6 +27,15 @@ pub enum CommandPayload {
     /// Fake multi-step work. Does not claim training capability.
     ProbeRun {
         steps: u64,
+    },
+    /// Real COLMAP dataset load via `spirula-io` (P3-F03). Idle|Ready|Failed.
+    LoadDataset {
+        path: String,
+        /// Empty → auto-detect reconstruction dir.
+        recon_dir: String,
+        eval_mode: String,
+        /// `train` | `eval` | `all`.
+        split: String,
     },
     /// Real PNG/JPEG orient bake via `spirula-io` (P3-F02). Idle|Ready only.
     PrepareOrientedImage {
@@ -63,6 +72,7 @@ impl CommandPayload {
         match self {
             Self::ProbeLoad { .. } => "probe_load",
             Self::ProbeRun { .. } => "probe_run",
+            Self::LoadDataset { .. } => "load_dataset",
             Self::PrepareOrientedImage { .. } => "prepare_oriented_image",
             Self::PrepareNormalizedMask { .. } => "prepare_normalized_mask",
             Self::Pause => "pause",
@@ -86,6 +96,7 @@ impl CommandPayload {
             self,
             Self::ProbeLoad { .. }
                 | Self::ProbeRun { .. }
+                | Self::LoadDataset { .. }
                 | Self::PrepareOrientedImage { .. }
                 | Self::PrepareNormalizedMask { .. }
         )
@@ -108,6 +119,43 @@ impl CommandPayload {
                     .with_context(ContextKey::Actual, "0")
                     .expect("actual"));
                 }
+                Ok(())
+            }
+            Self::LoadDataset {
+                path,
+                recon_dir,
+                eval_mode,
+                split,
+            } => {
+                crate::bound::check_image_path(path)?;
+                crate::bound::check_recon_dir(recon_dir)?;
+                crate::bound::check_load_dataset_enum("eval_mode", eval_mode)?;
+                crate::bound::check_load_dataset_enum("split", split)?;
+                match eval_mode.as_str() {
+                    "all" | "fraction" | "interval" | "filename" => {}
+                    _ => {
+                        return Err(DomainError::try_new(
+                            ErrorCode::InvalidArgument,
+                            "unknown eval_mode (expected all|fraction|interval|filename)",
+                        )
+                        .expect("message")
+                        .with_context(ContextKey::Field, "eval_mode")
+                        .expect("field"));
+                    }
+                }
+                match split.as_str() {
+                    "train" | "eval" | "all" => {}
+                    _ => {
+                        return Err(DomainError::try_new(
+                            ErrorCode::InvalidArgument,
+                            "unknown split (expected train|eval|all)",
+                        )
+                        .expect("message")
+                        .with_context(ContextKey::Field, "split")
+                        .expect("field"));
+                    }
+                }
+                let _ = limits;
                 Ok(())
             }
             Self::PrepareOrientedImage {
@@ -140,6 +188,12 @@ impl CommandPayload {
         match self {
             Self::ProbeLoad { label } => 16 + label.len(),
             Self::ProbeRun { .. } => 16,
+            Self::LoadDataset {
+                path,
+                recon_dir,
+                eval_mode,
+                split,
+            } => 32 + path.len() + recon_dir.len() + eval_mode.len() + split.len(),
             Self::PrepareOrientedImage { path, .. } => 24 + path.len(),
             Self::PrepareNormalizedMask { path, .. } => 40 + path.len(),
             Self::Stop { .. } => 12,

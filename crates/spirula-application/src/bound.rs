@@ -58,6 +58,35 @@ pub(crate) fn check_image_path(path: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
+/// Nonempty `recon_dir` shares the filesystem path cap; empty means auto-detect.
+pub(crate) fn check_recon_dir(recon_dir: &str) -> Result<(), DomainError> {
+    if recon_dir.is_empty() {
+        return Ok(());
+    }
+    if recon_dir.len() > IMAGE_PATH_MAX_BYTES {
+        return Err(reject_oversized(
+            "recon_dir",
+            recon_dir.len(),
+            IMAGE_PATH_MAX_BYTES,
+        ));
+    }
+    Ok(())
+}
+
+/// Short enum tokens (`eval_mode` / `split`); never concatenate the input.
+pub(crate) const LOAD_DATASET_ENUM_MAX_BYTES: usize = 32;
+
+pub(crate) fn check_load_dataset_enum(field: &str, value: &str) -> Result<(), DomainError> {
+    if value.len() > LOAD_DATASET_ENUM_MAX_BYTES {
+        return Err(reject_oversized(
+            field,
+            value.len(),
+            LOAD_DATASET_ENUM_MAX_BYTES,
+        ));
+    }
+    Ok(())
+}
+
 fn bound_image_path(path: String) -> String {
     if path.len() > IMAGE_PATH_MAX_BYTES {
         omit_label(path.len())
@@ -216,6 +245,39 @@ pub(crate) fn bound_command_payload(
                 label: omit_label(label.len()),
             }
         }
+        CommandPayload::LoadDataset {
+            path,
+            recon_dir,
+            eval_mode,
+            split,
+        } => {
+            let path = if path.len() > limits.label_max_bytes {
+                omit_label(path.len())
+            } else {
+                path
+            };
+            let recon_dir = if recon_dir.len() > limits.label_max_bytes {
+                omit_label(recon_dir.len())
+            } else {
+                recon_dir
+            };
+            let eval_mode = if eval_mode.len() > limits.label_max_bytes {
+                omit_label(eval_mode.len())
+            } else {
+                eval_mode
+            };
+            let split = if split.len() > limits.label_max_bytes {
+                omit_label(split.len())
+            } else {
+                split
+            };
+            CommandPayload::LoadDataset {
+                path,
+                recon_dir,
+                eval_mode,
+                split,
+            }
+        }
         CommandPayload::PrepareOrientedImage {
             path,
             orientation,
@@ -346,6 +408,37 @@ pub(crate) fn sanitize_worker_event(
                 Err(error) => Err(bound_error(&error, limits)),
             };
             Some(WorkerEvent::ImagePrepareDone {
+                run_id,
+                command_id,
+                result,
+            })
+        }
+        WorkerEvent::DatasetLoadDone {
+            run_id,
+            command_id,
+            result,
+        } => {
+            let result = match result {
+                Ok(crate::worker::DatasetLoadOk::Summary {
+                    path,
+                    format,
+                    num_cameras,
+                    num_images,
+                    num_points,
+                    num_train,
+                    num_eval,
+                }) => Ok(crate::worker::DatasetLoadOk::Summary {
+                    path: bound_image_path(path),
+                    format: bound_retained_label(format, limits),
+                    num_cameras,
+                    num_images,
+                    num_points,
+                    num_train,
+                    num_eval,
+                }),
+                Err(error) => Err(bound_error(&error, limits)),
+            };
+            Some(WorkerEvent::DatasetLoadDone {
                 run_id,
                 command_id,
                 result,

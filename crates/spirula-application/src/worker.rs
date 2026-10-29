@@ -101,6 +101,20 @@ pub enum ImagePrepareOk {
     },
 }
 
+/// Successful dataset load summary (DatasetLoaded fields only).
+#[derive(Debug, Clone)]
+pub enum DatasetLoadOk {
+    Summary {
+        path: String,
+        format: String,
+        num_cameras: u64,
+        num_images: u64,
+        num_points: u64,
+        num_train: u64,
+        num_eval: u64,
+    },
+}
+
 /// Messages the owner sends to the worker thread.
 #[derive(Debug)]
 pub(crate) enum WorkerRequest {
@@ -126,6 +140,16 @@ pub(crate) enum WorkerRequest {
         request: ImagePrepareRequest,
         cancel: CancelToken,
         /// Shared with probe stall gate so tests can hold decode while Stop runs.
+        stall: Arc<Mutex<bool>>,
+    },
+    LoadDataset {
+        run_id: RunId,
+        command_id: CommandId,
+        path: String,
+        recon_dir: String,
+        eval_mode: String,
+        split: String,
+        cancel: CancelToken,
         stall: Arc<Mutex<bool>>,
     },
     Shutdown,
@@ -155,6 +179,12 @@ pub enum WorkerEvent {
         run_id: RunId,
         command_id: CommandId,
         result: Result<ImagePrepareOk, spirula_core::DomainError>,
+    },
+    /// Dataset load finished. Never paired with DatasetLoaded after cancel.
+    DatasetLoadDone {
+        run_id: RunId,
+        command_id: CommandId,
+        result: Result<DatasetLoadOk, spirula_core::DomainError>,
     },
     RunTerminal {
         run_id: RunId,
@@ -245,6 +275,52 @@ fn worker_loop(
     loop {
         match rx.recv() {
             Ok(WorkerRequest::Shutdown) => break,
+            Ok(WorkerRequest::LoadDataset {
+                run_id,
+                command_id,
+                path,
+                recon_dir,
+                eval_mode,
+                split,
+                cancel,
+                stall,
+            }) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_dataset_load(
+                        &progress_tx,
+                        &result_tx,
+                        &limits,
+                        &behavior,
+                        run_id,
+                        command_id,
+                        path,
+                        recon_dir,
+                        eval_mode,
+                        split,
+                        cancel,
+                        stall,
+                    );
+                }));
+                if result.is_err() {
+                    // Route via DatasetLoadDone so the owner can arbitrate
+                    // Stop/Shutdown vs Failed (RunTerminal Failed is dropped for
+                    // image/dataset payloads — see session apply_worker_event).
+                    let err = spirula_core::DomainError::try_new(
+                        spirula_core::ErrorCode::Internal,
+                        "dataset load worker panicked",
+                    )
+                    .expect("message");
+                    forward_result(
+                        &result_tx,
+                        &limits,
+                        WorkerEvent::DatasetLoadDone {
+                            run_id,
+                            command_id,
+                            result: Err(err),
+                        },
+                    );
+                }
+            }
             Ok(WorkerRequest::Load {
                 run_id,
                 command_id,
@@ -572,6 +648,85 @@ fn run_probe(
 
 fn note_panic_progress(slot: &Arc<Mutex<Option<ProgressSnapshot>>>, snapshot: ProgressSnapshot) {
     *lock(slot) = Some(snapshot);
+}
+
+/// Run admitted COLMAP load off the owner thread. Canceled work emits only
+/// `RunTerminal::Canceled` (never `DatasetLoadDone` / DatasetLoaded).
+#[allow(clippy::too_many_arguments)]
+fn run_dataset_load(
+    progress_tx: &SyncSender<WorkerEvent>,
+    result_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
+    behavior: &Arc<Mutex<FakeWorkerBehavior>>,
+    run_id: RunId,
+    command_id: CommandId,
+    path: String,
+    recon_dir: String,
+    eval_mode: String,
+    split: String,
+    cancel: CancelToken,
+    stall: Arc<Mutex<bool>>,
+) {
+    if wait_image_gate(progress_tx, limits, run_id, command_id, &cancel, &stall).is_err() {
+        hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+        finish_canceled(
+            result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+        );
+        return;
+    }
+
+    // Test injection: panic after the stall gate so after-start cancel races work.
+    if matches!(*lock(behavior), FakeWorkerBehavior::Panic) {
+        panic!("injected dataset load worker panic");
+    }
+
+    let outcome = match crate::dataset_ops::run_load_colmap_cancelable(
+        std::path::Path::new(&path),
+        if recon_dir.is_empty() {
+            None
+        } else {
+            Some(recon_dir.as_str())
+        },
+        &eval_mode,
+        &split,
+        Some(&cancel),
+    ) {
+        crate::dataset_ops::DatasetWorkResult::Ready(summary) => Ok(DatasetLoadOk::Summary {
+            path: summary.path,
+            format: summary.format,
+            num_cameras: summary.num_cameras,
+            num_images: summary.num_images,
+            num_points: summary.num_points,
+            num_train: summary.num_train,
+            num_eval: summary.num_eval,
+        }),
+        crate::dataset_ops::DatasetWorkResult::Failed(e) => Err(e),
+        crate::dataset_ops::DatasetWorkResult::Canceled => {
+            hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+            finish_canceled(
+                result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+            );
+            return;
+        }
+    };
+
+    if cancel.is_cancelled() {
+        hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+        finish_canceled(
+            result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+        );
+        return;
+    }
+
+    forward_result(
+        result_tx,
+        limits,
+        WorkerEvent::DatasetLoadDone {
+            run_id,
+            command_id,
+            result: outcome,
+        },
+    );
 }
 
 /// Run admitted image prepare off the owner thread. Cancel is polled before

@@ -941,6 +941,20 @@ fn stdout_ofd_flags_unchanged_after_second_sigint_dfl_death() {
 }
 
 #[test]
+fn load_dataset_subprocess_tiny_colmap() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/datasets/tiny-colmap");
+    let path_s = path.display().to_string();
+    let mut s = ChildSession::spawn(&["load-dataset", "--path", &path_s], &[]);
+    s.wait_stdout_contains("dataset-loaded", Duration::from_secs(10))
+        .expect("dataset-loaded");
+    s.wait_stdout_contains("completed ok", Duration::from_secs(5))
+        .expect("completed");
+    let status = s.wait_exit(Duration::from_secs(5));
+    assert_eq!(status.code(), Some(0), "stdout={}", s.collected);
+}
+
+#[test]
 fn application_command_result_recovers_without_subscriber() {
     use spirula_application::{
         ApplicationService, Command, CommandPayload, CommandResult, Event, SessionLimits,
