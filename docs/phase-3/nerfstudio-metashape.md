@@ -1,6 +1,7 @@
 # P3-F04: Nerfstudio / Metashape adapters
 
-Status: **进行中 (HOLD)**. Owner: `spirula-io` (+ admitted
+Status: **进行中 (HOLD)**. Code tip
+`44ad4d182d862311ac66debc26d2b67669f682e6`. Owner: `spirula-io` (+ admitted
 `spirula-application` / `spirula-cli` load path). Prerequisites: P3-F03.
 Does **not** deliver scene center/normalize (P3-F05), splat init (P3-F06),
 or training cache (P3-F08).
