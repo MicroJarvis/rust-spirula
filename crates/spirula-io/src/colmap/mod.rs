@@ -21,10 +21,11 @@ mod text;
 mod types;
 
 pub use budget::{
-    MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_OBSERVATIONS, MAX_POINTS, MAX_TRACK_ELEMS,
+    MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_LOAD_MEMORY_BYTES, MAX_OBSERVATIONS,
+    MAX_POINTS, MAX_TRACK_ELEMS,
 };
 pub use config::ColmapLoadConfig;
-pub use load::{load_colmap_dataset, load_dataset};
+pub use load::{load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset};
 pub use models::{
     COLMAP_MODELS, ColmapModelInfo, model_by_id, model_id_by_name, require_exact_param_count,
     require_model_by_name,
@@ -45,6 +46,8 @@ pub use types::{
 };
 
 // Re-export low-level readers for tests / tooling (not the fixture checker).
-pub use bake::{bake_and_fit, bake_colmap_intrinsics, validate_source_camera};
+pub use bake::{
+    bake_and_fit, bake_and_fit_cancelable, bake_colmap_intrinsics, validate_source_camera,
+};
 pub use binary::{read_cameras_binary, read_images_binary, read_points3d_binary};
 pub use text::{read_cameras_text, read_images_text, read_points3d_text};

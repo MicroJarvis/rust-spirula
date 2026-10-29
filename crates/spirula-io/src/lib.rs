@@ -29,7 +29,7 @@ pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entr
 pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CANCEL_WORK_CHUNK, CancelCheckpoint};
 pub use colmap::{
     ColmapLoadConfig, DatasetFormat, DatasetLoadSummary, DatasetProbe, ParsedDataset,
-    load_colmap_dataset, load_dataset, probe_dataset,
+    load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset, probe_dataset,
 };
 
 pub use atomic::{

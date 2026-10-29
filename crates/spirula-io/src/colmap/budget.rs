@@ -18,6 +18,15 @@ pub const MAX_OBSERVATIONS: u64 = 200_000_000;
 pub const MAX_TRACK_ELEMS: u64 = 200_000_000;
 /// Cumulative in-memory parse budget for a single table (Vec element bytes).
 pub const MAX_PARSE_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+/// Cumulative live-structure budget across the whole load pipeline (tables +
+/// builds / names / frames / splits / BTree sets). Independent of per-table
+/// [`MAX_PARSE_MEMORY_BYTES`] so three maxed tables cannot silently sum past
+/// this ceiling.
+pub const MAX_LOAD_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+/// Conservative per-entry BTreeMap/BTreeSet overhead on 64-bit (node pointers +
+/// layout). Upper-bounds typical leaf fanout accounting; charged in addition
+/// to `size_of::<(K,V)>()` / key bytes so clone/map/seen costs are not free.
+pub const BTREE_ENTRY_OVERHEAD: u64 = 64;
 /// Minimum bytes for one `points3D.bin` record excluding track payload.
 pub const MIN_POINT3D_RECORD_BYTES: u64 = 8 + 24 + 3 + 8 + 8;
 /// Bytes per binary observation (`x`/`y` f64 + point3D_id u64).
@@ -75,29 +84,42 @@ pub(crate) fn ensure_remaining(remaining: u64, need: u64, field: &str) -> Result
     Ok(())
 }
 
-/// Cumulative in-memory parse budget for one table (file bytes + Vec/BTree/clone).
-#[derive(Debug, Default)]
+/// Cumulative in-memory budget (file bytes + Vec/BTree/clone/string growth).
+#[derive(Debug)]
 pub(crate) struct ParseMem {
     used: u64,
+    cap: u64,
+}
+
+impl Default for ParseMem {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ParseMem {
+    /// Per-table parse budget ([`MAX_PARSE_MEMORY_BYTES`]).
     pub fn new() -> Self {
-        Self { used: 0 }
+        Self::with_cap(MAX_PARSE_MEMORY_BYTES)
+    }
+
+    /// Explicit cap (tests inject small budgets for cross-table / emit OOM).
+    pub fn with_cap(cap: u64) -> Self {
+        Self { used: 0, cap }
     }
 
     pub fn used(&self) -> u64 {
         self.used
     }
 
-    /// Charge `bytes` against the cumulative parse budget.
+    /// Charge `bytes` against the cumulative budget.
     pub fn charge(&mut self, bytes: u64, field: &str) -> Result<(), DomainError> {
         let next = self.used.saturating_add(bytes);
-        if next > MAX_PARSE_MEMORY_BYTES {
+        if next > self.cap {
             return Err(err(
                 ErrorCode::ValueOutOfRange,
                 field,
-                format!("{field} parse memory {next} exceeds budget {MAX_PARSE_MEMORY_BYTES}"),
+                format!("{field} parse memory {next} exceeds budget {}", self.cap),
             ));
         }
         self.used = next;
@@ -112,6 +134,14 @@ impl ParseMem {
 
     pub fn charge_str_bytes(&mut self, len: usize, field: &str) -> Result<(), DomainError> {
         self.charge(len as u64, field)
+    }
+
+    /// Charge `n` BTreeMap/BTreeSet entries: key/value (or key) bytes plus
+    /// [`BTREE_ENTRY_OVERHEAD`] per entry.
+    pub fn charge_btree_entries<T>(&mut self, n: usize, field: &str) -> Result<(), DomainError> {
+        self.charge_elems::<T>(n, field)?;
+        let overhead = checked_mul_u64(n as u64, BTREE_ENTRY_OVERHEAD, field)?;
+        self.charge(overhead, field)
     }
 }
 

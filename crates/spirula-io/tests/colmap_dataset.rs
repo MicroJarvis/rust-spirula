@@ -8,9 +8,10 @@ use std::time::Duration;
 use spirula_core::{CancelReason, CancelToken, ErrorCode};
 use spirula_io::colmap::{
     ColmapCamera, ColmapLoadConfig, DatasetFormat, DatasetProbe, SplitConfig, bake_and_fit,
-    colmap_model_num_images, colmap_to_c2w, compute_splits, load_colmap_dataset, probe_dataset,
-    read_cameras_binary, read_cameras_text, read_images_binary, read_images_text,
-    read_points3d_binary, read_points3d_text, train_subset,
+    bake_and_fit_cancelable, colmap_model_num_images, colmap_to_c2w, compute_splits,
+    load_colmap_dataset, load_colmap_dataset_budgeted, probe_dataset, read_cameras_binary,
+    read_cameras_text, read_images_binary, read_images_text, read_points3d_binary,
+    read_points3d_text, train_subset,
 };
 use spirula_io::temp_harness::TempHarness;
 
@@ -889,6 +890,111 @@ fn pin_bake_host_golden_holdout() {
     for (g, v) in pose.iter().zip(c2w.iter()) {
         assert!((g - v).abs() < 1e-9, "pose {g} vs {v}");
     }
+}
+
+#[test]
+fn bake_and_fit_cancelable_observes_pre_canceled_fov() {
+    let cam = ColmapCamera {
+        camera_id: 1,
+        model: "FOV".into(),
+        width: 64,
+        height: 48,
+        params: vec![50.0, 50.0, 32.0, 24.0, 0.7],
+    };
+    let cancel = CancelToken::new();
+    assert!(cancel.request(CancelReason::User));
+    let err = bake_and_fit_cancelable(&cam, Some(&cancel)).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+}
+
+#[test]
+fn after_start_cancel_during_load_bake_loop_before_dense_fit() {
+    // Many exact-tier cameras so cancel lands in the load bake loop *before*
+    // any dense LM (no FOV here). Mid-camera poll_now observes the token.
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("ds");
+    fs::create_dir_all(&ds).unwrap();
+    let n = 8_000usize;
+    let mut cams = String::new();
+    for i in 1..=n {
+        cams.push_str(&format!("{i} PINHOLE 64 48 100 100 32 24\n"));
+    }
+    fs::write(ds.join("cameras.txt"), cams).unwrap();
+    fs::write(ds.join("images.txt"), "1 1 0 0 0 0 0 0 1 frame.png\n\n").unwrap();
+
+    let cancel = CancelToken::new();
+    let cancel2 = cancel.clone();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cancel2.request(CancelReason::User));
+    });
+    let err = load_colmap_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        Some(&cancel),
+    )
+    .unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+}
+
+#[test]
+fn after_start_cancel_during_load_fit_path() {
+    // Multiple FOV cameras force fit_colmap_source_cancelable on the real load
+    // path. Domain-scan azimuth polls observe after-start cancel; dense
+    // mid-fit_model LM remains non-preemptible (not claimed here).
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("ds");
+    fs::create_dir_all(&ds).unwrap();
+    let n = 6usize;
+    let mut cams = String::new();
+    for i in 1..=n {
+        cams.push_str(&format!("{i} FOV 64 48 50 50 32 24 0.7\n"));
+    }
+    fs::write(ds.join("cameras.txt"), cams).unwrap();
+    fs::write(ds.join("images.txt"), "1 1 0 0 0 0 0 0 1 frame.png\n\n").unwrap();
+
+    let cancel = CancelToken::new();
+    let cancel2 = cancel.clone();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cancel2.request(CancelReason::User));
+    });
+    let err = load_colmap_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        Some(&cancel),
+    )
+    .unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+}
+
+#[test]
+fn load_budget_injection_preserves_normal_results() {
+    let root = tiny();
+    let normal = load_colmap_dataset(&root, &ColmapLoadConfig::default(), None).unwrap();
+    let budgeted = load_colmap_dataset_budgeted(
+        &root,
+        &ColmapLoadConfig::default(),
+        None,
+        spirula_io::colmap::MAX_LOAD_MEMORY_BYTES,
+    )
+    .unwrap();
+    assert_eq!(normal.frames.len(), budgeted.frames.len());
+    assert_eq!(normal.split, budgeted.split);
+    assert_eq!(normal.summary.num_train, budgeted.summary.num_train);
+    assert_eq!(normal.summary.num_eval, budgeted.summary.num_eval);
+
+    let err =
+        load_colmap_dataset_budgeted(&root, &ColmapLoadConfig::default(), None, 64).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
 }
 
 #[allow(dead_code)]

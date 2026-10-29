@@ -293,6 +293,7 @@ pub fn bake_colmap_intrinsics(
 /// [`fit_camera_auto_cancelable`] also polls between domain-scan azimuth steps
 /// and between candidate models. Dense mid-`fit_model` least-squares remains
 /// non-preemptible (HOLD gap). Host FOV 64×48 typically tens of ms.
+#[allow(dead_code)] // no-token wrapper kept for callers / symmetry with bake_and_fit
 pub fn fit_colmap_source(
     cam: &ColmapCamera,
     bi: &mut BakedIntrinsics,
@@ -363,14 +364,26 @@ pub fn fit_colmap_source_cancelable(
     Ok(())
 }
 
-/// Bake + optional fit for one camera record.
+/// Bake + optional fit for one camera record (no cancel token).
 pub fn bake_and_fit(cam: &ColmapCamera) -> Result<BakedIntrinsics, spirula_core::DomainError> {
+    bake_and_fit_cancelable(cam, None)
+}
+
+/// Same as [`bake_and_fit`] with a cancel token for the optional auto-fit ladder.
+///
+/// Exact-tier cameras never enter fit. Unrepresentable sources call
+/// [`fit_colmap_source_cancelable`] (azimuth / candidate polls). Dense
+/// mid-`fit_model` least-squares remains non-preemptible.
+pub fn bake_and_fit_cancelable(
+    cam: &ColmapCamera,
+    cancel: Option<&spirula_core::CancelToken>,
+) -> Result<BakedIntrinsics, spirula_core::DomainError> {
     validate_source_camera(cam)?;
     validate_equirectangular(cam)?;
     let mut bi = bake_colmap_intrinsics(cam)?;
     let fitted = bi.source.source_model >= 0;
     if fitted {
-        fit_colmap_source(cam, &mut bi)?;
+        fit_colmap_source_cancelable(cam, &mut bi, cancel)?;
     }
     // Exact-tier bake always needs positive focals; fit path validated above.
     validate_baked_intrinsics(&bi, true)?;
@@ -486,6 +499,22 @@ mod tests {
         assert_eq!(bi.source.params[4], 0.7);
         // Either kept as active source or cleared on exact fit — params bytes stay.
         assert!(bi.source.source_model == 7 || bi.source.source_model == -1);
+    }
+
+    #[test]
+    fn bake_and_fit_cancelable_observes_token_before_dense_lm() {
+        use spirula_core::{CancelReason, CancelToken, ErrorCode};
+        let cam = ColmapCamera {
+            camera_id: 2,
+            model: "FOV".into(),
+            width: 64,
+            height: 48,
+            params: vec![50.0, 50.0, 32.0, 24.0, 0.7],
+        };
+        let cancel = CancelToken::new();
+        assert!(cancel.request(CancelReason::User));
+        let err = bake_and_fit_cancelable(&cam, Some(&cancel)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Canceled);
     }
 
     #[test]

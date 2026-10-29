@@ -528,6 +528,7 @@ pub fn read_points3d_text(
                 format!("duplicate point3D_id {point3d_id}"),
             ));
         }
+        mem.charge_btree_entries::<u64>(1, "points3D_seen")?;
         let xyz = [
             parse_f64(
                 it.next().ok_or_else(|| {

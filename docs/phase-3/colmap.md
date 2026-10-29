@@ -1,7 +1,7 @@
 # P3-F03: COLMAP dataset reading
 
-Status: **进行中 / HOLD** (awaiting independent re-review after round-5 Metashape /
-bake-pin oracle / chunked binary+text budget fixes).
+Status: **进行中 / HOLD** (awaiting independent re-review after load cancelable
+bake wiring + cumulative load-memory budget / move-consume frames).
 Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
 Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
@@ -69,9 +69,21 @@ C++ `camhost::ray_pixel` with absolute pixel tolerances.
 
 - Binary `points` / observations: remaining-byte check before fallible reserve;
   `MAX_POINTS` must not allow multi-GB reserve from an 8-byte file.
-- Cumulative `ParseMem` charges file bytes + Vec/BTree/string growth (not
-  reset per line). Text obs/track charge+`try_reserve` **before** parse; camera
-  params take exact model arity via iterator (no intermediate `Vec<&str>`).
+- Per-table cumulative `ParseMem` (`MAX_PARSE_MEMORY_BYTES` = 512 MiB) charges
+  file bytes + Vec/BTree/string growth (not reset per line). Text obs/track
+  charge+`try_reserve` **before** parse; camera params take exact model arity
+  via iterator (no intermediate `Vec<&str>`). `points3D` duplicate-id
+  `BTreeSet` charges `BTREE_ENTRY_OVERHEAD` (64 B) per entry in addition to
+  key bytes.
+- Load-wide cumulative budget (`MAX_LOAD_MEMORY_BYTES` = 512 MiB) is **independent**
+  of the three per-table caps: after each table materializes, load re-charges
+  live cameras/images/points (incl. observations/tracks + BTree overhead),
+  then pre-charges baked map, `image_ids` set, builds/paths/sort keys, split
+  name strings, split index vectors, and frames with fallible `try_reserve`.
+  Cross-table or emit-phase overflow → typed `SP-INP-003` (`ValueOutOfRange`).
+  Inject via `load_colmap_dataset_budgeted`.
+- Frame build **moves** `ColmapImage` (observations) out of the images map and
+  into emitted `LoadedFrame` (no full observation clone chain).
 - Probe: `images.bin` 8 bytes; Metashape **8192** requires `<document` and
   (`path=` for `.psx` / project, or `<chunk` for xml) — pin has **no** literal
   `psx:` check; `images.txt` full streaming count (header atoll early-return;
@@ -81,11 +93,12 @@ C++ `camhost::ray_pixel` with absolute pixel tolerances.
   whole-file `fs::read`) re-checks size (TOCTOU growth) and ticks
   `ParseCancel` per chunk.
 - Cancel checkpoints in text observation/track tokenization, binary cstring,
-  track association, probe dir scan/sort / image-count stream, and around
-  each camera bake.
-- `fit_camera_auto_cancelable` polls between domain-scan azimuth steps and
-  candidate models; dense mid-`fit_model` least-squares remains
-  non-preemptible. Load still polls immediately before/after each camera.
+  track association (outer points + inner track elems), probe dir scan/sort /
+  image-count stream, and around each camera bake.
+- Load calls `bake_and_fit_cancelable` (token forwarded into
+  `fit_colmap_source_cancelable` → `fit_camera_auto_cancelable`). Azimuth /
+  candidate polls are cooperative; **dense mid-`fit_model` least-squares is
+  still non-preemptible**. `bake_and_fit` remains the no-token wrapper.
 
 ### Admission (`LoadDataset`)
 
@@ -126,12 +139,14 @@ input. Rejected payloads are UTF-8-safe length-limited via
 
 ## Remaining gaps (HOLD)
 
-- Independent re-review of round-5 HOLD fixes (Metashape `path=` pin, C++
-  bake-pin oracle + absolute ray holdout, chunked binary IO, text
-  budget-before-alloc, after-start image-count cancel via `Read` helper,
-  FIFO text `read_capped` cancel).
+- Independent re-review of round-5 + load-budget/cancel wiring (Metashape
+  `path=` pin, C++ bake-pin oracle + absolute ray holdout, chunked binary IO,
+  text budget-before-alloc, after-start image-count / FIFO `read_capped`,
+  load `bake_and_fit_cancelable` + cumulative `MAX_LOAD_MEMORY_BYTES`).
 - Dense mid-`fit_model` inside `fit_camera_auto_cancelable` remains
-  non-preemptible (azimuth/candidate polls only).
+  non-preemptible (azimuth/candidate polls only). Load can cancel between
+  cameras and between domain-scan azimuth steps / candidate models, but not
+  inside a single dense LM solve.
 - P3-F04/F05/F08 and P2-F08 deliberately untouched.
 
 ## Verification

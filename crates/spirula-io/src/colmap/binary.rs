@@ -339,6 +339,8 @@ pub fn read_points3d_binary(
     })?;
     try_reserve_elems(&mut points, n_usize, &mut mem, "points3D")?;
     let mut seen_ids = BTreeSet::new();
+    // Conservative BTreeSet node overhead for duplicate-id seen set.
+    mem.charge_btree_entries::<u64>(n_usize, "points3D_seen")?;
     let mut track_budget = 0u64;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
