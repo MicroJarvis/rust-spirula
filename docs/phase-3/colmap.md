@@ -3,8 +3,9 @@
 Status: **READY**. Code tip `813729f8238f6730ad0235416371197fc4bd985a`.
 Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
-Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
-scene center/normalize (P3-F05), not training cache (P3-F08), not UI.
+Nerfstudio/Metashape parsers are P3-F04 (see
+[nerfstudio-metashape.md](nerfstudio-metashape.md)); not scene
+center/normalize (P3-F05), not training cache (P3-F08), not UI.
 **P2-F08** remains 未开始.
 
 Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
@@ -14,7 +15,7 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 
 | Matrix | Scope delivered |
 |---|---|
-| **C-DATA-01** | Directory probe: `transforms.json` → Nerfstudio unavailable; COLMAP recon probe; Metashape markers → unavailable; explicit `recon_dir` |
+| **C-DATA-01** | Directory probe: auto-detect Nerfstudio > COLMAP > Metashape (P3-F04 fills NS/Metashape load); explicit `recon_dir` |
 | **C-DATA-02** | COLMAP text `cameras` / `images` / `points3D` → `ParsedDataset`; 18 models; points optional; bake + P3-F01 fit |
 | **C-DATA-03** | COLMAP little-endian `.bin` (preferred per file when both exist); text/bin equivalence tests |
 | **C-DATA-06** | Train/eval/validation: `all` / `fraction` / `interval` / `filename`; empty eval OK; empty train = error |

@@ -6,6 +6,7 @@
 //! P3-F02 owns image decode (PNG/JPEG/BMP/TGA/TIFF/EXR), EXIF orientation,
 //! mask normalize (flip/offset), and depth/normal aux maps.
 //! P3-F03 owns COLMAP text/binary dataset reading (not `fixtures` checkers).
+//! P3-F04 owns Nerfstudio / Metashape adapters + shared PLY vertex reader.
 //! Checkpoint bundle schema and completion markers stay in P5-F05.
 
 pub mod atomic;
@@ -21,7 +22,10 @@ pub mod image_mask;
 pub mod image_normal;
 pub mod image_orient;
 pub mod image_probe;
+pub mod metashape;
+pub mod nerfstudio;
 pub mod perf;
+pub mod ply;
 pub mod sample_workload;
 pub mod temp_harness;
 
@@ -29,8 +33,12 @@ pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entr
 pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CANCEL_WORK_CHUNK, CancelCheckpoint};
 pub use colmap::{
     ColmapLoadConfig, DatasetFormat, DatasetLoadSummary, DatasetProbe, ParsedDataset,
-    load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset, probe_dataset,
+    load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset, load_dataset_budgeted,
+    probe_dataset,
 };
+pub use metashape::{load_metashape_dataset, load_metashape_dataset_budgeted};
+pub use nerfstudio::{load_nerfstudio_dataset, load_nerfstudio_dataset_budgeted};
+pub use ply::{read_ply_points, read_ply_points_budgeted};
 
 pub use atomic::{
     PublishLease, PublishOptions, PublishOutcome, acquire_publish_lease, is_publish_temp,

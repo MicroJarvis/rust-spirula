@@ -180,7 +180,7 @@ pub enum DatasetProbe {
         format: DatasetFormat,
         recon_dir: PathBuf,
     },
-    /// Format recognized but parser not in this feature (P3-F04).
+    /// Format recognized but not loadable (e.g. Metashape `.psx` without zip).
     Unavailable {
         format: DatasetFormat,
         reason: String,

@@ -1,9 +1,9 @@
-//! Application entry for P3-F03 COLMAP dataset load.
+//! Application entry for dataset load (P3-F03 COLMAP + P3-F04 NS/Metashape).
 
 use std::path::Path;
 
 use spirula_core::{CancelToken, DomainError, ErrorCode};
-use spirula_io::{ColmapLoadConfig, DatasetLoadSummary, ParsedDataset, load_colmap_dataset};
+use spirula_io::{ColmapLoadConfig, DatasetLoadSummary, ParsedDataset, load_dataset};
 
 use crate::session::ApplicationService;
 
@@ -35,7 +35,7 @@ pub(crate) fn run_load_colmap_cancelable(
     }
     cfg.eval_mode = eval_mode.to_owned();
     cfg.split = split.to_owned();
-    match load_colmap_dataset(path, &cfg, cancel) {
+    match load_dataset(path, &cfg, cancel) {
         Ok(ds) => {
             if canceled(cancel) {
                 DatasetWorkResult::Canceled
@@ -49,7 +49,7 @@ pub(crate) fn run_load_colmap_cancelable(
 }
 
 impl ApplicationService {
-    /// Sync COLMAP load through the Idle|Ready gate (same owner path as admitted command).
+    /// Sync dataset load through the Idle|Ready gate (same owner path as admitted command).
     pub fn load_colmap_dataset_file(
         &self,
         path: &Path,
@@ -64,6 +64,6 @@ impl ApplicationService {
         }
         cfg.eval_mode = eval_mode.to_owned();
         cfg.split = split.to_owned();
-        load_colmap_dataset(path, &cfg, None)
+        load_dataset(path, &cfg, None)
     }
 }

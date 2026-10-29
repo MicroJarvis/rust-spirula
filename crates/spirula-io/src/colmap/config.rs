@@ -1,8 +1,8 @@
-//! Load configuration for COLMAP dataset reading (P3-F03 subset of DatasetParserConfig).
+//! Load configuration for dataset reading (P3-F03/F04 subset of DatasetParserConfig).
 
 use super::split::SplitConfig;
 
-/// Options for [`super::load::load_colmap_dataset`].
+/// Options for [`super::load::load_colmap_dataset`] / [`crate::load_dataset`].
 #[derive(Clone, Debug)]
 pub struct ColmapLoadConfig {
     /// Reconstruction dir relative to dataset dir. Empty / `None` = auto-detect.
@@ -16,6 +16,14 @@ pub struct ColmapLoadConfig {
     /// `"train"` | `"eval"` | `"all"`.
     pub split: String,
     pub validation_fraction: f32,
+    /// Explicit format: `"colmap"` | `"nerfstudio"` | `"metashape"`. Empty = auto.
+    pub format: Option<String>,
+    /// Optional Metashape camera-export XML path (relative to dataset or absolute).
+    pub metashape_xml: Option<String>,
+    /// Optional Metashape PLY path.
+    pub metashape_ply: Option<String>,
+    /// Optional Metashape `.psx` path (typed unsupported without zip runtime).
+    pub metashape_psx: Option<String>,
 }
 
 impl Default for ColmapLoadConfig {
@@ -29,6 +37,10 @@ impl Default for ColmapLoadConfig {
             eval_interval: 8,
             split: "train".into(),
             validation_fraction: 0.0,
+            format: None,
+            metashape_xml: None,
+            metashape_ply: None,
+            metashape_psx: None,
         }
     }
 }

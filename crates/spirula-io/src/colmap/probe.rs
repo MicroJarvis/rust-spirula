@@ -351,7 +351,7 @@ pub fn find_colmap_recon_cancelable(
     ))
 }
 
-/// Probe a dataset directory: COLMAP available, or typed unavailable for NS/Metashape.
+/// Probe a dataset directory (auto-detect: Nerfstudio > COLMAP > Metashape).
 pub fn probe_dataset(
     dataset_dir: &Path,
     recon_dir: Option<&str>,
@@ -382,9 +382,9 @@ pub fn probe_dataset_cancelable(
 
     // Nerfstudio wins when transforms.json is present (pin auto-detect order).
     if dataset_dir.join("transforms.json").is_file() {
-        return Ok(DatasetProbe::Unavailable {
+        return Ok(DatasetProbe::Available {
             format: DatasetFormat::Nerfstudio,
-            reason: "Nerfstudio transforms.json detected; parser lands in P3-F04".into(),
+            recon_dir: dataset_dir.to_path_buf(),
         });
     }
 
@@ -398,10 +398,32 @@ pub fn probe_dataset_cancelable(
                 return Err(e);
             }
             if metashape_here(dataset_dir) {
-                Ok(DatasetProbe::Unavailable {
-                    format: DatasetFormat::Metashape,
-                    reason: "Metashape markers detected; parser lands in P3-F04".into(),
-                })
+                // Prefer XML export as Available; .psx-only stays typed unavailable
+                // (no zip runtime).
+                let has_xml = std::fs::read_dir(dataset_dir)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|ent| {
+                        let p = ent.path();
+                        p.is_file()
+                            && p.extension()
+                                .and_then(|x| x.to_str())
+                                .is_some_and(|x| x.eq_ignore_ascii_case("xml"))
+                            && looks_like_metashape(&p, false)
+                    });
+                if has_xml {
+                    Ok(DatasetProbe::Available {
+                        format: DatasetFormat::Metashape,
+                        recon_dir: dataset_dir.to_path_buf(),
+                    })
+                } else {
+                    Ok(DatasetProbe::Unavailable {
+                        format: DatasetFormat::Metashape,
+                        reason: crate::metashape::psx_unsupported_reason().into(),
+                    })
+                }
             } else {
                 Ok(DatasetProbe::NotADataset {
                     hint: e.to_string(),
@@ -480,11 +502,11 @@ mod tests {
         }
         std::fs::write(ms.join("export.xml"), "<document><chunk/></document>").unwrap();
         match probe_dataset(&ms, None).unwrap() {
-            DatasetProbe::Unavailable {
+            DatasetProbe::Available {
                 format: DatasetFormat::Metashape,
                 ..
             } => {}
-            other => panic!("expected metashape unavailable, got {other:?}"),
+            other => panic!("expected metashape available for XML export, got {other:?}"),
         }
     }
 
