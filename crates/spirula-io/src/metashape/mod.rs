@@ -20,7 +20,7 @@ use crate::colmap::ParsedDataset;
 use crate::colmap::budget::{
     MAX_COLMAP_FILE_BYTES, MAX_LOAD_MEMORY_BYTES, ParseCancel, ParseMem, err, err_path,
 };
-use crate::nerfstudio::load_nerfstudio_meta_value;
+use crate::nerfstudio::{estimate_json_bytes, load_nerfstudio_meta_value_mem};
 
 use self::xml::{XmlNode, parse_xml_bytes};
 
@@ -169,13 +169,16 @@ fn norm_slashes(s: &str) -> String {
     s.replace('\\', "/")
 }
 
+/// Longest-prefix substring match over image names (pin Metashape `match_substring`).
+/// Iterates by Unicode scalar count so multi-byte labels never panic on byte cuts.
 fn match_substring(names: &[String], s: &str) -> Vec<String> {
     let q = norm_slashes(s);
-    for len in (1..=q.len()).rev() {
-        let needle = &q[..len];
+    let chars: Vec<char> = q.chars().collect();
+    for len in (1..=chars.len()).rev() {
+        let needle: String = chars[..len].iter().collect();
         let matches: Vec<String> = names
             .iter()
-            .filter(|n| n.contains(needle))
+            .filter(|n| n.contains(&needle))
             .cloned()
             .collect();
         if !matches.is_empty() {
@@ -185,31 +188,77 @@ fn match_substring(names: &[String], s: &str) -> Vec<String> {
     Vec::new()
 }
 
-fn list_image_filenames(root: &Path, image_dir: &Path) -> Vec<String> {
+const MAX_IMAGE_WALK_DEPTH: u32 = 64;
+
+fn list_image_filenames(
+    root: &Path,
+    image_dir: &Path,
+    cancel: Option<&CancelToken>,
+    mem: &mut ParseMem,
+) -> Result<Vec<String>, spirula_core::DomainError> {
     let mut out = Vec::new();
-    let Ok(walk) = std::fs::read_dir(image_dir) else {
-        return out;
+    let mut visited = std::collections::BTreeSet::new();
+    let mut cp = ParseCancel::new(cancel);
+    walk_dir(image_dir, root, &mut out, &mut visited, 0, &mut cp, mem)?;
+    Ok(out)
+}
+
+fn walk_dir(
+    dir: &Path,
+    root: &Path,
+    out: &mut Vec<String>,
+    visited: &mut std::collections::BTreeSet<PathBuf>,
+    depth: u32,
+    cp: &mut ParseCancel<'_>,
+    mem: &mut ParseMem,
+) -> Result<(), spirula_core::DomainError> {
+    if depth > MAX_IMAGE_WALK_DEPTH {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "image_dir",
+            format!("MetashapeParser: image_dir walk exceeds depth {MAX_IMAGE_WALK_DEPTH}"),
+        ));
+    }
+    cp.tick(1)?;
+    // Do not follow symlink cycles: canonicalize when possible; skip repeats.
+    let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(key) {
+        return Ok(());
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Ok(());
     };
-    // Non-recursive first-level + one level of subdirs is enough for fixtures;
-    // mirror C++ recursive_directory_iterator for correctness on nested trees.
-    fn walk_dir(dir: &Path, root: &Path, out: &mut Vec<String>) {
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            return;
+    for ent in rd.flatten() {
+        cp.tick(1)?;
+        let p = ent.path();
+        let meta = match std::fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(_) => continue,
         };
-        for ent in rd.flatten() {
-            let p = ent.path();
+        if meta.file_type().is_symlink() {
+            // Resolve once; cycle detection via visited canonicalize.
             if p.is_dir() {
-                walk_dir(&p, root, out);
+                walk_dir(&p, root, out, visited, depth + 1, cp, mem)?;
             } else if p.is_file()
                 && let Ok(rel) = p.strip_prefix(root)
             {
-                out.push(rel.to_string_lossy().replace('\\', "/"));
+                let s = rel.to_string_lossy().replace('\\', "/");
+                mem.charge_str_bytes(s.len(), "image_filenames")?;
+                out.push(s);
             }
+            continue;
+        }
+        if meta.is_dir() {
+            walk_dir(&p, root, out, visited, depth + 1, cp, mem)?;
+        } else if meta.is_file()
+            && let Ok(rel) = p.strip_prefix(root)
+        {
+            let s = rel.to_string_lossy().replace('\\', "/");
+            mem.charge_str_bytes(s.len(), "image_filenames")?;
+            out.push(s);
         }
     }
-    walk_dir(image_dir, root, &mut out);
-    let _ = walk;
-    out
+    Ok(())
 }
 
 fn mat4_mul(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
@@ -245,7 +294,7 @@ pub(crate) fn metashape_meta_from_xml(
     cp.poll_now()?;
     let bytes = read_capped(xml_path, mem, cancel)?;
     cp.poll_now()?;
-    let doc = parse_xml_bytes(&bytes)?;
+    let doc = parse_xml_bytes(&bytes, mem, cancel)?;
     // C++ `xml_parse_file` yields the root element; exports are
     // `<document><chunk>…` so prefer `document/chunk`, else first child.
     let chunk = {
@@ -473,7 +522,7 @@ pub(crate) fn metashape_meta_from_xml(
         ));
     }
     let image_filenames = if image_dir.is_dir() {
-        list_image_filenames(dataset_dir, &image_dir)
+        list_image_filenames(dataset_dir, &image_dir, cancel, mem)?
     } else {
         Vec::new()
     };
@@ -679,15 +728,11 @@ pub fn load_metashape_dataset_budgeted(
 
     let ply_ref = ply.as_deref().filter(|p| p.is_file());
     let meta = metashape_meta_from_xml(dataset_dir, &xml_path, ply_ref, cfg, cancel, &mut mem)?;
+    // Converted transforms.json-shaped DOM lives alongside XML charges.
+    mem.charge(estimate_json_bytes(&meta), "metashape_meta_json")?;
     cp.poll_now()?;
 
-    let mut loaded = load_nerfstudio_meta_value(
-        &meta,
-        dataset_dir,
-        cfg,
-        cancel,
-        memory_budget_bytes.saturating_sub(mem.used()),
-    )?;
+    let mut loaded = load_nerfstudio_meta_value_mem(&meta, dataset_dir, cfg, cancel, &mut mem)?;
     loaded.format = DatasetFormat::Metashape;
     loaded.recon_dir = xml_path.clone();
     loaded.summary.format = DatasetFormat::Metashape.as_str().into();

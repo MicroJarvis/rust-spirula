@@ -1,8 +1,9 @@
 # P3-F04: Nerfstudio / Metashape adapters
 
-Status: **进行中 (HOLD)**. Code tip
-`44ad4d182d862311ac66debc26d2b67669f682e6`. Owner: `spirula-io` (+ admitted
+Status: **进行中 (HOLD)**. Owner: `spirula-io` (+ admitted
 `spirula-application` / `spirula-cli` load path). Prerequisites: P3-F03.
+Lens path follows `NerfstudioParser.cpp:650-745` (declared model + raw/skew
+fit; empty `camera_distortion` is **not** a known hint).
 Does **not** deliver scene center/normalize (P3-F05), splat init (P3-F06),
 or training cache (P3-F08).
 
@@ -48,10 +49,17 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 ## Budgets / cancel
 
 - File size + cumulative `ParseMem` before allocation (same ceilings as
-  COLMAP load where shared).
-- Cooperative `CancelCheckpoint` / `ParseCancel` on header/body loops and
-  per-frame emit; after-start cancel proven in tests.
-- Stable `DomainError` (no panic on malformed input).
+  COLMAP load where shared). JSON DOM, builds/missing paths, XML
+  `Vec<char>` + DOM strings, Metashape→JSON conversion, image-dir walk
+  names, and PLY points all charge the **same** live budget (PLY is not a
+  disposable sub-cap that frees before frames).
+- Cooperative `CancelCheckpoint` / `ParseCancel` on JSON/PLY/XML parse,
+  recursive image-dir walk, and per-frame emit; after-start cancel proven
+  for PLY and Metashape dir walk.
+- XML nesting capped (`MAX_XML_DEPTH`); image-dir walk skips symlink cycles
+  via canonicalize/`visited` and caps depth.
+- Stable `DomainError` (no panic on malformed input; UTF-8 labels use
+  char-safe `match_substring`).
 
 ## .psx policy
 

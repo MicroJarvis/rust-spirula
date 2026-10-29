@@ -11,20 +11,25 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
-use spirula_core::{CancelToken, ErrorCode};
+use spirula_core::{
+    CameraModel, CancelToken, DISTORTION_PARAMS, DistortionTier, ErrorCode, FitOptions,
+    K_EXACT_FIT_PX, MAX_PARAMS, SKEW_BASE_EQUISOLID, SKEW_BASE_FISHEYE, SKEW_BASE_PERSPECTIVE,
+    SKEW_RADIAL_POLYNOMIAL, SKEW_RADIAL_RATIONAL, SKEWED, demote_distortion, fit_camera,
+    fit_camera_auto_cancelable, source_project,
+};
 
-use crate::colmap::bake::bake_and_fit_cancelable;
 use crate::colmap::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_LOAD_MEMORY_BYTES, ParseCancel, ParseMem,
     ensure_count, err, err_path, try_reserve_elems,
 };
 use crate::colmap::load::validate_image_name;
 use crate::colmap::split::compute_splits;
+use crate::colmap::types::RedistortSource;
 use crate::colmap::{
     ColmapCamera, ColmapLoadConfig, ColmapPoints3D, DatasetFormat, DatasetLoadSummary, LoadedFrame,
     ParsedDataset, SplitIndices,
 };
-use crate::ply::read_ply_points_budgeted;
+use crate::ply::read_ply_points_mem;
 
 const READ_CHUNK: usize = 256 * 1024;
 
@@ -305,129 +310,6 @@ fn safe_rel_path(file_path: &str) -> Result<(), spirula_core::DomainError> {
     Ok(())
 }
 
-struct BuildCam<'a> {
-    camera_id: i32,
-    model_name: &'a str,
-    width: u64,
-    height: u64,
-    fx: f64,
-    fy: f64,
-    cx: f64,
-    cy: f64,
-    rd: &'a RawDist,
-    rational: bool,
-    thin_prism_shaped: bool,
-    skew_px: f64,
-}
-
-fn build_colmap_camera(args: BuildCam<'_>) -> Result<ColmapCamera, spirula_core::DomainError> {
-    let BuildCam {
-        camera_id,
-        model_name,
-        width,
-        height,
-        fx,
-        fy,
-        cx,
-        cy,
-        rd,
-        rational,
-        thin_prism_shaped,
-        skew_px,
-    } = args;
-    // Map NS distortion into a COLMAP model that bake_and_fit understands.
-    let (model, params) = if model_name == "EQUIRECTANGULAR" {
-        // COLMAP EQUIRECTANGULAR stores [width, height] (validated against resolution).
-        (
-            "EQUIRECTANGULAR".to_owned(),
-            vec![width as f64, height as f64],
-        )
-    } else if rational {
-        (
-            "FULL_OPENCV".to_owned(),
-            vec![
-                fx, fy, cx, cy, rd.k1, rd.k2, rd.p1, rd.p2, rd.k3, rd.k4, rd.k5, rd.k6,
-            ],
-        )
-    } else if skew_px != 0.0
-        || rd.sx1 != 0.0
-        || rd.sy1 != 0.0
-        || (thin_prism_shaped && rd.b1 != 0.0)
-    {
-        (
-            "THIN_PRISM_FISHEYE".to_owned(),
-            vec![
-                fx, fy, cx, cy, rd.k1, rd.k2, rd.k3, rd.k4, rd.p1, rd.p2, rd.sx1, rd.sy1,
-            ],
-        )
-    } else if matches!(
-        model_name,
-        "FISHEYE"
-            | "SIMPLE_FISHEYE"
-            | "OPENCV_FISHEYE"
-            | "SIMPLE_RADIAL_FISHEYE"
-            | "RADIAL_FISHEYE"
-            | "THIN_PRISM_FISHEYE"
-            | "EQUISOLID"
-    ) {
-        (
-            "OPENCV_FISHEYE".to_owned(),
-            vec![fx, fy, cx, cy, rd.k1, rd.k2, rd.k3, rd.k4],
-        )
-    } else if rd.k1 == 0.0
-        && rd.k2 == 0.0
-        && rd.p1 == 0.0
-        && rd.p2 == 0.0
-        && rd.k3 == 0.0
-        && rd.k4 == 0.0
-    {
-        ("PINHOLE".to_owned(), vec![fx, fy, cx, cy])
-    } else if rd.k3 == 0.0 && rd.k4 == 0.0 && rd.k5 == 0.0 && rd.k6 == 0.0 {
-        (
-            "OPENCV".to_owned(),
-            vec![fx, fy, cx, cy, rd.k1, rd.k2, rd.p1, rd.p2],
-        )
-    } else {
-        (
-            "FULL_OPENCV".to_owned(),
-            vec![
-                fx, fy, cx, cy, rd.k1, rd.k2, rd.p1, rd.p2, rd.k3, rd.k4, rd.k5, rd.k6,
-            ],
-        )
-    };
-
-    crate::colmap::require_model_by_name(&model).map_err(|e| {
-        err(
-            ErrorCode::UnsupportedFormat,
-            "camera_model",
-            format!("NerfstudioParser: unsupported camera model {model_name} ({e})"),
-        )
-    })?;
-    for (i, p) in params.iter().enumerate() {
-        if !p.is_finite() {
-            return Err(err(
-                ErrorCode::ValueOutOfRange,
-                "params",
-                format!("NerfstudioParser: non-finite camera param[{i}]"),
-            ));
-        }
-    }
-    if width == 0 || height == 0 {
-        return Err(err(
-            ErrorCode::ValueOutOfRange,
-            "resolution",
-            "NerfstudioParser: non-positive width/height",
-        ));
-    }
-    Ok(ColmapCamera {
-        camera_id,
-        model,
-        width,
-        height,
-        params,
-    })
-}
-
 #[derive(Clone, Copy, Default)]
 struct RawDist {
     k1: f64,
@@ -444,8 +326,300 @@ struct RawDist {
     b2: f64,
 }
 
+/// Baked NS frame intrinsics (pin `NerfstudioParser.cpp:650-745`).
+struct NsBaked {
+    model: CameraModel,
+    distortion: DistortionTier,
+    fx: f32,
+    fy: f32,
+    cx: f32,
+    cy: f32,
+    dist: [f32; DISTORTION_PARAMS],
+    redistort: RedistortSource,
+}
+
+fn finite_f32(v: f64, field: &str) -> Result<f32, spirula_core::DomainError> {
+    if !v.is_finite() {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            field,
+            format!("NerfstudioParser: non-finite {field}"),
+        ));
+    }
+    Ok(v as f32)
+}
+
+fn positive_f32(v: f64, field: &str) -> Result<f32, spirula_core::DomainError> {
+    let f = finite_f32(v, field)?;
+    if f <= 0.0 {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            field,
+            format!("NerfstudioParser: non-positive {field}"),
+        ));
+    }
+    Ok(f)
+}
+
+fn hint_is_known(hint: &str) -> bool {
+    // Empty string is NOT known (pin: `camera_distortion_from_name` fails).
+    hint == "RATIONAL" || DistortionTier::from_name(hint).is_ok()
+}
+
+fn skew_base(model: CameraModel) -> f32 {
+    match model {
+        CameraModel::Fisheye => SKEW_BASE_FISHEYE,
+        CameraModel::Equisolid => SKEW_BASE_EQUISOLID,
+        CameraModel::Pinhole | CameraModel::Equirectangular => SKEW_BASE_PERSPECTIVE,
+    }
+}
+
+struct FitLensArgs<'a> {
+    model: CameraModel,
+    rational: bool,
+    fx: f64,
+    fy: f64,
+    cx: f64,
+    cy: f64,
+    skew_px: f64,
+    raw: &'a [f32; DISTORTION_PARAMS],
+    width: u32,
+    height: u32,
+    cancel: Option<&'a CancelToken>,
+}
+
+/// Fit skewed / rational lenses onto a compiled tier (pin `fit_unsupported_lens`).
+fn fit_unsupported_lens(args: FitLensArgs<'_>) -> Result<NsBaked, spirula_core::DomainError> {
+    let FitLensArgs {
+        model,
+        rational,
+        fx,
+        fy,
+        cx,
+        cy,
+        skew_px,
+        raw,
+        width,
+        height,
+        cancel,
+    } = args;
+    let mut src = RedistortSource {
+        source_model: SKEWED,
+        params: [0.0; MAX_PARAMS],
+        fit_max_px: 0.0,
+    };
+    src.params[0] = finite_f32(fx, "fx")?;
+    src.params[1] = finite_f32(fy, "fy")?;
+    src.params[2] = finite_f32(cx, "cx")?;
+    src.params[3] = finite_f32(cy, "cy")?;
+    src.params[4] = finite_f32(skew_px, "skew_px")?;
+    for (i, c) in raw.iter().enumerate() {
+        src.params[5 + i] = *c;
+    }
+    src.params[13] = skew_base(model);
+    src.params[14] = if rational {
+        SKEW_RADIAL_RATIONAL
+    } else {
+        SKEW_RADIAL_POLYNOMIAL
+    };
+
+    let project = |x: f64, y: f64, z: f64| -> Result<(f64, f64), spirula_core::DomainError> {
+        source_project(SKEWED, &src.params, x, y, z)
+    };
+
+    // Skew keeps declared model; rational uses auto (pin C++).
+    let mut fit = if rational {
+        fit_camera_auto_cancelable(&project, width, height, FitOptions::default(), cancel)?
+    } else {
+        fit_camera(&project, width, height, model, FitOptions::default())?
+    };
+    if !fit.invertible || fit.samples == 0 {
+        fit = fit_camera_auto_cancelable(&project, width, height, FitOptions::default(), cancel)?;
+    }
+
+    let mut coeffs = [0.0f64; DISTORTION_PARAMS];
+    coeffs.copy_from_slice(&fit.target.coeffs);
+    let (tier, demoted) = demote_distortion(fit.target.distortion, &coeffs)?;
+    let mut dist = [0.0f32; DISTORTION_PARAMS];
+    for (i, v) in demoted.iter().enumerate() {
+        dist[i] = finite_f32(*v, "dist")?;
+    }
+
+    let mut redistort = RedistortSource::default();
+    if fit.max_px >= K_EXACT_FIT_PX {
+        redistort = src;
+        redistort.fit_max_px = finite_f32(fit.max_px, "fit_max_px")?;
+    }
+
+    Ok(NsBaked {
+        model: fit.target.model,
+        distortion: tier,
+        fx: positive_f32(fit.target.fx, "fx")?,
+        fy: positive_f32(fit.target.fy, "fy")?,
+        cx: finite_f32(fit.target.cx, "cx")?,
+        cy: finite_f32(fit.target.cy, "cy")?,
+        dist,
+        redistort,
+    })
+}
+
+struct BakeLensArgs<'a> {
+    model_name: &'a str,
+    fx: f64,
+    fy: f64,
+    cx: f64,
+    cy: f64,
+    w: f64,
+    h: f64,
+    rd: &'a RawDist,
+    hint: &'a str,
+    thin_prism_shaped: bool,
+    cancel: Option<&'a CancelToken>,
+}
+
+/// Pin `NerfstudioParser.cpp:650-745` — preserve declared projection model;
+/// do not remap through fake COLMAP model names.
+fn bake_nerfstudio_lens(args: BakeLensArgs<'_>) -> Result<NsBaked, spirula_core::DomainError> {
+    let BakeLensArgs {
+        model_name,
+        mut fx,
+        fy,
+        cx,
+        cy,
+        w,
+        h,
+        rd,
+        hint,
+        thin_prism_shaped,
+        cancel,
+    } = args;
+    let model = CameraModel::from_name(model_name).map_err(|_| {
+        err(
+            ErrorCode::UnsupportedFormat,
+            "camera_model",
+            format!("NerfstudioParser: unsupported camera model {model_name}"),
+        )
+    })?;
+    if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "resolution",
+            "NerfstudioParser: non-positive width/height",
+        ));
+    }
+    let width = w as u32;
+    let height = h as u32;
+    if width == 0 || height == 0 {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "resolution",
+            "NerfstudioParser: non-positive width/height",
+        ));
+    }
+
+    // Affinity folds into fx; skew is off-diagonal (handled by fit when nonzero).
+    let skew_px = rd.b2 * fx;
+    if rd.b1 != 0.0 {
+        fx *= 1.0 + rd.b1;
+    }
+
+    let hint_rational = hint == "RATIONAL";
+    let hint_known = hint_is_known(hint);
+    // C++: fisheye = (model != PINHOLE). OPENCV/PINHOLE names → Pinhole.
+    let fisheye = model != CameraModel::Pinhole;
+    let rational = (hint_rational
+        || (!hint_known
+            && !fisheye
+            && (rd.k5 != 0.0 || rd.k6 != 0.0 || (rd.k4 != 0.0 && !thin_prism_shaped))))
+        && (rd.k4 != 0.0 || rd.k5 != 0.0 || rd.k6 != 0.0);
+
+    let mut raw = [0.0f32; DISTORTION_PARAMS];
+    if rational {
+        raw[0] = finite_f32(rd.k1, "k1")?;
+        raw[1] = finite_f32(rd.k2, "k2")?;
+        raw[2] = finite_f32(rd.k3, "k3")?;
+        raw[3] = finite_f32(rd.k4, "k4")?;
+        raw[4] = finite_f32(rd.k5, "k5")?;
+        raw[5] = finite_f32(rd.k6, "k6")?;
+        raw[6] = finite_f32(rd.p1, "p1")?;
+        raw[7] = finite_f32(rd.p2, "p2")?;
+    } else {
+        raw[0] = finite_f32(rd.k1, "k1")?;
+        raw[1] = finite_f32(rd.k2, "k2")?;
+        raw[2] = finite_f32(rd.k3, "k3")?;
+        raw[3] = finite_f32(rd.k4, "k4")?;
+        raw[4] = finite_f32(rd.p1, "p1")?;
+        raw[5] = finite_f32(rd.p2, "p2")?;
+        raw[6] = finite_f32(rd.sx1, "sx1")?;
+        raw[7] = finite_f32(rd.sy1, "sy1")?;
+    }
+
+    if model == CameraModel::Equirectangular {
+        // Canonical panorama intrinsics; no lens / skew.
+        let fx_e = w / (2.0 * std::f64::consts::PI);
+        let fy_e = h / std::f64::consts::PI;
+        return Ok(NsBaked {
+            model: CameraModel::Equirectangular,
+            distortion: DistortionTier::None,
+            fx: positive_f32(fx_e, "fx")?,
+            fy: positive_f32(fy_e, "fy")?,
+            cx: finite_f32(w / 2.0, "cx")?,
+            cy: finite_f32(h / 2.0, "cy")?,
+            dist: [0.0; DISTORTION_PARAMS],
+            redistort: RedistortSource::default(),
+        });
+    }
+
+    if skew_px != 0.0 || rational {
+        return fit_unsupported_lens(FitLensArgs {
+            model,
+            rational,
+            fx,
+            fy,
+            cx,
+            cy,
+            skew_px,
+            raw: &raw,
+            width,
+            height,
+            cancel,
+        });
+    }
+
+    // Direct raw path: keep declared model; demote tier from ThinPrism.
+    let mut coeffs = [0.0f64; DISTORTION_PARAMS];
+    for (i, c) in raw.iter().enumerate() {
+        coeffs[i] = f64::from(*c);
+    }
+    let (tier, demoted) = demote_distortion(DistortionTier::ThinPrism, &coeffs)?;
+    let mut dist = [0.0f32; DISTORTION_PARAMS];
+    for (i, v) in demoted.iter().enumerate() {
+        dist[i] = finite_f32(*v, "dist")?;
+    }
+    Ok(NsBaked {
+        model,
+        distortion: tier,
+        fx: positive_f32(fx, "fx")?,
+        fy: positive_f32(fy, "fy")?,
+        cx: finite_f32(cx, "cx")?,
+        cy: finite_f32(cy, "cy")?,
+        dist,
+        redistort: RedistortSource::default(),
+    })
+}
+
+fn model_colmap_name(model: CameraModel) -> &'static str {
+    match model {
+        CameraModel::Pinhole => "PINHOLE",
+        CameraModel::Fisheye => "FISHEYE",
+        CameraModel::Equisolid => "EQUISOLID",
+        CameraModel::Equirectangular => "EQUIRECTANGULAR",
+    }
+}
+
 struct FrameBuild {
-    frame: Value,
+    /// Index into the original `frames` JSON array (avoids cloning the Value).
+    frame_idx: usize,
     path: PathBuf,
     sort_key: String,
     file_path: String,
@@ -505,14 +679,10 @@ pub fn load_nerfstudio_dataset_budgeted(
             format!("NerfstudioParser: JSON parse error: {e}"),
         )
     })?;
+    // Charge JSON DOM overhead (file bytes already charged; DOM is a second live copy).
+    mem.charge(text.len() as u64, "json_dom")?;
 
-    let mut loaded = load_nerfstudio_meta_value(
-        &meta,
-        dataset_dir,
-        cfg,
-        cancel,
-        memory_budget_bytes.saturating_sub(mem.used()),
-    )?;
+    let mut loaded = load_nerfstudio_meta_value_mem(&meta, dataset_dir, cfg, cancel, &mut mem)?;
     loaded.recon_dir = transforms_path.clone();
     loaded.summary.recon_dir = transforms_path.display().to_string();
     Ok(loaded)
@@ -527,8 +697,37 @@ pub fn load_nerfstudio_meta_value(
     cancel: Option<&CancelToken>,
     memory_budget_bytes: u64,
 ) -> Result<ParsedDataset, spirula_core::DomainError> {
-    let mut cp = ParseCancel::new(cancel);
     let mut mem = ParseMem::with_cap(memory_budget_bytes);
+    // Caller-owned meta DOM: charge a conservative live-size estimate.
+    mem.charge(estimate_json_bytes(meta), "json_dom")?;
+    load_nerfstudio_meta_value_mem(meta, dataset_dir, cfg, cancel, &mut mem)
+}
+
+pub(crate) fn estimate_json_bytes(v: &Value) -> u64 {
+    match v {
+        Value::Null | Value::Bool(_) => 8,
+        Value::Number(_) => 16,
+        Value::String(s) => s.len() as u64 + 16,
+        Value::Array(a) => a
+            .iter()
+            .map(estimate_json_bytes)
+            .fold(16u64, |acc, n| acc.saturating_add(n).saturating_add(8)),
+        Value::Object(m) => m.iter().fold(16u64, |acc, (k, val)| {
+            acc.saturating_add(k.len() as u64)
+                .saturating_add(16)
+                .saturating_add(estimate_json_bytes(val))
+        }),
+    }
+}
+
+pub(crate) fn load_nerfstudio_meta_value_mem(
+    meta: &Value,
+    dataset_dir: &Path,
+    cfg: &ColmapLoadConfig,
+    cancel: Option<&CancelToken>,
+    mem: &mut ParseMem,
+) -> Result<ParsedDataset, spirula_core::DomainError> {
+    let mut cp = ParseCancel::new(cancel);
     cp.poll_now()?;
 
     check_applied_transform(meta)?;
@@ -552,8 +751,9 @@ pub fn load_nerfstudio_meta_value(
     }
 
     let mut builds = Vec::new();
+    try_reserve_elems(&mut builds, jframes.len(), mem, "builds")?;
     let mut missing = Vec::new();
-    for fr in jframes {
+    for (frame_idx, fr) in jframes.iter().enumerate() {
         cp.tick(1)?;
         let Some(fp) = fr.get("file_path").and_then(|v| v.as_str()) else {
             continue;
@@ -568,14 +768,18 @@ pub fn load_nerfstudio_meta_value(
         safe_rel_path(fp)?;
         let abs = dataset_dir.join(fp);
         if cfg.require_image_files && !abs.is_file() {
-            missing.push(abs.display().to_string());
+            let s = abs.display().to_string();
+            mem.charge_str_bytes(s.len(), "missing")?;
+            missing.push(s);
             continue;
         }
         let sort_key = path_sort_key(&abs);
         mem.charge_str_bytes(sort_key.len(), "sort_key")?;
         mem.charge_str_bytes(abs.as_os_str().len(), "path")?;
+        mem.charge_str_bytes(fp.len(), "file_path")?;
+        mem.charge_elems::<FrameBuild>(1, "builds")?;
         builds.push(FrameBuild {
-            frame: fr.clone(),
+            frame_idx,
             path: abs,
             sort_key,
             file_path: fp.to_owned(),
@@ -601,16 +805,12 @@ pub fn load_nerfstudio_meta_value(
     builds.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
     ensure_count(builds.len() as u64, MAX_IMAGES, "images")?;
 
-    // Seed points (optional).
+    // Seed points — charge into the same cumulative budget (not a disposable sub-cap).
     let points = if let Some(ply_rel) = meta.get("ply_file_path").and_then(|v| v.as_str()) {
         safe_rel_path(ply_rel)?;
         let ply_path = dataset_dir.join(ply_rel);
         if cfg.require_image_files || ply_path.is_file() {
-            read_ply_points_budgeted(
-                &ply_path,
-                cancel,
-                memory_budget_bytes.saturating_sub(mem.used()),
-            )?
+            read_ply_points_mem(&ply_path, cancel, mem)?
         } else {
             ColmapPoints3D::default()
         }
@@ -624,19 +824,17 @@ pub fn load_nerfstudio_meta_value(
             }
         }
         if let Some(p) = found {
-            read_ply_points_budgeted(&p, cancel, memory_budget_bytes.saturating_sub(mem.used()))?
+            read_ply_points_mem(&p, cancel, mem)?
         } else {
             ColmapPoints3D::default()
         }
     };
     cp.poll_now()?;
 
-    // One synthetic camera id per distinct baked intrinsics key would be ideal;
-    // for correctness assign one camera per frame (NS often repeats intrinsics).
     ensure_count(builds.len() as u64, MAX_CAMERAS, "cameras")?;
     let mut cameras = BTreeMap::new();
     let mut names = Vec::new();
-    try_reserve_elems(&mut names, builds.len(), &mut mem, "names")?;
+    try_reserve_elems(&mut names, builds.len(), mem, "names")?;
     for b in &builds {
         cp.tick(1)?;
         let s = b.path.display().to_string();
@@ -650,12 +848,12 @@ pub fn load_nerfstudio_meta_value(
     mem.charge_elems::<usize>(plan.validation.len(), "split_validation")?;
 
     let mut frames = Vec::new();
-    try_reserve_elems(&mut frames, plan.emit.len(), &mut mem, "frames")?;
+    try_reserve_elems(&mut frames, plan.emit.len(), mem, "frames")?;
     for (emit_i, &bi) in plan.emit.iter().enumerate() {
         cp.tick(1)?;
         let b = &builds[bi];
-        let fr = &b.frame;
-        let mut fx = frame_or_meta_num(fr, meta, "fl_x", true)?;
+        let fr = &jframes[b.frame_idx];
+        let fx = frame_or_meta_num(fr, meta, "fl_x", true)?;
         let fy = frame_or_meta_num(fr, meta, "fl_y", true)?;
         let cx = frame_or_meta_num(fr, meta, "cx", true)?;
         let cy = frame_or_meta_num(fr, meta, "cy", true)?;
@@ -669,15 +867,6 @@ pub fn load_nerfstudio_meta_value(
             ));
         }
         let model_name = frame_or_meta_str(fr, meta, "camera_model").unwrap_or("OPENCV");
-        // Validate known COLMAP/NS model name early.
-        spirula_core::CameraModel::from_name(model_name).map_err(|_| {
-            err(
-                ErrorCode::UnsupportedFormat,
-                "camera_model",
-                format!("NerfstudioParser: unsupported camera model {model_name}"),
-            )
-        })?;
-
         let rd = RawDist {
             k1: frame_or_meta_num(fr, meta, "k1", false)?,
             k2: frame_or_meta_num(fr, meta, "k2", false)?,
@@ -692,65 +881,67 @@ pub fn load_nerfstudio_meta_value(
             b1: frame_or_meta_num(fr, meta, "b1", false)?,
             b2: frame_or_meta_num(fr, meta, "b2", false)?,
         };
-        let skew_px = rd.b2 * fx;
-        if rd.b1 != 0.0 {
-            fx *= 1.0 + rd.b1;
-        }
-
         let hint = frame_or_meta_str(fr, meta, "camera_distortion").unwrap_or("");
-        let hint_rational = hint == "RATIONAL";
-        let hint_known =
-            hint_rational || hint.is_empty() || matches!(hint, "THIN_PRISM" | "OPENCV" | "NONE");
         let thin_prism_shaped = frame_or_meta_has(fr, meta, "b1")
             || frame_or_meta_has(fr, meta, "b2")
             || frame_or_meta_has(fr, meta, "sx1")
             || frame_or_meta_has(fr, meta, "sy1");
-        let pinhole_model = matches!(
-            model_name,
-            "PINHOLE" | "SIMPLE_PINHOLE" | "SIMPLE_RADIAL" | "RADIAL" | "OPENCV" | "FULL_OPENCV"
-        );
-        let fisheye = !pinhole_model && model_name != "EQUIRECTANGULAR";
-        let rational = (hint_rational
-            || (!hint_known
-                && !fisheye
-                && (rd.k5 != 0.0 || rd.k6 != 0.0 || (rd.k4 != 0.0 && !thin_prism_shaped))))
-            && (rd.k4 != 0.0 || rd.k5 != 0.0 || rd.k6 != 0.0);
 
-        let cam_id = (emit_i as i32) + 1;
-        let width_u = w as u64;
-        let height_u = h as u64;
-        let cam = build_colmap_camera(BuildCam {
-            camera_id: cam_id,
+        let baked = bake_nerfstudio_lens(BakeLensArgs {
             model_name,
-            width: width_u,
-            height: height_u,
             fx,
             fy,
             cx,
             cy,
+            w,
+            h,
             rd: &rd,
-            rational,
+            hint,
             thin_prism_shaped,
-            skew_px,
+            cancel,
         })?;
-        let baked = bake_and_fit_cancelable(&cam, cancel)?;
-        let width = u32::try_from(cam.width).map_err(|_| {
+
+        let cam_id = (emit_i as i32) + 1;
+        let width_u = w as u64;
+        let height_u = h as u64;
+        let cam = ColmapCamera {
+            camera_id: cam_id,
+            model: model_colmap_name(baked.model).into(),
+            width: width_u,
+            height: height_u,
+            params: if baked.model == CameraModel::Equirectangular {
+                vec![w, h]
+            } else {
+                vec![
+                    f64::from(baked.fx),
+                    f64::from(baked.fy),
+                    f64::from(baked.cx),
+                    f64::from(baked.cy),
+                ]
+            },
+        };
+        mem.charge_btree_entries::<(i32, ColmapCamera)>(1, "cameras")?;
+        mem.charge_str_bytes(cam.model.len(), "cameras")?;
+        mem.charge_elems::<f64>(cam.params.len(), "cameras")?;
+        cameras.insert(cam_id, cam);
+
+        let width = u32::try_from(width_u).map_err(|_| {
             err(
                 ErrorCode::ValueOutOfRange,
                 "width",
-                format!("width {} exceeds u32", cam.width),
+                format!("width {width_u} exceeds u32"),
             )
         })?;
-        let height = u32::try_from(cam.height).map_err(|_| {
+        let height = u32::try_from(height_u).map_err(|_| {
             err(
                 ErrorCode::ValueOutOfRange,
                 "height",
-                format!("height {} exceeds u32", cam.height),
+                format!("height {height_u} exceeds u32"),
             )
         })?;
-        cameras.insert(cam_id, cam);
 
         let c2w = read_c2w12(fr)?;
+        mem.charge_str_bytes(b.file_path.len(), "frame_name")?;
         frames.push(LoadedFrame {
             image_id: cam_id,
             camera_id: cam_id,
@@ -763,7 +954,7 @@ pub fn load_nerfstudio_meta_value(
             model: baked.model,
             distortion: baked.distortion,
             dist_coeffs: baked.dist,
-            redistort: baked.source,
+            redistort: baked.redistort,
             observations: Vec::new(),
         });
     }

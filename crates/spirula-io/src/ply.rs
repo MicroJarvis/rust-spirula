@@ -476,9 +476,18 @@ pub fn read_ply_points_budgeted(
     memory_budget_bytes: u64,
 ) -> Result<ColmapPoints3D, spirula_core::DomainError> {
     let mut mem = ParseMem::with_cap(memory_budget_bytes);
+    read_ply_points_mem(path, cancel, &mut mem)
+}
+
+/// Read PLY vertices charging a shared [`ParseMem`] (parent load keeps the bytes).
+pub(crate) fn read_ply_points_mem(
+    path: &Path,
+    cancel: Option<&CancelToken>,
+    mem: &mut ParseMem,
+) -> Result<ColmapPoints3D, spirula_core::DomainError> {
     let mut cp = ParseCancel::new(cancel);
     cp.poll_now()?;
-    let bytes = read_capped(path, &mut mem, cancel)?;
+    let bytes = read_capped(path, mem, cancel)?;
     cp.poll_now()?;
     let what = path.display().to_string();
     let view = PlyVertexView::parse(&bytes, &what)?;
@@ -521,7 +530,7 @@ pub fn read_ply_points_budgeted(
 
     let n = view.count as usize;
     let mut points = Vec::new();
-    try_reserve_elems(&mut points, n, &mut mem, "ply_points")?;
+    try_reserve_elems(&mut points, n, mem, "ply_points")?;
 
     let nprops = view.types.len();
     let mut offsets = Vec::with_capacity(nprops);

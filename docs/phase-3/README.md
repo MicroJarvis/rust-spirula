@@ -40,8 +40,8 @@ gap). Drop drain deadline ≠ proven hard worker join — see
 [colmap.md](colmap.md). Remaining honest gap: dense `fit_model` single LM call
 non-preemptible.
 
-**P3-F04 进行中 (HOLD)** (code tip
-`44ad4d182d862311ac66debc26d2b67669f682e6`) — Nerfstudio `transforms.json` +
-self-contained PLY + Metashape XML (+ `.psx` typed unsupported without zip).
-See [nerfstudio-metashape.md](nerfstudio-metashape.md). Does not include
-P3-F05 center/normalize, P3-F06 splat, or P3-F08 cache.
+**P3-F04 进行中 (HOLD)** — Nerfstudio `transforms.json` + self-contained PLY +
+Metashape XML (+ `.psx` typed unsupported without zip). Lens adapt pins
+C++ 650–745 (no fake COLMAP model remaps). See
+[nerfstudio-metashape.md](nerfstudio-metashape.md). Does not include P3-F05
+center/normalize, P3-F06 splat, or P3-F08 cache.

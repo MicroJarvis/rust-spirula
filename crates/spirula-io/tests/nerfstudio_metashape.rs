@@ -4,12 +4,21 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use spirula_core::{CancelReason, CancelToken, ErrorCode};
+use spirula_core::{CameraModel, CancelReason, CancelToken, DistortionTier, ErrorCode};
 use spirula_io::temp_harness::TempHarness;
 use spirula_io::{
     ColmapLoadConfig, DatasetFormat, DatasetProbe, load_dataset, load_dataset_budgeted,
     probe_dataset, read_ply_points,
 };
+
+fn identity_tm() -> &'static str {
+    "[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]"
+}
+
+fn write_ns(ds: &std::path::Path, body: &str) {
+    std::fs::create_dir_all(ds).unwrap();
+    std::fs::write(ds.join("transforms.json"), body).unwrap();
+}
 
 fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/datasets")
@@ -403,4 +412,332 @@ fn require_image_files_missing_stable() {
     )
     .unwrap();
     assert_eq!(ok.frames.len(), 1);
+}
+
+#[test]
+fn equisolid_without_distortion_keeps_equisolid_model() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("eq");
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"EQUISOLID","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "frames":[{{"file_path":"a.png","transform_matrix":{}}}]
+}}"#,
+            identity_tm()
+        ),
+    );
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(loaded.frames[0].model, CameraModel::Equisolid);
+    assert_eq!(loaded.frames[0].distortion, DistortionTier::None);
+}
+
+#[test]
+fn pinhole_b1_affinity_keeps_pinhole_and_scales_fx() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("b1");
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"PINHOLE","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "b1":0.01,"b2":0.0,
+  "frames":[{{"file_path":"a.png","transform_matrix":{}}}]
+}}"#,
+            identity_tm()
+        ),
+    );
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(loaded.frames[0].model, CameraModel::Pinhole);
+    assert!((loaded.frames[0].intrins[0] - 101.0).abs() < 1e-4);
+    assert_eq!(loaded.frames[0].distortion, DistortionTier::None);
+}
+
+#[test]
+fn thin_prism_hint_keeps_k4_as_fourth_radial_not_rational() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("k4");
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"PINHOLE","camera_distortion":"THIN_PRISM",
+  "fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "k4":0.01,
+  "frames":[{{"file_path":"a.png","transform_matrix":{}}}]
+}}"#,
+            identity_tm()
+        ),
+    );
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(loaded.frames[0].model, CameraModel::Pinhole);
+    assert_eq!(loaded.frames[0].distortion, DistortionTier::ThinPrism);
+    // Polynomial layout: raw[3]=k4 stays 0.01 (not rational demote that flips signs).
+    assert!((loaded.frames[0].dist_coeffs[3] - 0.01).abs() < 1e-6);
+}
+
+#[test]
+fn pinhole_with_skew_enters_fit_path() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("skew");
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"PINHOLE","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "b2":0.05,
+  "frames":[{{"file_path":"a.png","transform_matrix":{}}}]
+}}"#,
+            identity_tm()
+        ),
+    );
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    // Skew forces fit_unsupported_lens; result remains a compiled pair.
+    assert!(matches!(
+        loaded.frames[0].model,
+        CameraModel::Pinhole | CameraModel::Fisheye | CameraModel::Equisolid
+    ));
+}
+
+#[test]
+fn fisheye_keeps_tangential_in_polynomial_raw() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("fish");
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"FISHEYE","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "k1":0.1,"k2":0.01,"k3":0.001,"k4":0.0001,"p1":0.002,"p2":-0.003,
+  "frames":[{{"file_path":"a.png","transform_matrix":{}}}]
+}}"#,
+            identity_tm()
+        ),
+    );
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(loaded.frames[0].model, CameraModel::Fisheye);
+    // Polynomial: [k1,k2,k3,k4,p1,p2,sx,sy]
+    assert!((loaded.frames[0].dist_coeffs[0] - 0.1).abs() < 1e-5);
+    assert!((loaded.frames[0].dist_coeffs[4] - 0.002).abs() < 1e-5);
+    assert!((loaded.frames[0].dist_coeffs[5] + 0.003).abs() < 1e-5);
+}
+
+#[test]
+fn metashape_k4_thin_prism_radial_not_rational() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("msk4");
+    std::fs::create_dir_all(ds.join("images")).unwrap();
+    std::fs::write(ds.join("images/cam0.png"), b"x").unwrap();
+    std::fs::write(
+        ds.join("cameras.xml"),
+        r#"<?xml version="1.0"?>
+<document><chunk>
+  <sensors><sensor id="0" type="frame">
+    <resolution width="64" height="48"/>
+    <calibration class="adjusted" type="frame">
+      <f>100</f><cx>0</cx><cy>0</cy>
+      <k1>0</k1><k2>0</k2><k3>0</k3><k4>0.01</k4>
+      <p1>0</p1><p2>0</p2><b1>0</b1><b2>0</b2>
+    </calibration>
+  </sensor></sensors>
+  <cameras><camera id="0" label="cam0" sensor_id="0">
+    <transform>1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 1</transform>
+  </camera></cameras>
+</chunk></document>"#,
+    )
+    .unwrap();
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            format: Some("metashape".into()),
+            require_image_files: false,
+            metashape_xml: Some("cameras.xml".into()),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(loaded.frames[0].model, CameraModel::Pinhole);
+    assert!((loaded.frames[0].dist_coeffs[3] - 0.01).abs() < 1e-6);
+}
+
+#[test]
+fn metashape_utf8_label_no_panic_typed_no_match() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("utf8");
+    std::fs::create_dir_all(ds.join("images")).unwrap();
+    std::fs::write(ds.join("images/other.png"), b"x").unwrap();
+    std::fs::write(
+        ds.join("cameras.xml"),
+        r#"<?xml version="1.0"?>
+<document><chunk>
+  <sensors><sensor id="0" type="frame">
+    <resolution width="64" height="48"/>
+    <calibration class="adjusted" type="frame">
+      <f>100</f><cx>0</cx><cy>0</cy>
+      <k1>0</k1><k2>0</k2><k3>0</k3><k4>0</k4>
+      <p1>0</p1><p2>0</p2><b1>0</b1><b2>0</b2>
+    </calibration>
+  </sensor></sensors>
+  <cameras><camera id="0" label="相机" sensor_id="0">
+    <transform>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</transform>
+  </camera></cameras>
+</chunk></document>"#,
+    )
+    .unwrap();
+    let err = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            format: Some("metashape".into()),
+            require_image_files: true,
+            metashape_xml: Some("cameras.xml".into()),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap_err();
+    // No panic: stable DomainError (no usable cameras after failed UTF-8-safe match).
+    assert!(
+        matches!(err.code(), ErrorCode::MalformedRecord | ErrorCode::NotFound),
+        "got {:?}",
+        err.code()
+    );
+}
+
+#[test]
+fn resource_budget_charges_json_dom_before_tiny_reject() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("bud");
+    // Large enough JSON that file read fits a mid budget but DOM+builds do not.
+    let mut frames = String::new();
+    for i in 0..40 {
+        if i > 0 {
+            frames.push(',');
+        }
+        frames.push_str(&format!(
+            r#"{{"file_path":"f{i:04}.png","transform_matrix":{}}}"#,
+            identity_tm()
+        ));
+    }
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"PINHOLE","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "frames":[{frames}]
+}}"#
+        ),
+    );
+    let ok = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(ok.frames.len(), 40);
+    // Cap above file+DOM but below frames/names/split accumulation.
+    let e = load_dataset_budgeted(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+        8_000,
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+}
+
+#[test]
+fn after_start_cancel_during_metashape_image_walk() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("walk");
+    let images = ds.join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    for i in 0..5_000 {
+        std::fs::write(images.join(format!("img_{i:05}.png")), b"x").unwrap();
+    }
+    std::fs::write(
+        ds.join("cameras.xml"),
+        r#"<?xml version="1.0"?>
+<document><chunk>
+  <sensors><sensor id="0" type="frame">
+    <resolution width="64" height="48"/>
+    <calibration class="adjusted" type="frame">
+      <f>100</f><cx>0</cx><cy>0</cy>
+      <k1>0</k1><k2>0</k2><k3>0</k3><k4>0</k4>
+      <p1>0</p1><p2>0</p2><b1>0</b1><b2>0</b2>
+    </calibration>
+  </sensor></sensors>
+  <cameras><camera id="0" label="img_00000" sensor_id="0">
+    <transform>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</transform>
+  </camera></cameras>
+</chunk></document>"#,
+    )
+    .unwrap();
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    let path = ds.clone();
+    let handle = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(2));
+        assert!(c2.request(CancelReason::User));
+    });
+    let err = load_dataset(
+        &path,
+        &ColmapLoadConfig {
+            format: Some("metashape".into()),
+            require_image_files: false,
+            metashape_xml: Some("cameras.xml".into()),
+            ..Default::default()
+        },
+        Some(&cancel),
+    )
+    .unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
 }
