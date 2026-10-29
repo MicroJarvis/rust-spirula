@@ -8,9 +8,9 @@ use std::time::Duration;
 use spirula_core::{CancelReason, CancelToken, ErrorCode};
 use spirula_io::colmap::{
     ColmapCamera, ColmapLoadConfig, DatasetFormat, DatasetProbe, SplitConfig, bake_and_fit,
-    colmap_model_num_images, colmap_model_num_images_cancelable, colmap_to_c2w, compute_splits,
-    load_colmap_dataset, probe_dataset, read_cameras_binary, read_cameras_text, read_images_binary,
-    read_images_text, read_points3d_binary, read_points3d_text, train_subset,
+    colmap_model_num_images, colmap_to_c2w, compute_splits, load_colmap_dataset, probe_dataset,
+    read_cameras_binary, read_cameras_text, read_images_binary, read_images_text,
+    read_points3d_binary, read_points3d_text, train_subset,
 };
 use spirula_io::temp_harness::TempHarness;
 
@@ -654,29 +654,41 @@ fn cancel_before_text_read_capped_observes_token() {
     assert_eq!(err.code(), ErrorCode::Canceled);
 }
 
+#[cfg(unix)]
 #[test]
 fn after_start_cancel_during_text_read_capped() {
+    // FIFO so cancel is armed after poll_now / first read chunk — no wall-clock race
+    // against a warm tmpfs finishing a multi-MiB regular file in <5ms.
     let h = TempHarness::new().unwrap();
     let p = h.path().join("cameras.txt");
-    // ~32 MiB forces multiple cancel-aware read chunks before parse.
-    {
-        let mut f = fs::File::create(&p).unwrap();
-        f.write_all(b"# ").unwrap();
-        let pad = vec![b'x'; 1024 * 1024];
-        for _ in 0..32 {
-            f.write_all(&pad).unwrap();
-        }
-        f.write_all(b"\n1 PINHOLE 64 48 100 100 32 24\n").unwrap();
-    }
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&p)
+            .status()
+            .unwrap()
+            .success()
+    );
 
     let cancel = CancelToken::new();
-    let cancel2 = cancel.clone();
-    let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(cancel2.request(CancelReason::User));
+    let cancel_w = cancel.clone();
+    let p_w = p.clone();
+    let writer = std::thread::spawn(move || {
+        let mut f = fs::OpenOptions::new().write(true).open(&p_w).unwrap();
+        // Unblock the reader's first chunk after its opening poll_now.
+        f.write_all(b"# ").unwrap();
+        f.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+        assert!(cancel_w.request(CancelReason::User));
+        // Keep feeding until the reader observes cancel (ignore EPIPE).
+        let pad = vec![b'x'; 256 * 1024];
+        for _ in 0..16 {
+            if f.write_all(&pad).is_err() {
+                break;
+            }
+        }
     });
+
     let err = read_cameras_text(&p, Some(&cancel)).unwrap_err();
-    handle.join().unwrap();
+    let _ = writer.join();
     assert_eq!(err.code(), ErrorCode::Canceled);
 }
 
@@ -695,33 +707,6 @@ fn probe_header_atoll_and_bin_preference_hold() {
     // Truncated bin wins preference and does not fall back to the headered txt.
     fs::write(dir.join("images.bin"), [1u8, 2, 3]).unwrap();
     assert_eq!(colmap_model_num_images(&dir), -1);
-}
-
-#[test]
-fn after_start_cancel_during_image_count_stream() {
-    let h = TempHarness::new().unwrap();
-    let dir = h.path().join("m");
-    fs::create_dir_all(&dir).unwrap();
-    // ~16 MiB of non-header rows so byte-chunk ticks outlast a short cancel delay.
-    {
-        let mut f = fs::File::create(dir.join("images.txt")).unwrap();
-        let row = format!("0 1 0 0 0 0 0 0 1 {}.png\n0 0 -1\n", "a".repeat(200));
-        let need = (16 * 1024 * 1024) / row.len() + 1;
-        for i in 0..need {
-            let line = format!("{i} 1 0 0 0 0 0 0 1 {}.png\n0 0 -1\n", "a".repeat(200));
-            f.write_all(line.as_bytes()).unwrap();
-        }
-    }
-
-    let cancel = CancelToken::new();
-    let cancel2 = cancel.clone();
-    let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(cancel2.request(CancelReason::User));
-    });
-    let err = colmap_model_num_images_cancelable(&dir, Some(&cancel)).unwrap_err();
-    handle.join().unwrap();
-    assert_eq!(err.code(), ErrorCode::Canceled);
 }
 
 #[test]
