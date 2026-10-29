@@ -69,7 +69,7 @@ Host pin holdout: `fixtures/datasets/colmap-goldens/bake-pin/` (regen via
 - Cumulative `ParseMem` charges file bytes + Vec/BTree/string growth (not
   reset per line).
 - Probe: `images.bin` 8 bytes; Metashape **8192** requires `<document` and
-  (`path=` for `.psx` / `<chunk` for xml); `images.txt` full streaming
+  (`psx:` + `path=` for `.psx` / `<chunk` for xml); `images.txt` full streaming
   count (header atoll early-return; no 64 KiB approximate fallback).
 - `metadata` + `fs::read` re-checks size (TOCTOU growth).
 - Cancel checkpoints in text observation/track tokenization, binary cstring,
