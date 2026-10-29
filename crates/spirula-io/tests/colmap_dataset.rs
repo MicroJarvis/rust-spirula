@@ -146,17 +146,14 @@ fn probe_nerfstudio_and_metashape_unavailable() {
         other => panic!("expected metashape unavailable for good.xml, got {other:?}"),
     }
     fs::remove_file(ms.join("export.xml")).unwrap();
-    fs::write(
-        ms.join("project.psx"),
-        "<document psx:version=\"1\" path=\"scene.psz\"/>",
-    )
-    .unwrap();
+    // Pin: project form is `<document path=.../>` — no literal `psx:` required.
+    fs::write(ms.join("project.psx"), "<document path=\"scene.psz\"/>").unwrap();
     match probe_dataset(&ms, None).unwrap() {
         DatasetProbe::Unavailable {
             format: DatasetFormat::Metashape,
             ..
         } => {}
-        other => panic!("expected metashape unavailable for good.psx, got {other:?}"),
+        other => panic!("expected metashape unavailable for <document path=...>, got {other:?}"),
     }
 }
 
@@ -728,7 +725,7 @@ fn compute_splits_table_smoke_exported() {
 
 #[test]
 fn pin_bake_host_golden_holdout() {
-    use spirula_core::{FrameCamera, Vec3, source_project};
+    use spirula_core::{FrameCamera, Vec3};
     use spirula_io::colmap::{COLMAP_MODELS, colmap_to_c2w};
     let expected =
         fs::read_to_string(fixtures().join("datasets/colmap-goldens/bake-pin/expected.txt"))
@@ -766,7 +763,10 @@ fn pin_bake_host_golden_holdout() {
         model_lines.push((id, rest.join(" ")));
     }
     assert_eq!(model_lines.len(), COLMAP_MODELS.len());
+    assert_eq!(ray_lines.len(), COLMAP_MODELS.len());
 
+    // Independent unfitted rays — Rust side always uses baked FrameCamera;
+    // golden pixels come from C++ camhost::ray_pixel (source when fitted).
     const RAYS: [(f64, f64, f64); 3] = [(0.0, 0.0, 1.0), (0.2, -0.1, 1.0), (-0.15, 0.25, 1.0)];
     for (id, params) in inputs.iter().enumerate() {
         let info = &COLMAP_MODELS[id];
@@ -795,48 +795,47 @@ fn pin_bake_host_golden_holdout() {
         }
         assert_eq!(bi.model.as_i32(), g_model, "{} model", info.name);
         assert_eq!(bi.distortion.as_i32(), g_tier, "{} tier", info.name);
-        assert!(
-            bi.source.source_model == g_source || bi.source.source_model == -1,
+        assert_eq!(
+            bi.source.source_model, g_source,
             "{} source {} vs {g_source}",
+            info.name, bi.source.source_model
+        );
+        // Absolute intrinsics tolerances (no relative / 50% coordinate escape).
+        assert!(
+            (f64::from(bi.fx) - gfx).abs() < 2.0,
+            "{} fx {} vs {gfx}",
             info.name,
-            bi.source.source_model
+            bi.fx
         );
-        let loose = matches!(
+        assert!(
+            (f64::from(bi.fy) - gfy).abs() < 2.0,
+            "{} fy {} vs {gfy}",
             info.name,
-            "FOV"
-                | "EUCM"
-                | "RAD_TAN_THIN_PRISM_FISHEYE"
-                | "FULL_OPENCV"
-                | "THIN_PRISM_FISHEYE"
-                | "OPENCV_FISHEYE"
-        );
-        let tol = if loose { 0.15 } else { 1e-3 };
-        assert!(
-            (f64::from(bi.fx) - gfx).abs() <= tol * gfx.abs().max(1.0)
-                || (f64::from(bi.fx) - gfx).abs() < 2.0,
-            "{} fx",
-            info.name
+            bi.fy
         );
         assert!(
-            (f64::from(bi.fy) - gfy).abs() <= tol * gfy.abs().max(1.0)
-                || (f64::from(bi.fy) - gfy).abs() < 2.0,
-            "{} fy",
-            info.name
+            (f64::from(bi.cx) - gcx).abs() < 2.0,
+            "{} cx {} vs {gcx}",
+            info.name,
+            bi.cx
         );
-        assert!((f64::from(bi.cx) - gcx).abs() < 2.0, "{} cx", info.name);
-        assert!((f64::from(bi.cy) - gcy).abs() < 2.0, "{} cy", info.name);
         assert!(
-            (f64::from(bi.source.fit_max_px) - g_fit).abs() < 1.0
-                || g_fit == 0.0
-                || bi.source.fit_max_px == 0.0,
-            "{} fit_max_px",
-            info.name
+            (f64::from(bi.cy) - gcy).abs() < 2.0,
+            "{} cy {} vs {gcy}",
+            info.name,
+            bi.cy
+        );
+        assert!(
+            (f64::from(bi.source.fit_max_px) - g_fit).abs() < 1.0,
+            "{} fit_max_px {} vs {g_fit}",
+            info.name,
+            bi.source.fit_max_px
         );
         for (i, gd) in g_dist.iter().enumerate() {
             let bd = f64::from(bi.dist[i]);
             assert!(
-                (bd - gd).abs() <= tol * gd.abs().max(1.0) || (bd - gd).abs() < 0.05,
-                "{} dist[{i}]",
+                (bd - gd).abs() < 0.05,
+                "{} dist[{i}] {bd} vs {gd}",
                 info.name
             );
         }
@@ -855,28 +854,26 @@ fn pin_bake_host_golden_holdout() {
             coeffs,
         )
         .unwrap_or_else(|e| panic!("{} frame: {e}", info.name));
+        // Absolute pixel budget: exact bake must be tight; fitted source path
+        // may differ from baked FrameCamera by about fit_max_px.
+        let ray_atol = g_fit.max(0.0) + 1.0;
         for (ri, &(x, y, z)) in RAYS.iter().enumerate() {
-            let (px, py) = if bi.source.source_model >= 0 {
-                source_project(bi.source.source_model, &bi.source.params, x, y, z)
-                    .unwrap_or_else(|e| panic!("{} unfitted ray: {e}", info.name))
-            } else {
-                let ray = Vec3::try_new(x, y, z).unwrap();
-                let p = frame
-                    .ray_to_pixel(ray)
-                    .unwrap_or_else(|e| panic!("{} baked ray: {e}", info.name));
-                (p.x(), p.y())
-            };
+            let ray = Vec3::try_new(x, y, z).unwrap();
+            let p = frame
+                .ray_to_pixel(ray)
+                .unwrap_or_else(|e| panic!("{} baked ray: {e}", info.name));
+            let px = p.x();
+            let py = p.y();
             let gpx = g_ray[ri * 2];
             let gpy = g_ray[ri * 2 + 1];
-            let rtol = if loose { 0.5 } else { 1e-3 };
             assert!(
-                (px - gpx).abs() <= rtol * gpx.abs().max(1.0) || (px - gpx).abs() < 2.0,
-                "{} ray[{ri}] px {px} vs {gpx}",
+                (px - gpx).abs() <= ray_atol,
+                "{} ray[{ri}] px {px} vs {gpx} (atol {ray_atol})",
                 info.name
             );
             assert!(
-                (py - gpy).abs() <= rtol * gpy.abs().max(1.0) || (py - gpy).abs() < 2.0,
-                "{} ray[{ri}] py {py} vs {gpy}",
+                (py - gpy).abs() <= ray_atol,
+                "{} ray[{ri}] py {py} vs {gpy} (atol {ray_atol})",
                 info.name
             );
         }

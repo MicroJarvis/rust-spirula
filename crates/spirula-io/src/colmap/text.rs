@@ -273,12 +273,32 @@ pub fn read_cameras_text(
             })?,
             "height",
         )?;
+        // Exact arity via iterator — charge/reserve before any param push; no
+        // intermediate `Vec<&str>` of unbounded leftover tokens.
         let mut params = Vec::new();
-        let toks: Vec<&str> = it.collect();
-        mem.charge_elems::<&str>(toks.len(), "params")?;
-        try_reserve_elems(&mut params, toks.len(), &mut mem, "params")?;
-        for tok in toks {
+        try_reserve_elems(&mut params, info.num_params, &mut mem, "params")?;
+        for _ in 0..info.num_params {
+            let tok = it.next().ok_or_else(|| {
+                err(
+                    ErrorCode::MalformedRecord,
+                    "params",
+                    format!(
+                        "camera model {} needs {} parameters",
+                        info.name, info.num_params
+                    ),
+                )
+            })?;
             params.push(parse_f64(tok, "params")?);
+        }
+        if it.next().is_some() {
+            return Err(err(
+                ErrorCode::MalformedRecord,
+                "params",
+                format!(
+                    "camera model {} has trailing tokens beyond {} parameters",
+                    info.name, info.num_params
+                ),
+            ));
         }
         require_exact_param_count(info, &params)?;
         let camera_id = parse_i32(id_s, "camera_id")?;
@@ -313,38 +333,40 @@ fn parse_observations(
     mem: &mut ParseMem,
     cp: &mut ParseCancel<'_>,
 ) -> Result<Vec<ColmapObservation>, spirula_core::DomainError> {
-    // Charge token Vec growth into the shared cumulative budget (not reset
-    // per line — that previously missed Vec/clone growth across images).
-    let toks: Vec<&str> = line.split_whitespace().collect();
-    mem.charge_elems::<&str>(toks.len(), "observations")?;
-    if toks.is_empty() {
+    // Count tokens without allocating `Vec<&str>`; charge/reserve before parse.
+    let n_toks = line.split_whitespace().count();
+    if n_toks == 0 {
         return Ok(Vec::new());
     }
-    if !toks.len().is_multiple_of(3) {
+    if !n_toks.is_multiple_of(3) {
         return Err(err(
             ErrorCode::MalformedRecord,
             "points2d",
-            format!("POINTS2D line length {} is not a multiple of 3", toks.len()),
+            format!("POINTS2D line length {n_toks} is not a multiple of 3"),
         ));
     }
-    let n = (toks.len() / 3) as u64;
-    *budget = budget.saturating_add(n);
+    let n = n_toks / 3;
+    *budget = budget.saturating_add(n as u64);
     ensure_count(*budget, MAX_OBSERVATIONS, "observations")?;
     let mut out = Vec::new();
-    try_reserve_elems(&mut out, toks.len() / 3, mem, "observations")?;
-    for (i, chunk) in toks.as_chunks::<3>().0.iter().enumerate() {
+    try_reserve_elems(&mut out, n, mem, "observations")?;
+    let mut it = line.split_whitespace();
+    for i in 0..n {
         cp.tick(1)?;
         // Extra poll on long lines so after-start cancel wins before chunk ceiling.
         if i > 0 && i % 4096 == 0 {
             cp.poll_now()?;
         }
-        let x = parse_f64(chunk[0], "obs_x")?;
-        let y = parse_f64(chunk[1], "obs_y")?;
-        let point3d_id: i64 = chunk[2].parse().map_err(|_| {
+        let x_s = it.next().expect("token count");
+        let y_s = it.next().expect("token count");
+        let id_s = it.next().expect("token count");
+        let x = parse_f64(x_s, "obs_x")?;
+        let y = parse_f64(y_s, "obs_y")?;
+        let point3d_id: i64 = id_s.parse().map_err(|_| {
             err(
                 ErrorCode::MalformedRecord,
                 "point3d_id",
-                format!("invalid point3D_id `{}`", chunk[2]),
+                format!("invalid point3D_id `{id_s}`"),
             )
         })?;
         out.push(ColmapObservation { x, y, point3d_id });
@@ -574,28 +596,30 @@ pub fn read_points3d_text(
             Some(t) => parse_f64(t, "error")?,
             None => 0.0,
         };
-        let rest: Vec<&str> = it.collect();
-        mem.charge_elems::<&str>(rest.len(), "track")?;
-        if !rest.len().is_multiple_of(2) {
+        // Count remaining track tokens without `Vec<&str>`; budget before reserve.
+        let n_toks = it.clone().count();
+        if !n_toks.is_multiple_of(2) {
             return Err(err(
                 ErrorCode::MalformedRecord,
                 "track",
-                format!("track length {} is not even", rest.len()),
+                format!("track length {n_toks} is not even"),
             ));
         }
-        let n = (rest.len() / 2) as u64;
-        track_budget = track_budget.saturating_add(n);
+        let n = n_toks / 2;
+        track_budget = track_budget.saturating_add(n as u64);
         ensure_count(track_budget, MAX_TRACK_ELEMS, "track")?;
         let mut track = Vec::new();
-        try_reserve_elems(&mut track, rest.len() / 2, &mut mem, "track")?;
-        for (i, chunk) in rest.as_chunks::<2>().0.iter().enumerate() {
+        try_reserve_elems(&mut track, n, &mut mem, "track")?;
+        for i in 0..n {
             cp.tick(1)?;
             if i > 0 && i % 4096 == 0 {
                 cp.poll_now()?;
             }
+            let img_s = it.next().expect("token count");
+            let idx_s = it.next().expect("token count");
             track.push(ColmapTrackElem {
-                image_id: parse_i32(chunk[0], "track_image_id")?,
-                point2d_idx: parse_i32(chunk[1], "track_point2d_idx")?,
+                image_id: parse_i32(img_s, "track_image_id")?,
+                point2d_idx: parse_i32(idx_s, "track_point2d_idx")?,
             });
         }
         ensure_count(points.len() as u64 + 1, MAX_POINTS, "points3D")?;

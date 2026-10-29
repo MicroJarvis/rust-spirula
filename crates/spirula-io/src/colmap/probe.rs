@@ -1,7 +1,7 @@
 //! Reconstruction directory probing and format auto-detection.
 
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use spirula_core::{CancelToken, ErrorCode};
@@ -115,8 +115,17 @@ pub fn colmap_model_num_images_cancelable(
             format!("cannot open images.txt: {e}"),
         )
     })?;
-    // Byte-chunk stream — never `read_line` into an unbounded String.
-    let mut reader = BufReader::with_capacity(IMAGE_COUNT_READ_CHUNK, f);
+    count_images_txt_stream(f, &txt, cancel)
+}
+
+/// Byte-chunk `images.txt` row counter — never `read_line` into an unbounded
+/// `String`. Takes any [`Read`] so after-start cancel can be proven with a
+/// controlled reader (FIFO/`is_file` races are not required).
+fn count_images_txt_stream(
+    mut reader: impl Read,
+    path_for_err: &Path,
+    cancel: Option<&CancelToken>,
+) -> Result<i64, spirula_core::DomainError> {
     let mut cp = ParseCancel::new(cancel);
     cp.poll_now()?;
 
@@ -132,7 +141,7 @@ pub fn colmap_model_num_images_cancelable(
         let n = reader.read(&mut chunk).map_err(|e| {
             err_path(
                 ErrorCode::ReadFailed,
-                &txt.display().to_string(),
+                &path_for_err.display().to_string(),
                 format!("cannot read images.txt: {e}"),
             )
         })?;
@@ -193,8 +202,9 @@ pub fn colmap_model_num_images_cancelable(
     Ok(rows / 2)
 }
 
-/// Within 8192 bytes require `<document` and (`psx:` + `path=` for `.psx`, or
-/// `<chunk` for `.xml`). Bare `meta` / `<chunk/>` must not match.
+/// Within 8192 bytes require `<document` and (`path=` for `.psx` / project, or
+/// `<chunk` for `.xml`). Pin `ColmapParser.cpp:977-1005` — no literal `psx:`
+/// namespace check. Bare `meta` / `<chunk/>` must not match.
 fn looks_like_metashape(path: &Path, is_psx: bool) -> bool {
     let Some(bytes) = read_prefix(path, METASHAPE_SCAN_BYTES) else {
         return false;
@@ -204,7 +214,7 @@ fn looks_like_metashape(path: &Path, is_psx: bool) -> bool {
         return false;
     }
     if is_psx {
-        head.contains("psx:") && head.contains("path=")
+        head.contains("path=")
     } else {
         head.contains("<chunk")
     }
@@ -427,11 +437,12 @@ mod tests {
         std::fs::write(&bad_xml, b"<chunk/>").unwrap();
         assert!(!looks_like_metashape(&bad_xml, false));
 
+        // Pin: .psx / project form is `<document path="..."/>` — no `psx:` required.
         let path_only = h.path().join("path_only.psx");
-        std::fs::write(&path_only, b"<document path=\"x\"/>").unwrap();
+        std::fs::write(&path_only, b"<document path=\"scene.psz\"/>").unwrap();
         assert!(
-            !looks_like_metashape(&path_only, true),
-            ".psx requires psx: namespace marker"
+            looks_like_metashape(&path_only, true),
+            "<document path=...> must identify as Metashape"
         );
 
         let good_psx = h.path().join("good.psx");
@@ -604,6 +615,58 @@ mod tests {
         let cancel = spirula_core::CancelToken::new();
         assert!(cancel.request(CancelReason::User));
         let err = colmap_model_num_images_cancelable(&dir, Some(&cancel)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Canceled);
+    }
+
+    #[test]
+    fn after_start_cancel_during_image_count_stream() {
+        use spirula_core::{CancelReason, ErrorCode};
+        use std::io;
+
+        /// Controlled reader: cancel is armed only after the first chunk returns,
+        /// so `poll_now` succeeds and the subsequent `tick` observes cancel.
+        /// No sleep; no FIFO/`is_file` skip path.
+        struct ArmCancelAfterFirstChunk {
+            cancel: spirula_core::CancelToken,
+            data: Vec<u8>,
+            pos: usize,
+            reads: usize,
+        }
+
+        impl Read for ArmCancelAfterFirstChunk {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.pos >= self.data.len() {
+                    return Ok(0);
+                }
+                let n = IMAGE_COUNT_READ_CHUNK
+                    .min(buf.len())
+                    .min(self.data.len() - self.pos);
+                buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                self.pos += n;
+                self.reads += 1;
+                if self.reads == 1 {
+                    assert!(self.cancel.request(CancelReason::User));
+                }
+                Ok(n)
+            }
+        }
+
+        let mut body = String::new();
+        for i in 0..4_000 {
+            body.push_str(&format!(
+                "{i} 1 0 0 0 0 0 0 1 {}.png\n0 0 -1\n",
+                "a".repeat(40)
+            ));
+        }
+        let cancel = spirula_core::CancelToken::new();
+        let reader = ArmCancelAfterFirstChunk {
+            cancel: cancel.clone(),
+            data: body.into_bytes(),
+            pos: 0,
+            reads: 0,
+        };
+        let err =
+            count_images_txt_stream(reader, Path::new("images.txt"), Some(&cancel)).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Canceled);
     }
 

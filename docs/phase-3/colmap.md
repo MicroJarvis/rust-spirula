@@ -1,6 +1,7 @@
 # P3-F03: COLMAP dataset reading
 
-Status: **进行中 / HOLD** (awaiting independent re-review after round-4 cancel/IO fixes).
+Status: **进行中 / HOLD** (awaiting independent re-review after round-5 Metashape /
+bake-pin oracle / chunked binary+text budget fixes).
 Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
 Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
@@ -59,21 +60,26 @@ loader); local `eval` stays empty because membership was applied by emit.
 `bake_colmap_intrinsics` (and `bake_and_fit`) reject exact-arity mismatches,
 non-positive size, non-finite params, and f32 overflow (no silent sanitize).
 EQUIRECTANGULAR bake requires finite positive derived focals from params.
-Host pin holdout: `fixtures/datasets/colmap-goldens/bake-pin/` (regen via
-`tools/fixtures` / `spirula-io` example `regen_bake_pin`).
+Host pin holdout: `fixtures/datasets/colmap-goldens/bake-pin/` — **C++ pin
+oracle** via `tools/bake-pin-golden` (extract/compile under gitignored
+`.build/`; no committed C++). Rust compares baked `FrameCamera` rays against
+C++ `camhost::ray_pixel` with absolute pixel tolerances.
 
 ### Bounded IO / cancel
 
 - Binary `points` / observations: remaining-byte check before fallible reserve;
   `MAX_POINTS` must not allow multi-GB reserve from an 8-byte file.
 - Cumulative `ParseMem` charges file bytes + Vec/BTree/string growth (not
-  reset per line).
+  reset per line). Text obs/track charge+`try_reserve` **before** parse; camera
+  params take exact model arity via iterator (no intermediate `Vec<&str>`).
 - Probe: `images.bin` 8 bytes; Metashape **8192** requires `<document` and
-  (`psx:` + `path=` for `.psx` / `<chunk` for xml); `images.txt` full streaming
-  count (header atoll early-return; no 64 KiB approximate fallback; byte-chunk
-  cancel; comment prefix capped — no `read_line` into an unbounded `String`).
-- Text tables: `metadata` + **chunked** cancel-aware read (not whole-file
-  `fs::read`) re-checks size (TOCTOU growth) and ticks `ParseCancel` per chunk.
+  (`path=` for `.psx` / project, or `<chunk` for xml) — pin has **no** literal
+  `psx:` check; `images.txt` full streaming count (header atoll early-return;
+  byte-chunk cancel via private `Read` helper; comment prefix capped — no
+  `read_line` into an unbounded `String`).
+- Text + binary tables: `metadata` + **chunked** cancel-aware read (not
+  whole-file `fs::read`) re-checks size (TOCTOU growth) and ticks
+  `ParseCancel` per chunk.
 - Cancel checkpoints in text observation/track tokenization, binary cstring,
   track association, probe dir scan/sort / image-count stream, and around
   each camera bake.
@@ -114,20 +120,16 @@ input. Rejected payloads are UTF-8-safe length-limited via
 - `fixtures/datasets/tiny-colmap/` text + LE binary (bin preferred).
 - `fixtures/datasets/colmap-goldens/nontrivial/` non-identity pose, OPENCV
   lens, no points, filename train/eval split.
-- `fixtures/datasets/colmap-goldens/bake-pin/` host-only bake/fit pin rows
-  (no C++ sources).
+- `fixtures/datasets/colmap-goldens/bake-pin/` C++ pin bake/fit + ray + pose
+  (no committed C++; regen via `tools/bake-pin-golden`).
 - `fixtures/golden/dataset.json` retained; `fixtures.rs` remains a checker only.
 
 ## Remaining gaps (HOLD)
 
-- Independent re-review of round-3/4 HOLD fixes (streaming count, Metashape
-  sniff, bake arity, eval-local train, ParseMem, holdout, fit cancel docs,
-  text `read_capped` cancel chunks, probe image-count bounded stream).
-- Binary table `BinReader::open` still uses whole-file `fs::read` (cancel only
-  after bytes are resident); text path is chunked.
-- Fitted-model numeric tolerance vs host pin rows may need tightening after
-  review (loose tol on FOV/EUCM/thin-prism ladder); regen may rewrite
-  `expected.txt` pose to the documented host q/t.
+- Independent re-review of round-5 HOLD fixes (Metashape `path=` pin, C++
+  bake-pin oracle + absolute ray holdout, chunked binary IO, text
+  budget-before-alloc, after-start image-count cancel via `Read` helper,
+  FIFO text `read_capped` cancel).
 - Dense mid-`fit_model` inside `fit_camera_auto_cancelable` remains
   non-preemptible (azimuth/candidate polls only).
 - P3-F04/F05/F08 and P2-F08 deliberately untouched.

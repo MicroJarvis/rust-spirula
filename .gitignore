@@ -15,3 +15,5 @@
 tools/image-orient-golden/bin/
 tools/image-orient-golden/.build/
 tools/camera-golden/bin/
+tools/bake-pin-golden/bin/
+tools/bake-pin-golden/.build/

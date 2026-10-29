@@ -1,7 +1,8 @@
 //! Little-endian COLMAP binary readers (`cameras.bin` / `images.bin` / `points3D.bin`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use spirula_core::{CancelToken, ErrorCode};
@@ -16,6 +17,10 @@ use super::types::{
     ColmapCamera, ColmapImage, ColmapObservation, ColmapPoint3D, ColmapPoints3D, ColmapTrackElem,
 };
 
+/// Chunk size for cancel-aware binary table reads (avoids whole-file `fs::read`
+/// blocking cancel for up to [`MAX_COLMAP_FILE_BYTES`]).
+const BIN_READ_CHUNK: usize = 256 * 1024;
+
 struct BinReader {
     data: Vec<u8>,
     pos: usize,
@@ -23,8 +28,8 @@ struct BinReader {
 }
 
 impl BinReader {
-    fn open(path: &Path) -> Result<Self, spirula_core::DomainError> {
-        let meta = fs::metadata(path).map_err(|e| {
+    fn open(path: &Path, cancel: Option<&CancelToken>) -> Result<Self, spirula_core::DomainError> {
+        let meta = std::fs::metadata(path).map_err(|e| {
             let code = if e.kind() == std::io::ErrorKind::NotFound {
                 ErrorCode::NotFound
             } else if e.kind() == std::io::ErrorKind::PermissionDenied {
@@ -38,7 +43,8 @@ impl BinReader {
                 format!("cannot open: {e}"),
             )
         })?;
-        if meta.len() > MAX_COLMAP_FILE_BYTES {
+        let len = meta.len();
+        if len > MAX_COLMAP_FILE_BYTES {
             return Err(err(
                 ErrorCode::ValueOutOfRange,
                 "file_size",
@@ -48,23 +54,55 @@ impl BinReader {
                 ),
             ));
         }
-        let data = fs::read(path).map_err(|e| {
+        let mut file = File::open(path).map_err(|e| {
             err_path(
                 ErrorCode::ReadFailed,
                 &path.display().to_string(),
-                format!("cannot read: {e}"),
+                format!("cannot open: {e}"),
             )
         })?;
-        // TOCTOU: file may have grown past the metadata budget after open.
-        if data.len() as u64 > MAX_COLMAP_FILE_BYTES {
-            return Err(err(
-                ErrorCode::ValueOutOfRange,
-                "file_size",
-                format!(
-                    "COLMAP file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
-                    path.display()
-                ),
-            ));
+        let mut data = Vec::new();
+        if len > 0 {
+            data.try_reserve(len as usize).map_err(|_| {
+                err(
+                    ErrorCode::ValueOutOfRange,
+                    "file",
+                    format!(
+                        "COLMAP file {} reservation of {len} bytes failed",
+                        path.display()
+                    ),
+                )
+            })?;
+        }
+        let mut cp = ParseCancel::new(cancel);
+        cp.poll_now()?;
+        let mut buf = [0u8; BIN_READ_CHUNK];
+        let mut read_total = 0u64;
+        loop {
+            let n = file.read(&mut buf).map_err(|e| {
+                err_path(
+                    ErrorCode::ReadFailed,
+                    &path.display().to_string(),
+                    format!("cannot read: {e}"),
+                )
+            })?;
+            if n == 0 {
+                break;
+            }
+            read_total = read_total.saturating_add(n as u64);
+            // TOCTOU: reject growth past the metadata-gated budget during stream.
+            if read_total > MAX_COLMAP_FILE_BYTES {
+                return Err(err(
+                    ErrorCode::ValueOutOfRange,
+                    "file_size",
+                    format!(
+                        "COLMAP file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
+                        path.display()
+                    ),
+                ));
+            }
+            data.extend_from_slice(&buf[..n]);
+            cp.tick(n)?;
         }
         Ok(Self {
             data,
@@ -155,7 +193,7 @@ pub fn read_cameras_binary(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapCamera>, spirula_core::DomainError> {
-    let mut r = BinReader::open(path)?;
+    let mut r = BinReader::open(path, cancel)?;
     let n = r.u64()?;
     ensure_count(n, MAX_CAMERAS, "cameras")?;
     let mut cameras = BTreeMap::new();
@@ -202,7 +240,7 @@ pub fn read_images_binary(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapImage>, spirula_core::DomainError> {
-    let mut r = BinReader::open(path)?;
+    let mut r = BinReader::open(path, cancel)?;
     let n = r.u64()?;
     ensure_count(n, MAX_IMAGES, "images")?;
     let mut images = BTreeMap::new();
@@ -283,7 +321,7 @@ pub fn read_points3d_binary(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<ColmapPoints3D, spirula_core::DomainError> {
-    let mut r = BinReader::open(path)?;
+    let mut r = BinReader::open(path, cancel)?;
     let n = r.u64()?;
     ensure_count(n, MAX_POINTS, "points3D")?;
     // Reject multi-GB reserve from a tiny file declaring huge `n`.

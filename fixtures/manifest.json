@@ -40,13 +40,13 @@
     },
     {
       "path": "datasets/colmap-goldens/bake-pin/README.md",
-      "bytes": 675,
-      "sha256": "c8d688ffeb0763d6c746183d2dc805aa2072226562fefcd3b8742edd573b62b9"
+      "bytes": 1117,
+      "sha256": "36433abc5a4d9d2ee28cad6c61cbd7cf246d8f2d7c5989926059f34649be2898"
     },
     {
       "path": "datasets/colmap-goldens/bake-pin/expected.txt",
-      "bytes": 3159,
-      "sha256": "06bd520c3d6f8d46f64e04f91874190a550ec11287389e14b10043e1bf3a0dde"
+      "bytes": 4169,
+      "sha256": "4a85ed8e2fc60ad6bd96d027cd92a3c8fc103349685d0f3ed20c85303b889ab8"
     },
     {
       "path": "datasets/colmap-goldens/bake-pin/inputs.json",
@@ -55,8 +55,8 @@
     },
     {
       "path": "datasets/colmap-goldens/bake-pin/provenance.txt",
-      "bytes": 386,
-      "sha256": "c55ca1f365ccdc3f1e47de7cb88cdfd364a63be26936329f72ea54a88890614a"
+      "bytes": 378,
+      "sha256": "07ffff5544067b5b37f5729036b6c8d0dbe70da20830f11c4a103a1665ba417f"
     },
     {
       "path": "datasets/colmap-goldens/nontrivial/cameras.txt",
