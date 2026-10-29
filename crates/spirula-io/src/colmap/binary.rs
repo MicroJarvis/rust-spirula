@@ -8,7 +8,7 @@ use spirula_core::{CancelToken, ErrorCode};
 
 use super::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_OBSERVATIONS, MAX_POINTS, MAX_TRACK_ELEMS,
-    MIN_POINT3D_RECORD_BYTES, OBSERVATION_RECORD_BYTES, ParseCancel, TRACK_ELEM_BYTES,
+    MIN_POINT3D_RECORD_BYTES, OBSERVATION_RECORD_BYTES, ParseCancel, ParseMem, TRACK_ELEM_BYTES,
     checked_mul_u64, ensure_count, ensure_remaining, err, err_path, try_reserve_elems,
 };
 use super::models::require_model_by_id;
@@ -71,6 +71,10 @@ impl BinReader {
             pos: 0,
             path: path.display().to_string(),
         })
+    }
+
+    fn byte_len(&self) -> u64 {
+        self.data.len() as u64
     }
 
     fn remaining(&self) -> usize {
@@ -155,7 +159,8 @@ pub fn read_cameras_binary(
     let n = r.u64()?;
     ensure_count(n, MAX_CAMERAS, "cameras")?;
     let mut cameras = BTreeMap::new();
-    let mut mem_used = 0u64;
+    let mut mem = ParseMem::new();
+    mem.charge(r.byte_len(), "file")?;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
@@ -165,7 +170,7 @@ pub fn read_cameras_binary(
         let height = r.u64()?;
         let info = require_model_by_id(model_id)?;
         let mut params = Vec::new();
-        try_reserve_elems(&mut params, info.num_params, &mut mem_used, "params")?;
+        try_reserve_elems(&mut params, info.num_params, &mut mem, "params")?;
         for _ in 0..info.num_params {
             params.push(r.f64()?);
         }
@@ -176,6 +181,8 @@ pub fn read_cameras_binary(
                 format!("duplicate camera_id {camera_id}"),
             ));
         }
+        mem.charge_elems::<ColmapCamera>(1, "cameras")?;
+        mem.charge_str_bytes(info.name.len(), "cameras")?;
         cameras.insert(
             camera_id,
             ColmapCamera {
@@ -200,7 +207,8 @@ pub fn read_images_binary(
     ensure_count(n, MAX_IMAGES, "images")?;
     let mut images = BTreeMap::new();
     let mut obs_budget = 0u64;
-    let mut mem_used = 0u64;
+    let mut mem = ParseMem::new();
+    mem.charge(r.byte_len(), "file")?;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
@@ -222,6 +230,7 @@ pub fn read_images_binary(
                 "empty image name",
             ));
         }
+        mem.charge_str_bytes(name.len(), "images")?;
         let num_points2d = r.u64()?;
         obs_budget = obs_budget.saturating_add(num_points2d);
         ensure_count(obs_budget, MAX_OBSERVATIONS, "observations")?;
@@ -235,9 +244,12 @@ pub fn read_images_binary(
             )
         })?;
         let mut observations = Vec::new();
-        try_reserve_elems(&mut observations, n_obs, &mut mem_used, "observations")?;
-        for _ in 0..num_points2d {
+        try_reserve_elems(&mut observations, n_obs, &mut mem, "observations")?;
+        for i in 0..num_points2d {
             cp.tick(1)?;
+            if i > 0 && i % 4096 == 0 {
+                cp.poll_now()?;
+            }
             let x = r.f64()?;
             let y = r.f64()?;
             let point3d_id = r.u64()? as i64;
@@ -250,6 +262,7 @@ pub fn read_images_binary(
                 format!("duplicate image_id {image_id}"),
             ));
         }
+        mem.charge_elems::<ColmapImage>(1, "images")?;
         images.insert(
             image_id,
             ColmapImage {
@@ -277,7 +290,8 @@ pub fn read_points3d_binary(
     let need = checked_mul_u64(n, MIN_POINT3D_RECORD_BYTES, "points3D")?;
     ensure_remaining(r.remaining() as u64, need, "points3D")?;
     let mut points = Vec::new();
-    let mut mem_used = 0u64;
+    let mut mem = ParseMem::new();
+    mem.charge(r.byte_len(), "file")?;
     let n_usize = usize::try_from(n).map_err(|_| {
         err(
             ErrorCode::ValueOutOfRange,
@@ -285,7 +299,7 @@ pub fn read_points3d_binary(
             format!("point count {n} exceeds usize"),
         )
     })?;
-    try_reserve_elems(&mut points, n_usize, &mut mem_used, "points3D")?;
+    try_reserve_elems(&mut points, n_usize, &mut mem, "points3D")?;
     let mut seen_ids = BTreeSet::new();
     let mut track_budget = 0u64;
     let mut cp = ParseCancel::new(cancel);
@@ -315,9 +329,12 @@ pub fn read_points3d_binary(
             )
         })?;
         let mut track = Vec::new();
-        try_reserve_elems(&mut track, n_track, &mut mem_used, "track")?;
-        for _ in 0..track_len {
+        try_reserve_elems(&mut track, n_track, &mut mem, "track")?;
+        for i in 0..track_len {
             cp.tick(1)?;
+            if i > 0 && i % 4096 == 0 {
+                cp.poll_now()?;
+            }
             track.push(ColmapTrackElem {
                 image_id: r.i32()?,
                 point2d_idx: r.i32()?,

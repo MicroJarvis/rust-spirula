@@ -1,7 +1,7 @@
 //! Reconstruction directory probing and format auto-detection.
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use spirula_core::{CancelToken, ErrorCode};
@@ -9,8 +9,11 @@ use spirula_core::{CancelToken, ErrorCode};
 use super::budget::{ParseCancel, err, err_path};
 use super::types::{ColmapFileFmt, ColmapModelFmt, DatasetFormat, DatasetProbe};
 
-/// Metashape XML header scan window (dual markers: metashape / photoscan / `<chunk`).
+/// Metashape header scan window (pin `ColmapParser.cpp:977-1005`).
 const METASHAPE_SCAN_BYTES: usize = 8192;
+
+/// Line-buffered stream chunk for cancel checkpoints while counting images.txt.
+const IMAGE_COUNT_CANCEL_LINES: usize = 4096;
 
 fn file_fmt(dir: &Path, base: &str) -> ColmapFileFmt {
     if dir.join(format!("{base}.bin")).is_file() {
@@ -62,62 +65,102 @@ fn parse_leading_i64(s: &str) -> Option<i64> {
 }
 
 /// Cheap image-count probe for ranking COLMAP models (`colmap_model_num_images`).
-/// Reads only a bounded header / prefix — never the whole file.
 ///
 /// When `images.bin` exists it is preferred; a truncated/bad bin returns `-1`
 /// and does **not** fall back to `images.txt` (pin per-file bin preference).
+/// Text path streams the whole file (memory-bounded `BufRead`) unless a
+/// standard `# Number of images:` header early-returns via atoll.
 pub fn colmap_model_num_images(dir: &Path) -> i64 {
+    colmap_model_num_images_cancelable(dir, None).unwrap_or(-1)
+}
+
+/// Same as [`colmap_model_num_images`] with cancel checkpoints on the text stream.
+pub fn colmap_model_num_images_cancelable(
+    dir: &Path,
+    cancel: Option<&CancelToken>,
+) -> Result<i64, spirula_core::DomainError> {
     let bin = dir.join("images.bin");
     if bin.is_file() {
         let Some(bytes) = read_prefix(&bin, 8) else {
-            return -1;
+            return Ok(-1);
         };
         if bytes.len() < 8 {
-            return -1;
+            return Ok(-1);
         }
         let mut b = [0u8; 8];
         b.copy_from_slice(&bytes[..8]);
-        return u64::from_le_bytes(b) as i64;
+        return Ok(u64::from_le_bytes(b) as i64);
     }
     let txt = dir.join("images.txt");
     if !txt.is_file() {
-        return -1;
+        return Ok(-1);
     }
-    // Scan a bounded prefix for the `# Number of images:` comment, else count
-    // non-comment rows in that prefix (approximate; ranking only).
-    // 64 KiB covers typical COLMAP headers without scanning the whole table.
-    const IMAGES_TXT_PREFIX: usize = 64 * 1024;
-    let Some(bytes) = read_prefix(&txt, IMAGES_TXT_PREFIX) else {
-        return -1;
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    for line in text.lines() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix('#')
-            && let Some(idx) = rest.find("Number of images:")
-        {
-            let after = &rest[idx + "Number of images:".len()..];
-            if let Some(n) = parse_leading_i64(after) {
-                return n;
-            }
+    let f = File::open(&txt).map_err(|e| {
+        err_path(
+            ErrorCode::ReadFailed,
+            &txt.display().to_string(),
+            format!("cannot open images.txt: {e}"),
+        )
+    })?;
+    // Small reusable buffer — never load the whole table for ranking.
+    let mut reader = BufReader::with_capacity(64 * 1024, f);
+    let mut line = String::new();
+    let mut rows: i64 = 0;
+    let mut cp = ParseCancel::new(cancel);
+    let mut lines_seen = 0usize;
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).map_err(|e| {
+            err_path(
+                ErrorCode::ReadFailed,
+                &txt.display().to_string(),
+                format!("cannot read images.txt: {e}"),
+            )
+        })?;
+        if n == 0 {
+            break;
         }
+        lines_seen += 1;
+        if lines_seen.is_multiple_of(IMAGE_COUNT_CANCEL_LINES) {
+            cp.poll_now()?;
+        }
+        // Strip trailing newline(s) without allocating.
+        while line.ends_with('\n') || line.ends_with('\r') {
+            line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if line.as_bytes()[0] == b'#' {
+            if let Some(idx) = line.find("Number of images:") {
+                let after = &line[idx + "Number of images:".len()..];
+                if let Some(n) = parse_leading_i64(after) {
+                    return Ok(n);
+                }
+            }
+            continue;
+        }
+        rows += 1;
+        cp.tick(1)?;
     }
-    let rows = text
-        .lines()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && !t.starts_with('#')
-        })
-        .count();
-    (rows as i64) / 2
+    Ok(rows / 2)
 }
 
-fn looks_like_metashape_xml(path: &Path) -> bool {
+/// Within 8192 bytes require `<document` and (`psx:` + `path=` for `.psx`, or
+/// `<chunk` for `.xml`). Bare `meta` / `<chunk/>` must not match.
+fn looks_like_metashape(path: &Path, is_psx: bool) -> bool {
     let Some(bytes) = read_prefix(path, METASHAPE_SCAN_BYTES) else {
         return false;
     };
-    let head = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
-    head.contains("metashape") || head.contains("photoscan") || head.contains("<chunk")
+    let head = String::from_utf8_lossy(&bytes);
+    if !head.contains("<document") {
+        return false;
+    }
+    if is_psx {
+        head.contains("psx:") && head.contains("path=")
+    } else {
+        head.contains("<chunk")
+    }
 }
 
 fn metashape_here(dataset_dir: &Path) -> bool {
@@ -126,14 +169,17 @@ fn metashape_here(dataset_dir: &Path) -> bool {
     };
     for ent in rd.flatten() {
         let p = ent.path();
+        if !p.is_file() {
+            continue;
+        }
         let Some(ext) = p.extension().and_then(|e| e.to_str()) else {
             continue;
         };
         let ext = ext.to_ascii_lowercase();
-        if ext == "psx" {
+        if ext == "psx" && looks_like_metashape(&p, true) {
             return true;
         }
-        if ext == "xml" && looks_like_metashape_xml(&p) {
+        if ext == "xml" && looks_like_metashape(&p, false) {
             return true;
         }
     }
@@ -188,7 +234,7 @@ pub fn find_colmap_recon_cancelable(
                     if !p.is_dir() {
                         continue;
                     }
-                    let n = colmap_model_num_images(&p);
+                    let n = colmap_model_num_images_cancelable(&p, cancel)?;
                     if n >= 0 {
                         let name = ent.file_name().to_string_lossy().into_owned();
                         models.push((n, format!("{parent}/{name}")));
@@ -291,6 +337,9 @@ pub fn probe_dataset_cancelable(
             recon_dir: recon,
         }),
         Err(e) => {
+            if e.code() == ErrorCode::Canceled {
+                return Err(e);
+            }
             if metashape_here(dataset_dir) {
                 Ok(DatasetProbe::Unavailable {
                     format: DatasetFormat::Metashape,
@@ -321,18 +370,64 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn metashape_scan_is_bounded_8192() {
+    fn metashape_requires_document_and_second_marker() {
         let h = TempHarness::new().unwrap();
-        let p = h.path().join("big.xml");
-        let mut f = File::create(&p).unwrap();
-        // Marker after 8192 would be missed — pin dual-marker window.
-        let pad = vec![b'x'; METASHAPE_SCAN_BYTES];
-        f.write_all(&pad).unwrap();
-        f.write_all(b"<chunk>metashape</chunk>").unwrap();
-        assert!(!looks_like_metashape_xml(&p));
-        let mut f = File::create(&p).unwrap();
-        f.write_all(b"<chunk>metashape</chunk>").unwrap();
-        assert!(looks_like_metashape_xml(&p));
+        let bad_psx = h.path().join("bad.psx");
+        std::fs::write(&bad_psx, b"meta").unwrap();
+        assert!(!looks_like_metashape(&bad_psx, true));
+
+        let bad_xml = h.path().join("bad.xml");
+        std::fs::write(&bad_xml, b"<chunk/>").unwrap();
+        assert!(!looks_like_metashape(&bad_xml, false));
+
+        let path_only = h.path().join("path_only.psx");
+        std::fs::write(&path_only, b"<document path=\"x\"/>").unwrap();
+        assert!(
+            !looks_like_metashape(&path_only, true),
+            ".psx requires psx: namespace marker"
+        );
+
+        let good_psx = h.path().join("good.psx");
+        std::fs::write(&good_psx, b"<document psx:version=\"1\" path=\"x\"/>").unwrap();
+        assert!(looks_like_metashape(&good_psx, true));
+
+        let good_xml = h.path().join("good.xml");
+        std::fs::write(&good_xml, b"<document><chunk/></document>").unwrap();
+        assert!(!looks_like_metashape(&good_xml, true));
+        assert!(looks_like_metashape(&good_xml, false));
+
+        // Marker after 8192 is missed.
+        let late = h.path().join("late.xml");
+        let mut f = File::create(&late).unwrap();
+        f.write_all(&vec![b'x'; METASHAPE_SCAN_BYTES]).unwrap();
+        f.write_all(b"<document><chunk/></document>").unwrap();
+        assert!(!looks_like_metashape(&late, false));
+    }
+
+    #[test]
+    fn metashape_probe_rejects_unrelated_markers() {
+        let h = TempHarness::new().unwrap();
+        let ms = h.path().join("ms");
+        std::fs::create_dir_all(&ms).unwrap();
+        std::fs::write(ms.join("project.psx"), "meta").unwrap();
+        match probe_dataset(&ms, None).unwrap() {
+            DatasetProbe::NotADataset { .. } => {}
+            other => panic!("expected not-a-dataset for bad.psx, got {other:?}"),
+        }
+        std::fs::remove_file(ms.join("project.psx")).unwrap();
+        std::fs::write(ms.join("export.xml"), "<chunk/>").unwrap();
+        match probe_dataset(&ms, None).unwrap() {
+            DatasetProbe::NotADataset { .. } => {}
+            other => panic!("expected not-a-dataset for bare <chunk/>, got {other:?}"),
+        }
+        std::fs::write(ms.join("export.xml"), "<document><chunk/></document>").unwrap();
+        match probe_dataset(&ms, None).unwrap() {
+            DatasetProbe::Unavailable {
+                format: DatasetFormat::Metashape,
+                ..
+            } => {}
+            other => panic!("expected metashape unavailable, got {other:?}"),
+        }
     }
 
     #[test]
@@ -348,7 +443,6 @@ mod tests {
 
     #[test]
     fn comma_header_parses_leading_count_atoll_style() {
-        // Probe counterexample vs tip 6bca1fc: whole-string parse returned 0.
         let h = TempHarness::new().unwrap();
         let dir = h.path().join("m");
         std::fs::create_dir_all(&dir).unwrap();
@@ -358,6 +452,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(colmap_model_num_images(&dir), 10);
+    }
+
+    #[test]
+    fn images_txt_full_stream_count_without_header() {
+        let h = TempHarness::new().unwrap();
+        let dir = h.path().join("m");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 1000 images × (header + empty POINTS2D) with long names — beyond any
+        // former 64 KiB approximate prefix.
+        let mut body = String::new();
+        for i in 0..1000 {
+            // Non-empty POINTS2D so both lines count (empty lines are skipped).
+            body.push_str(&format!(
+                "{i} 1 0 0 0 0 0 0 1 {}.png\n0 0 -1\n",
+                "a".repeat(100)
+            ));
+        }
+        std::fs::write(dir.join("images.txt"), body).unwrap();
+        assert_eq!(colmap_model_num_images(&dir), 1000);
+    }
+
+    #[test]
+    fn recon_prefers_full_stream_count_over_headered_smaller() {
+        let h = TempHarness::new().unwrap();
+        let ds = h.path().join("ds");
+        let large = ds.join("sparse/large");
+        let small = ds.join("sparse/small");
+        for p in [&large, &small] {
+            std::fs::create_dir_all(p).unwrap();
+            std::fs::write(p.join("cameras.txt"), "1 PINHOLE 64 48 100 100 32 24\n").unwrap();
+        }
+        let mut rows = String::new();
+        for i in 0..1000 {
+            rows.push_str(&format!(
+                "{i} 1 0 0 0 0 0 0 1 {}.png\n0 0 -1\n",
+                "a".repeat(100)
+            ));
+        }
+        std::fs::write(large.join("images.txt"), rows).unwrap();
+        std::fs::write(
+            small.join("images.txt"),
+            "# Number of images: 700, mean observations per image: 0\n",
+        )
+        .unwrap();
+        assert_eq!(colmap_model_num_images(&large), 1000);
+        assert_eq!(colmap_model_num_images(&small), 700);
+        let (chosen, _, _) = find_colmap_recon(&ds, None).unwrap();
+        assert!(
+            chosen.ends_with("sparse/large"),
+            "expected sparse/large, got {}",
+            chosen.display()
+        );
     }
 
     #[test]
@@ -372,7 +518,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(colmap_model_num_images(&dir), -1);
-        // Preferred table path still picks bin when present.
         let fmt = colmap_model_fmt(&dir);
         assert_eq!(fmt.images, ColmapFileFmt::Bin);
         assert_eq!(
@@ -397,10 +542,8 @@ mod tests {
         let h = TempHarness::new().unwrap();
         let ds = h.path().join("ds");
         std::fs::create_dir_all(ds.join("images")).unwrap();
-        // Equal high count: sparse/a vs sparse/b → path ascending picks `a`.
         write_recon(&ds, "sparse/b", 10);
         write_recon(&ds, "sparse/a", 10);
-        // Lower count must lose to 10.
         write_recon(&ds, "sparse/z", 3);
         let (chosen, _, _) = find_colmap_recon(&ds, None).unwrap();
         assert!(
@@ -409,7 +552,6 @@ mod tests {
             chosen.display()
         );
 
-        // Higher count wins over path order.
         write_recon(&ds, "sparse/c", 50);
         let (chosen, _, _) = find_colmap_recon(&ds, None).unwrap();
         assert!(

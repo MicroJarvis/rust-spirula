@@ -7,6 +7,12 @@
 //! that become [`crate::colmap::ParsedDataset::frames`]). Validation is carved
 //! **once** from the true train keep-set; load must not re-apply
 //! [`assign_val_split`].
+//!
+//! Global membership (which sorted names are train vs eval) is decided by
+//! [`train_keep_set`] / [`eval_keep_set`]. Local indices after emit remap follow
+//! DataManager: `split=eval` loads the eval keep as the only frames and labels
+//! them all as local train with `validation=0` (the eval set is already held
+//! out).
 
 use std::path::Path;
 
@@ -248,9 +254,20 @@ fn remap_into_emitted(emitted: &[usize], global: &[usize]) -> Vec<usize> {
 /// Compute the emit list plus train / eval / validation in the **emitted**
 /// domain. Validation is applied once to the true train keep-set.
 ///
-/// - `all`: emit every sorted frame; train/eval/val are global (== local).
+/// # Index domains
+///
+/// - **Global membership** (`train_keep` / `eval_keep`): indices into the
+///   sorted name list before emit filtering.
+/// - **Local indices** ([`SplitPlan::train`] / [`SplitPlan::eval`] /
+///   [`SplitPlan::validation`]): indices into [`SplitPlan::emit`].
+///
+/// - `all`: emit every sorted frame; train/eval/val remapped from global.
 /// - `train`: emit original train keep; train/val remapped; eval empty.
-/// - `eval`: emit eval keep; train/val empty; eval = `0..len`.
+/// - `eval`: emit eval keep (global membership). C++ DataManager eval-only
+///   (`ColmapParser.cpp:955-959`) forces `validation_fraction=0` and treats
+///   every selected frame as local train — so local `train = 0..emit.len`,
+///   `validation` empty, and local `eval` empty (membership already applied
+///   by emit selection).
 pub fn compute_splits(
     names: &[String],
     cfg: &SplitConfig,
@@ -271,8 +288,13 @@ pub fn compute_splits(
     let eval_keep = eval_keep_set(n, &train_keep, &cfg.eval_mode);
 
     // Validation once on the true train keep (never on eval / never twice).
-    let (train_local, val_local) =
-        assign_val_split(train_keep.len() as i64, cfg.validation_fraction)?;
+    // Eval-only loads force validation_fraction=0 (C++ pin).
+    let val_frac = if cfg.split == "eval" {
+        0.0
+    } else {
+        cfg.validation_fraction
+    };
+    let (train_local, val_local) = assign_val_split(train_keep.len() as i64, val_frac)?;
     let train_global: Vec<usize> = train_local
         .iter()
         .map(|i| train_keep[*i] as usize)
@@ -298,11 +320,12 @@ pub fn compute_splits(
         }
         "eval" => {
             let emit = eval_global;
-            let local_eval: Vec<usize> = (0..emit.len()).collect();
+            // Local train = all selected frames; validation forced 0 above.
+            let local_train: Vec<usize> = (0..emit.len()).collect();
             Ok(SplitPlan {
                 emit,
-                train: Vec::new(),
-                eval: local_eval,
+                train: local_train,
+                eval: Vec::new(),
                 validation: Vec::new(),
             })
         }
@@ -366,24 +389,25 @@ mod tests {
     }
 
     #[test]
-    fn filename_eval_split_has_empty_train() {
+    fn filename_eval_split_local_train_all_selected() {
         let names = vec!["img_eval_b.png".into(), "img_train_a.png".into()];
         let cfg = SplitConfig {
             eval_mode: "filename".into(),
             split: "eval".into(),
-            validation_fraction: 0.25, // must not leak into eval emit
+            validation_fraction: 0.25, // forced to 0 for eval-only
             ..Default::default()
         };
         let plan = compute_splits(&names, &cfg).unwrap();
         assert_eq!(plan.emit, vec![0]);
-        assert!(plan.train.is_empty());
-        assert_eq!(plan.eval, vec![0]);
+        // DataManager eval-only: selected frames are all local train.
+        assert_eq!(plan.train, vec![0]);
+        assert!(plan.eval.is_empty());
         assert!(plan.validation.is_empty());
     }
 
     #[test]
     fn table_driven_split_mode_validation() {
-        // 3 split kinds × 4 eval modes × nonzero validation.
+        // 4 eval modes × 3 splits × validation {0, 0.25}.
         let names_filename = vec![
             "img_eval_b.png".into(),
             "img_train_a.png".into(),
@@ -393,55 +417,71 @@ mod tests {
         let names_plain: Vec<String> = (0..8).map(|i| format!("f{i}.png")).collect();
         let modes = ["all", "fraction", "interval", "filename"];
         let splits = ["all", "train", "eval"];
+        let val_fracs = [0.0f32, 0.25];
         for mode in modes {
             for split in splits {
-                let names = if mode == "filename" {
-                    names_filename.clone()
-                } else {
-                    names_plain.clone()
-                };
-                let cfg = SplitConfig {
-                    eval_mode: mode.into(),
-                    train_split_fraction: 0.75,
-                    eval_interval: 4,
-                    split: split.into(),
-                    validation_fraction: 0.25,
-                };
-                let plan = compute_splits(&names, &cfg).unwrap();
-                let n_emitted = plan.emit.len();
-                for idx in plan
-                    .train
-                    .iter()
-                    .chain(plan.eval.iter())
-                    .chain(plan.validation.iter())
-                {
+                for &validation_fraction in &val_fracs {
+                    let names = if mode == "filename" {
+                        names_filename.clone()
+                    } else {
+                        names_plain.clone()
+                    };
+                    let cfg = SplitConfig {
+                        eval_mode: mode.into(),
+                        train_split_fraction: 0.75,
+                        eval_interval: 4,
+                        split: split.into(),
+                        validation_fraction,
+                    };
+                    let plan = compute_splits(&names, &cfg).unwrap();
+                    let n_emitted = plan.emit.len();
+                    for idx in plan
+                        .train
+                        .iter()
+                        .chain(plan.eval.iter())
+                        .chain(plan.validation.iter())
+                    {
+                        assert!(
+                            *idx < n_emitted,
+                            "mode={mode} split={split} val={validation_fraction}: index {idx} >= emitted {n_emitted}"
+                        );
+                    }
+                    let train_set: std::collections::BTreeSet<_> =
+                        plan.train.iter().copied().collect();
+                    let val_set: std::collections::BTreeSet<_> =
+                        plan.validation.iter().copied().collect();
                     assert!(
-                        *idx < n_emitted,
-                        "mode={mode} split={split}: index {idx} >= emitted {n_emitted}"
+                        train_set.is_disjoint(&val_set),
+                        "mode={mode} split={split} val={validation_fraction}"
                     );
-                }
-                let train_set: std::collections::BTreeSet<_> = plan.train.iter().copied().collect();
-                let val_set: std::collections::BTreeSet<_> =
-                    plan.validation.iter().copied().collect();
-                assert!(train_set.is_disjoint(&val_set), "mode={mode} split={split}");
-                if mode != "all" || split != "all" {
-                    let eval_set: std::collections::BTreeSet<_> =
-                        plan.eval.iter().copied().collect();
-                    assert!(
-                        train_set.is_disjoint(&eval_set),
-                        "mode={mode} split={split}: train mixes eval"
-                    );
-                }
-                if split == "eval" {
-                    assert!(plan.train.is_empty() && plan.validation.is_empty());
-                }
-                if split == "train" {
-                    assert!(plan.eval.is_empty());
-                    assert!(!plan.train.is_empty(), "empty train illegal");
-                }
-                if split == "all" && mode == "filename" {
-                    assert!(!plan.train.contains(&0), "eval frame wrongly in train");
-                    assert!(plan.eval.contains(&0));
+                    if mode != "all" || split != "all" {
+                        let eval_set: std::collections::BTreeSet<_> =
+                            plan.eval.iter().copied().collect();
+                        assert!(
+                            train_set.is_disjoint(&eval_set),
+                            "mode={mode} split={split}: train mixes eval"
+                        );
+                    }
+                    if split == "eval" {
+                        // Local train covers every selected frame; validation forced 0.
+                        assert_eq!(
+                            plan.train,
+                            (0..n_emitted).collect::<Vec<_>>(),
+                            "mode={mode} eval-only local train"
+                        );
+                        assert!(plan.eval.is_empty() && plan.validation.is_empty());
+                    }
+                    if split == "train" {
+                        assert!(plan.eval.is_empty());
+                        assert!(!plan.train.is_empty(), "empty train illegal");
+                        if validation_fraction == 0.0 {
+                            assert!(plan.validation.is_empty());
+                        }
+                    }
+                    if split == "all" && mode == "filename" {
+                        assert!(!plan.train.contains(&0), "eval frame wrongly in train");
+                        assert!(plan.eval.contains(&0));
+                    }
                 }
             }
         }

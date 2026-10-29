@@ -75,23 +75,54 @@ pub(crate) fn ensure_remaining(remaining: u64, need: u64, field: &str) -> Result
     Ok(())
 }
 
+/// Cumulative in-memory parse budget for one table (file bytes + Vec/BTree/clone).
+#[derive(Debug, Default)]
+pub(crate) struct ParseMem {
+    used: u64,
+}
+
+impl ParseMem {
+    pub fn new() -> Self {
+        Self { used: 0 }
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    /// Charge `bytes` against the cumulative parse budget.
+    pub fn charge(&mut self, bytes: u64, field: &str) -> Result<(), DomainError> {
+        let next = self.used.saturating_add(bytes);
+        if next > MAX_PARSE_MEMORY_BYTES {
+            return Err(err(
+                ErrorCode::ValueOutOfRange,
+                field,
+                format!("{field} parse memory {next} exceeds budget {MAX_PARSE_MEMORY_BYTES}"),
+            ));
+        }
+        self.used = next;
+        Ok(())
+    }
+
+    pub fn charge_elems<T>(&mut self, n: usize, field: &str) -> Result<(), DomainError> {
+        let elem = (std::mem::size_of::<T>() as u64).max(1);
+        let add = checked_mul_u64(n as u64, elem, field)?;
+        self.charge(add, field)
+    }
+
+    pub fn charge_str_bytes(&mut self, len: usize, field: &str) -> Result<(), DomainError> {
+        self.charge(len as u64, field)
+    }
+}
+
 /// Fallible reserve that never panics on huge counts; enforces parse memory budget.
 pub(crate) fn try_reserve_elems<T>(
     vec: &mut Vec<T>,
     additional: usize,
-    mem_used: &mut u64,
+    mem: &mut ParseMem,
     field: &str,
 ) -> Result<(), DomainError> {
-    let elem = std::mem::size_of::<T>() as u64;
-    let add_bytes = checked_mul_u64(additional as u64, elem.max(1), field)?;
-    let next = mem_used.saturating_add(add_bytes);
-    if next > MAX_PARSE_MEMORY_BYTES {
-        return Err(err(
-            ErrorCode::ValueOutOfRange,
-            field,
-            format!("{field} parse memory {next} exceeds budget {MAX_PARSE_MEMORY_BYTES}"),
-        ));
-    }
+    mem.charge_elems::<T>(additional, field)?;
     vec.try_reserve(additional).map_err(|_| {
         err(
             ErrorCode::ValueOutOfRange,
@@ -99,7 +130,6 @@ pub(crate) fn try_reserve_elems<T>(
             format!("{field} reservation of {additional} elements failed"),
         )
     })?;
-    *mem_used = next;
     Ok(())
 }
 

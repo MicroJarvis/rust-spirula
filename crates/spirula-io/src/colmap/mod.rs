@@ -31,8 +31,8 @@ pub use models::{
 };
 pub use pose::{colmap_to_c2w, qvec2rotmat};
 pub use probe::{
-    colmap_model_fmt, colmap_model_num_images, find_colmap_recon, find_colmap_recon_cancelable,
-    probe_dataset, probe_dataset_cancelable,
+    colmap_model_fmt, colmap_model_num_images, colmap_model_num_images_cancelable,
+    find_colmap_recon, find_colmap_recon_cancelable, probe_dataset, probe_dataset_cancelable,
 };
 pub use split::{
     SplitConfig, SplitPlan, assign_val_split, compute_splits, linspace_indices, train_keep_set,

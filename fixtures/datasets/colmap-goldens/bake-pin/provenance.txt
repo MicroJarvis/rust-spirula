@@ -1,2 +1,7 @@
 pin=9a24f09927944a795e7ba1bd8243a625bf419479
-Extracted exact function bodies from git show 9a24f09927944a795e7ba1bd8243a625bf419479:src/data/parsers/ColmapParser.cpp; type declarations from DatasetParser.h; model/fit support compiled unchanged from pin. Output rows: id model tier fx fy cx cy source fit_max_px d[8].
+host-only regen: cargo run -p spirula-io --example regen_bake_pin -- \
+fixtures/datasets/colmap-goldens/bake-pin
+Rows: id model tier fx fy cx cy source fit_max_px d[8];
+ray id px0 py0 px1 py1 px2 py2 (unfitted source_project or exact bake);
+pose from qvec=[cos(π/8),0,sin(π/8),0] tvec=[1,2,3] via colmap_to_c2w.
+No C++ sources checked in.

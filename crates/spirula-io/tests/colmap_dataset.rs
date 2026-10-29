@@ -125,13 +125,38 @@ fn probe_nerfstudio_and_metashape_unavailable() {
 
     let ms = h.path().join("ms");
     fs::create_dir_all(&ms).unwrap();
+    // bare `meta` / bare `<chunk/>` must NOT match Metashape sniff.
     fs::write(ms.join("project.psx"), "meta").unwrap();
+    match probe_dataset(&ms, None).unwrap() {
+        DatasetProbe::NotADataset { .. } => {}
+        other => panic!("expected not-a-dataset for bad.psx=meta, got {other:?}"),
+    }
+    fs::remove_file(ms.join("project.psx")).unwrap();
+    fs::write(ms.join("export.xml"), "<chunk/>").unwrap();
+    match probe_dataset(&ms, None).unwrap() {
+        DatasetProbe::NotADataset { .. } => {}
+        other => panic!("expected not-a-dataset for bad.xml=<chunk/>, got {other:?}"),
+    }
+    fs::write(ms.join("export.xml"), "<document><chunk/></document>").unwrap();
     match probe_dataset(&ms, None).unwrap() {
         DatasetProbe::Unavailable {
             format: DatasetFormat::Metashape,
             ..
         } => {}
-        other => panic!("expected metashape unavailable, got {other:?}"),
+        other => panic!("expected metashape unavailable for good.xml, got {other:?}"),
+    }
+    fs::remove_file(ms.join("export.xml")).unwrap();
+    fs::write(
+        ms.join("project.psx"),
+        "<document psx:version=\"1\" path=\"scene.psz\"/>",
+    )
+    .unwrap();
+    match probe_dataset(&ms, None).unwrap() {
+        DatasetProbe::Unavailable {
+            format: DatasetFormat::Metashape,
+            ..
+        } => {}
+        other => panic!("expected metashape unavailable for good.psx, got {other:?}"),
     }
 }
 
@@ -447,8 +472,9 @@ fn nontrivial_filename_all_and_eval_split_indices() {
     let ev = load_colmap_dataset(&root, &cfg_eval, None).unwrap();
     assert_eq!(ev.frames.len(), 1);
     assert!(ev.frames[0].name.contains("eval"));
-    assert!(ev.split.train.is_empty());
-    assert_eq!(ev.split.eval, vec![0]);
+    // Eval-only: local train = all selected; validation forced 0.
+    assert_eq!(ev.split.train, vec![0]);
+    assert!(ev.split.eval.is_empty());
     assert!(ev.split.validation.is_empty());
 }
 
@@ -631,7 +657,8 @@ fn compute_splits_table_smoke_exported() {
 
 #[test]
 fn pin_bake_host_golden_holdout() {
-    use spirula_io::colmap::COLMAP_MODELS;
+    use spirula_core::{FrameCamera, Vec3, source_project};
+    use spirula_io::colmap::{COLMAP_MODELS, colmap_to_c2w};
     let expected =
         fs::read_to_string(fixtures().join("datasets/colmap-goldens/bake-pin/expected.txt"))
             .expect("bake-pin expected.txt");
@@ -641,6 +668,35 @@ fn pin_bake_host_golden_holdout() {
     )
     .expect("inputs json");
     assert_eq!(inputs.len(), COLMAP_MODELS.len());
+
+    let mut model_lines = Vec::new();
+    let mut ray_lines: std::collections::BTreeMap<usize, Vec<f64>> =
+        std::collections::BTreeMap::new();
+    let mut pose_vals: Option<Vec<f64>> = None;
+    for line in expected.lines() {
+        let mut toks = line.split_whitespace();
+        let Some(tag) = toks.next() else {
+            continue;
+        };
+        if tag == "pose" {
+            pose_vals = Some(toks.map(|t| t.parse().unwrap()).collect());
+            continue;
+        }
+        if tag == "ray" {
+            let id: usize = toks.next().unwrap().parse().unwrap();
+            let px: Vec<f64> = toks.map(|t| t.parse().unwrap()).collect();
+            assert_eq!(px.len(), 6, "ray {id} needs 3 pixel pairs");
+            ray_lines.insert(id, px);
+            continue;
+        }
+        // Model row starts with numeric id.
+        let id: usize = tag.parse().unwrap();
+        let rest: Vec<&str> = std::iter::once(tag).chain(toks).collect();
+        model_lines.push((id, rest.join(" ")));
+    }
+    assert_eq!(model_lines.len(), COLMAP_MODELS.len());
+
+    const RAYS: [(f64, f64, f64); 3] = [(0.0, 0.0, 1.0), (0.2, -0.1, 1.0), (-0.15, 0.25, 1.0)];
     for (id, params) in inputs.iter().enumerate() {
         let info = &COLMAP_MODELS[id];
         let cam = ColmapCamera {
@@ -651,16 +707,29 @@ fn pin_bake_host_golden_holdout() {
             params: params.clone(),
         };
         let bi = bake_and_fit(&cam).unwrap_or_else(|e| panic!("{}: {e}", info.name));
-        let line = expected.lines().nth(id).expect("golden line");
+        let line = &model_lines.iter().find(|(i, _)| *i == id).unwrap().1;
         let mut toks = line.split_whitespace();
         let _gid = toks.next().unwrap();
         let g_model: i32 = toks.next().unwrap().parse().unwrap();
-        let _g_tier = toks.next().unwrap();
+        let g_tier: i32 = toks.next().unwrap().parse().unwrap();
         let gfx: f64 = toks.next().unwrap().parse().unwrap();
         let gfy: f64 = toks.next().unwrap().parse().unwrap();
         let gcx: f64 = toks.next().unwrap().parse().unwrap();
         let gcy: f64 = toks.next().unwrap().parse().unwrap();
-        assert_eq!(bi.model.as_i32(), g_model, "{}", info.name);
+        let g_source: i32 = toks.next().unwrap().parse().unwrap();
+        let g_fit: f64 = toks.next().unwrap().parse().unwrap();
+        let mut g_dist = [0.0f64; 8];
+        for d in &mut g_dist {
+            *d = toks.next().unwrap().parse().unwrap();
+        }
+        assert_eq!(bi.model.as_i32(), g_model, "{} model", info.name);
+        assert_eq!(bi.distortion.as_i32(), g_tier, "{} tier", info.name);
+        assert!(
+            bi.source.source_model == g_source || bi.source.source_model == -1,
+            "{} source {} vs {g_source}",
+            info.name,
+            bi.source.source_model
+        );
         let loose = matches!(
             info.name,
             "FOV"
@@ -674,19 +743,83 @@ fn pin_bake_host_golden_holdout() {
         assert!(
             (f64::from(bi.fx) - gfx).abs() <= tol * gfx.abs().max(1.0)
                 || (f64::from(bi.fx) - gfx).abs() < 2.0,
-            "{} fx {} vs {gfx}",
-            info.name,
-            bi.fx
+            "{} fx",
+            info.name
         );
         assert!(
             (f64::from(bi.fy) - gfy).abs() <= tol * gfy.abs().max(1.0)
                 || (f64::from(bi.fy) - gfy).abs() < 2.0,
-            "{} fy {} vs {gfy}",
-            info.name,
-            bi.fy
+            "{} fy",
+            info.name
         );
         assert!((f64::from(bi.cx) - gcx).abs() < 2.0, "{} cx", info.name);
         assert!((f64::from(bi.cy) - gcy).abs() < 2.0, "{} cy", info.name);
+        assert!(
+            (f64::from(bi.source.fit_max_px) - g_fit).abs() < 1.0
+                || g_fit == 0.0
+                || bi.source.fit_max_px == 0.0,
+            "{} fit_max_px",
+            info.name
+        );
+        for (i, gd) in g_dist.iter().enumerate() {
+            let bd = f64::from(bi.dist[i]);
+            assert!(
+                (bd - gd).abs() <= tol * gd.abs().max(1.0) || (bd - gd).abs() < 0.05,
+                "{} dist[{i}]",
+                info.name
+            );
+        }
+
+        let g_ray = ray_lines.get(&id).expect("ray golden");
+        let coeffs = bi.dist.map(f64::from);
+        let frame = FrameCamera::try_new(
+            bi.model,
+            bi.distortion,
+            640,
+            480,
+            f64::from(bi.fx),
+            f64::from(bi.fy),
+            f64::from(bi.cx),
+            f64::from(bi.cy),
+            coeffs,
+        )
+        .unwrap_or_else(|e| panic!("{} frame: {e}", info.name));
+        for (ri, &(x, y, z)) in RAYS.iter().enumerate() {
+            let (px, py) = if bi.source.source_model >= 0 {
+                source_project(bi.source.source_model, &bi.source.params, x, y, z)
+                    .unwrap_or_else(|e| panic!("{} unfitted ray: {e}", info.name))
+            } else {
+                let ray = Vec3::try_new(x, y, z).unwrap();
+                let p = frame
+                    .ray_to_pixel(ray)
+                    .unwrap_or_else(|e| panic!("{} baked ray: {e}", info.name));
+                (p.x(), p.y())
+            };
+            let gpx = g_ray[ri * 2];
+            let gpy = g_ray[ri * 2 + 1];
+            let rtol = if loose { 0.5 } else { 1e-3 };
+            assert!(
+                (px - gpx).abs() <= rtol * gpx.abs().max(1.0) || (px - gpx).abs() < 2.0,
+                "{} ray[{ri}] px {px} vs {gpx}",
+                info.name
+            );
+            assert!(
+                (py - gpy).abs() <= rtol * gpy.abs().max(1.0) || (py - gpy).abs() < 2.0,
+                "{} ray[{ri}] py {py} vs {gpy}",
+                info.name
+            );
+        }
+    }
+
+    let pose = pose_vals.expect("pose golden");
+    assert_eq!(pose.len(), 12);
+    let c2w = colmap_to_c2w(
+        [0.9238795325112867, 0.0, 0.3826834323650898, 0.0],
+        [1.0, 2.0, 3.0],
+    )
+    .unwrap();
+    for (g, v) in pose.iter().zip(c2w.iter()) {
+        assert!((g - v).abs() < 1e-9, "pose {g} vs {v}");
     }
 }
 

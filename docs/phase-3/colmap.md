@@ -1,6 +1,6 @@
 # P3-F03: COLMAP dataset reading
 
-Status: **进行中 / HOLD** (awaiting independent re-review after A–E fixes).
+Status: **进行中 / HOLD** (awaiting independent re-review after round-3 fixes).
 Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
 Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
@@ -50,25 +50,34 @@ list (`SplitPlan::emit` → `ParsedDataset::frames`). Validation is carved
 **once** from the true train keep-set; `filename` / `interval` / `fraction`
 never mix eval-complement frames into train. `eval_mode=all` keeps reference
 coincidence (`eval` covers every sorted frame on `split=all`).
+`split=eval` (C++ DataManager eval-only) forces `validation_fraction=0` and
+sets local `train = 0..emit.len` (selected frames are all “train” to the
+loader); local `eval` stays empty because membership was applied by emit.
 
 ### Numeric bake boundary
 
-`bake_and_fit` rejects non-positive / non-finite focals and f32 overflow
-(no silent sanitize). EQUIRECTANGULAR bake requires finite positive derived
-focals from params. Host pin holdout:
-`fixtures/datasets/colmap-goldens/bake-pin/`.
+`bake_colmap_intrinsics` (and `bake_and_fit`) reject exact-arity mismatches,
+non-positive size, non-finite params, and f32 overflow (no silent sanitize).
+EQUIRECTANGULAR bake requires finite positive derived focals from params.
+Host pin holdout: `fixtures/datasets/colmap-goldens/bake-pin/` (regen via
+`tools/fixtures` / `spirula-io` example `regen_bake_pin`).
 
 ### Bounded IO / cancel
 
 - Binary `points` / observations: remaining-byte check before fallible reserve;
   `MAX_POINTS` must not allow multi-GB reserve from an 8-byte file.
-- Probe reads bounded prefixes only (`images.bin` 8 bytes; Metashape XML
-  **8192** dual-marker window; `images.txt` header prefix).
+- Cumulative `ParseMem` charges file bytes + Vec/BTree/string growth (not
+  reset per line).
+- Probe: `images.bin` 8 bytes; Metashape **8192** requires `<document` and
+  (`path=` for `.psx` / `<chunk` for xml); `images.txt` full streaming
+  count (header atoll early-return; no 64 KiB approximate fallback).
 - `metadata` + `fs::read` re-checks size (TOCTOU growth).
 - Cancel checkpoints in text observation/track tokenization, binary cstring,
-  track association, probe dir scan/sort, and around each camera bake.
-- **`fit_camera_auto` is non-preemptible** (dense CPU ladder in `spirula-core`);
-  cancel is polled before/after each camera fit only.
+  track association, probe dir scan/sort / image-count stream, and around
+  each camera bake.
+- `fit_camera_auto_cancelable` polls between domain-scan azimuth steps and
+  candidate models; dense mid-`fit_model` least-squares remains
+  non-preemptible. Load still polls immediately before/after each camera.
 
 ### Admission (`LoadDataset`)
 
@@ -83,7 +92,7 @@ input. Rejected payloads are UTF-8-safe length-limited via
 - Nerfstudio / Metashape parse (P3-F04).
 - Image decode cache / batch loader (P3-F08).
 - UI dataset browser (P6-F04).
-- Chunked cancel inside `fit_camera_auto` (core change; documented boundary).
+- Chunked cancel inside dense `fit_model` LM (azimuth/candidate polls only).
 
 ## Errors (typed, no panic)
 
@@ -109,10 +118,13 @@ input. Rejected payloads are UTF-8-safe length-limited via
 
 ## Remaining gaps (HOLD)
 
-- Independent re-review of A–E + image-count `atoll` + recon sort.
+- Independent re-review of round-3 HOLD fixes (streaming count, Metashape
+  sniff, bake arity, eval-local train, ParseMem, holdout, fit cancel docs).
 - Fitted-model numeric tolerance vs host pin rows may need tightening after
-  review (loose tol on FOV/EUCM/thin-prism ladder).
-- `fit_camera_auto` still non-cancelable mid-fit.
+  review (loose tol on FOV/EUCM/thin-prism ladder); regen may rewrite
+  `expected.txt` pose to the documented host q/t.
+- Dense mid-`fit_model` inside `fit_camera_auto_cancelable` remains
+  non-preemptible (azimuth/candidate polls only).
 - P3-F04/F05/F08 and P2-F08 deliberately untouched.
 
 ## Verification

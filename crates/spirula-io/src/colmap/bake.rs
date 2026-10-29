@@ -6,28 +6,13 @@
 
 use spirula_core::{
     CameraModel, DISTORTION_PARAMS, DistortionTier, FitOptions, K_EXACT_FIT_PX, MAX_PARAMS,
-    demote_distortion, fit_camera_auto, source_project,
+    demote_distortion, fit_camera_auto_cancelable, source_project,
 };
 
 use super::budget::err;
 use super::models::{require_exact_param_count, require_model_by_name, require_model_id_by_name};
 use super::types::{BakedIntrinsics, ColmapCamera};
 use spirula_core::ErrorCode;
-
-fn need(cam: &ColmapCamera, n: usize) -> Result<(), spirula_core::DomainError> {
-    if cam.params.len() < n {
-        return Err(err(
-            ErrorCode::MalformedRecord,
-            "params",
-            format!(
-                "camera model {} needs {n} parameters, got {}",
-                cam.model,
-                cam.params.len()
-            ),
-        ));
-    }
-    Ok(())
-}
 
 /// f64 → f32 without silent overflow to ±inf / NaN.
 fn finite_f32(v: f64, field: &str) -> Result<f32, spirula_core::DomainError> {
@@ -169,33 +154,34 @@ fn validate_baked_intrinsics(
 }
 
 /// `bake_colmap_intrins` (pin `ColmapParser.cpp:309-407`).
+///
+/// Low-level gate: exact source arity, finite params, and positive size before
+/// any tier mapping (PINHOLE extra params / 0×0 fail here, not only in
+/// [`bake_and_fit`]).
 pub fn bake_colmap_intrinsics(
     cam: &ColmapCamera,
 ) -> Result<BakedIntrinsics, spirula_core::DomainError> {
+    validate_source_camera(cam)?;
     let mut o = BakedIntrinsics::default();
     let params = &cam.params;
 
     if cam.model == "SIMPLE_PINHOLE" {
-        need(cam, 3)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = o.fx;
         o.cx = p(cam, 1)?;
         o.cy = p(cam, 2)?;
     } else if cam.model == "PINHOLE" {
-        need(cam, 4)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = positive_finite_f32(cam.params[1], "fy")?;
         o.cx = p(cam, 2)?;
         o.cy = p(cam, 3)?;
     } else if cam.model == "SIMPLE_FISHEYE" {
-        need(cam, 3)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = o.fx;
         o.cx = p(cam, 1)?;
         o.cy = p(cam, 2)?;
         o.model = CameraModel::Fisheye;
     } else if cam.model == "FISHEYE" {
-        need(cam, 4)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = positive_finite_f32(cam.params[1], "fy")?;
         o.cx = p(cam, 2)?;
@@ -207,7 +193,6 @@ pub fn bake_colmap_intrinsics(
         || cam.model == "RADIAL_FISHEYE"
     {
         let two = cam.model == "RADIAL" || cam.model == "RADIAL_FISHEYE";
-        need(cam, if two { 5 } else { 4 })?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = o.fx;
         o.cx = p(cam, 1)?;
@@ -221,7 +206,6 @@ pub fn bake_colmap_intrinsics(
             o.model = CameraModel::Fisheye;
         }
     } else if cam.model == "OPENCV" {
-        need(cam, 8)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = positive_finite_f32(cam.params[1], "fy")?;
         o.cx = p(cam, 2)?;
@@ -232,7 +216,6 @@ pub fn bake_colmap_intrinsics(
         o.dist[2] = p(cam, 6)?;
         o.dist[3] = p(cam, 7)?;
     } else if cam.model == "FULL_OPENCV"
-        && params.len() >= 12
         && params[9] == 0.0
         && params[10] == 0.0
         && params[11] == 0.0
@@ -248,7 +231,6 @@ pub fn bake_colmap_intrinsics(
         o.dist[4] = p(cam, 6)?;
         o.dist[5] = p(cam, 7)?;
     } else if cam.model == "OPENCV_FISHEYE" {
-        need(cam, 8)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = positive_finite_f32(cam.params[1], "fy")?;
         o.cx = p(cam, 2)?;
@@ -260,7 +242,6 @@ pub fn bake_colmap_intrinsics(
         o.dist[2] = p(cam, 6)?;
         o.dist[3] = p(cam, 7)?;
     } else if cam.model == "THIN_PRISM_FISHEYE" {
-        need(cam, 12)?;
         o.fx = positive_finite_f32(cam.params[0], "fx")?;
         o.fy = positive_finite_f32(cam.params[1], "fy")?;
         o.cx = p(cam, 2)?;
@@ -276,7 +257,6 @@ pub fn bake_colmap_intrinsics(
         o.dist[6] = p(cam, 10)?;
         o.dist[7] = p(cam, 11)?;
     } else if cam.model == "EQUIRECTANGULAR" {
-        need(cam, 2)?;
         let w = cam.params[0];
         let h = cam.params[1];
         o.fx = positive_finite_f32(w / (2.0 * std::f64::consts::PI), "fx")?;
@@ -286,10 +266,6 @@ pub fn bake_colmap_intrinsics(
         o.model = CameraModel::Equirectangular;
     } else {
         let id = require_model_id_by_name(&cam.model)?;
-        let info_n = super::models::model_by_id(id)
-            .map(|m| m.num_params)
-            .unwrap_or(0);
-        need(cam, info_n)?;
         o.source.source_model = id;
         for (i, v) in params.iter().enumerate().take(MAX_PARAMS) {
             o.source.params[i] = finite_f32(*v, "source_params")?;
@@ -311,12 +287,24 @@ pub fn bake_colmap_intrinsics(
 
 /// Fit an unrepresentable COLMAP source onto a compiled tier (`fit_colmap_source`).
 ///
-/// Cancel boundary: callers must [`crate::cancel_checkpoint::CancelCheckpoint::poll_now`]
-/// before/after this call. `fit_camera_auto` itself is a dense non-preemptible
-/// CPU fit (domain scan + model ladder); it is not chunked today.
+/// # Cancel boundary
+///
+/// Load polls immediately before/after each camera. Inside the fit,
+/// [`fit_camera_auto_cancelable`] also polls between domain-scan azimuth steps
+/// and between candidate models. Dense mid-`fit_model` least-squares remains
+/// non-preemptible (HOLD gap). Host FOV 64×48 typically tens of ms.
 pub fn fit_colmap_source(
     cam: &ColmapCamera,
     bi: &mut BakedIntrinsics,
+) -> Result<(), spirula_core::DomainError> {
+    fit_colmap_source_cancelable(cam, bi, None)
+}
+
+/// Same as [`fit_colmap_source`] with a cancel token for the auto-fit ladder.
+pub fn fit_colmap_source_cancelable(
+    cam: &ColmapCamera,
+    bi: &mut BakedIntrinsics,
+    cancel: Option<&spirula_core::CancelToken>,
 ) -> Result<(), spirula_core::DomainError> {
     if bi.source.source_model < 0 {
         return Ok(());
@@ -347,7 +335,7 @@ pub fn fit_colmap_source(
             format!("camera {w}x{h} must be positive"),
         ));
     }
-    let fit = fit_camera_auto(&project, w, h, FitOptions::default())?;
+    let fit = fit_camera_auto_cancelable(&project, w, h, FitOptions::default(), cancel)?;
     bi.model = fit.target.model;
     bi.fx = finite_f32(fit.target.fx, "fx")?;
     bi.fy = finite_f32(fit.target.fy, "fy")?;
@@ -441,6 +429,35 @@ mod tests {
         assert_eq!(bi.distortion, DistortionTier::None);
         assert!((bi.fx - 100.0).abs() < 1e-6);
         assert_eq!(bi.source.source_model, -1);
+    }
+
+    #[test]
+    fn bake_colmap_intrinsics_rejects_extra_params_and_zero_size() {
+        // Direct low-level API (not only bake_and_fit).
+        let extra = ColmapCamera {
+            camera_id: 1,
+            model: "PINHOLE".into(),
+            width: 64,
+            height: 48,
+            params: vec![100.0, 100.0, 32.0, 24.0, 0.01],
+        };
+        assert!(
+            bake_colmap_intrinsics(&extra).is_err(),
+            "PINHOLE with 5 params must fail exact arity"
+        );
+        let zero = ColmapCamera {
+            camera_id: 1,
+            model: "PINHOLE".into(),
+            width: 0,
+            height: 0,
+            params: vec![100.0, 100.0, 32.0, 24.0],
+        };
+        assert!(
+            bake_colmap_intrinsics(&zero).is_err(),
+            "0x0 size must fail at bake_colmap_intrinsics"
+        );
+        let ok = bake_colmap_intrinsics(&pinhole(vec![100.0, 100.0, 32.0, 24.0])).unwrap();
+        assert!((ok.fx - 100.0).abs() < 1e-6);
     }
 
     #[test]

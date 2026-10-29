@@ -8,14 +8,14 @@ use spirula_core::{CancelToken, ErrorCode};
 
 use super::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_OBSERVATIONS, MAX_POINTS, MAX_TRACK_ELEMS,
-    ParseCancel, ensure_count, err, err_path, try_reserve_elems,
+    ParseCancel, ParseMem, ensure_count, err, err_path, try_reserve_elems,
 };
 use super::models::{require_exact_param_count, require_model_by_name};
 use super::types::{
     ColmapCamera, ColmapImage, ColmapObservation, ColmapPoint3D, ColmapPoints3D, ColmapTrackElem,
 };
 
-fn read_capped(path: &Path) -> Result<Vec<u8>, spirula_core::DomainError> {
+fn read_capped(path: &Path, mem: &mut ParseMem) -> Result<Vec<u8>, spirula_core::DomainError> {
     let meta = fs::metadata(path).map_err(|e| {
         let code = if e.kind() == std::io::ErrorKind::NotFound {
             ErrorCode::NotFound
@@ -41,6 +41,9 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, spirula_core::DomainError> {
             ),
         ));
     }
+    // Charge metadata length before allocating so a huge file fails on budget,
+    // not only after a successful read.
+    mem.charge(len, "file")?;
     let data = fs::read(path).map_err(|e| {
         err_path(
             ErrorCode::ReadFailed,
@@ -58,6 +61,9 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, spirula_core::DomainError> {
                 path.display()
             ),
         ));
+    }
+    if (data.len() as u64) > len {
+        mem.charge((data.len() as u64) - len, "file")?;
     }
     Ok(data)
 }
@@ -157,7 +163,8 @@ pub fn read_cameras_text(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapCamera>, spirula_core::DomainError> {
-    let bytes = read_capped(path)?;
+    let mut mem = ParseMem::new();
+    let bytes = read_capped(path, &mut mem)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         err_path(
             ErrorCode::MalformedRecord,
@@ -195,6 +202,7 @@ pub fn read_cameras_text(
                 "malformed cameras.txt line",
             ));
         }
+        mem.charge_str_bytes(model.len(), "cameras")?;
         let info = require_model_by_name(&model)?;
         let width = parse_u64(
             it.next().ok_or_else(|| {
@@ -217,7 +225,10 @@ pub fn read_cameras_text(
             "height",
         )?;
         let mut params = Vec::new();
-        for tok in it {
+        let toks: Vec<&str> = it.collect();
+        mem.charge_elems::<&str>(toks.len(), "params")?;
+        try_reserve_elems(&mut params, toks.len(), &mut mem, "params")?;
+        for tok in toks {
             params.push(parse_f64(tok, "params")?);
         }
         require_exact_param_count(info, &params)?;
@@ -230,6 +241,7 @@ pub fn read_cameras_text(
                 format!("duplicate camera_id {camera_id}"),
             ));
         }
+        mem.charge_elems::<ColmapCamera>(1, "cameras")?;
         cameras.insert(
             camera_id,
             ColmapCamera {
@@ -242,15 +254,20 @@ pub fn read_cameras_text(
         );
     }
     cp.poll_now()?;
+    let _ = mem.used();
     Ok(cameras)
 }
 
 fn parse_observations(
     line: &str,
     budget: &mut u64,
+    mem: &mut ParseMem,
     cp: &mut ParseCancel<'_>,
 ) -> Result<Vec<ColmapObservation>, spirula_core::DomainError> {
+    // Charge token Vec growth into the shared cumulative budget (not reset
+    // per line — that previously missed Vec/clone growth across images).
     let toks: Vec<&str> = line.split_whitespace().collect();
+    mem.charge_elems::<&str>(toks.len(), "observations")?;
     if toks.is_empty() {
         return Ok(Vec::new());
     }
@@ -265,8 +282,7 @@ fn parse_observations(
     *budget = budget.saturating_add(n);
     ensure_count(*budget, MAX_OBSERVATIONS, "observations")?;
     let mut out = Vec::new();
-    let mut mem = 0u64;
-    try_reserve_elems(&mut out, toks.len() / 3, &mut mem, "observations")?;
+    try_reserve_elems(&mut out, toks.len() / 3, mem, "observations")?;
     for (i, chunk) in toks.as_chunks::<3>().0.iter().enumerate() {
         cp.tick(1)?;
         // Extra poll on long lines so after-start cancel wins before chunk ceiling.
@@ -292,7 +308,8 @@ pub fn read_images_text(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapImage>, spirula_core::DomainError> {
-    let bytes = read_capped(path)?;
+    let mut mem = ParseMem::new();
+    let bytes = read_capped(path, &mut mem)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         err_path(
             ErrorCode::MalformedRecord,
@@ -370,9 +387,11 @@ pub fn read_images_text(
                 "malformed images.txt line",
             ));
         }
+        mem.charge_str_bytes(name.len(), "images")?;
         // POINTS2D line — may be empty; always consume one raw line (pin).
         let obs_line = lines.next_raw_line().unwrap_or("");
-        let observations = parse_observations(trim_line(obs_line), &mut obs_budget, &mut cp)?;
+        let observations =
+            parse_observations(trim_line(obs_line), &mut obs_budget, &mut mem, &mut cp)?;
         ensure_count(images.len() as u64 + 1, MAX_IMAGES, "images")?;
         if images.contains_key(&image_id) {
             return Err(err(
@@ -381,6 +400,7 @@ pub fn read_images_text(
                 format!("duplicate image_id {image_id}"),
             ));
         }
+        mem.charge_elems::<ColmapImage>(1, "images")?;
         images.insert(
             image_id,
             ColmapImage {
@@ -394,6 +414,7 @@ pub fn read_images_text(
         );
     }
     cp.poll_now()?;
+    let _ = mem.used();
     Ok(images)
 }
 
@@ -402,7 +423,8 @@ pub fn read_points3d_text(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<ColmapPoints3D, spirula_core::DomainError> {
-    let bytes = read_capped(path)?;
+    let mut mem = ParseMem::new();
+    let bytes = read_capped(path, &mut mem)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         err_path(
             ErrorCode::MalformedRecord,
@@ -504,6 +526,7 @@ pub fn read_points3d_text(
             None => 0.0,
         };
         let rest: Vec<&str> = it.collect();
+        mem.charge_elems::<&str>(rest.len(), "track")?;
         if !rest.len().is_multiple_of(2) {
             return Err(err(
                 ErrorCode::MalformedRecord,
@@ -515,7 +538,6 @@ pub fn read_points3d_text(
         track_budget = track_budget.saturating_add(n);
         ensure_count(track_budget, MAX_TRACK_ELEMS, "track")?;
         let mut track = Vec::new();
-        let mut mem = 0u64;
         try_reserve_elems(&mut track, rest.len() / 2, &mut mem, "track")?;
         for (i, chunk) in rest.as_chunks::<2>().0.iter().enumerate() {
             cp.tick(1)?;
@@ -528,6 +550,7 @@ pub fn read_points3d_text(
             });
         }
         ensure_count(points.len() as u64 + 1, MAX_POINTS, "points3D")?;
+        mem.charge_elems::<ColmapPoint3D>(1, "points3D")?;
         points.push(ColmapPoint3D {
             point3d_id,
             xyz,
@@ -537,5 +560,6 @@ pub fn read_points3d_text(
         });
     }
     cp.poll_now()?;
+    let _ = mem.used();
     Ok(ColmapPoints3D { points })
 }
