@@ -1,9 +1,10 @@
 # P3-F04: Nerfstudio / Metashape adapters
 
-Status: **进行中 (HOLD)**. Owner: `spirula-io` (+ admitted
-`spirula-application` / `spirula-cli` load path). Prerequisites: P3-F03.
-Lens path follows `NerfstudioParser.cpp:650-745` (declared model + raw/skew
-fit; empty `camera_distortion` is **not** a known hint).
+Status: **进行中 (HOLD)**. Tip: `5c2acee509e57a2c6381142fae015167a1580bf3`.
+Owner: `spirula-io` (+ admitted `spirula-application` / `spirula-cli`
+load path). Prerequisites: P3-F03. Lens path follows
+`NerfstudioParser.cpp:650-745` (declared model + raw/skew fit; empty
+`camera_distortion` is **not** a known hint).
 Does **not** deliver scene center/normalize (P3-F05), splat init (P3-F06),
 or training cache (P3-F08).
 
