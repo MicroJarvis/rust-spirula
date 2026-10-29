@@ -70,7 +70,9 @@ C++ `camhost::ray_pixel` with absolute pixel tolerances.
 - Binary `points` / observations: remaining-byte check before fallible reserve;
   `MAX_POINTS` must not allow multi-GB reserve from an 8-byte file.
 - Per-table cumulative `ParseMem` (`MAX_PARSE_MEMORY_BYTES` = 512 MiB) charges
-  file bytes + Vec/BTree/string growth (not reset per line). Text obs/track
+  file bytes + Vec/BTree/string growth (not reset per line). Text `read_capped`
+  and binary `BinReader::open` charge metadata file bytes **before**
+  `try_reserve`/read (TOCTOU growth re-charges deltas). Text obs/track
   charge+`try_reserve` **before** parse; camera params take exact model arity
   via iterator (no intermediate `Vec<&str>`). `points3D` duplicate-id
   `BTreeSet` charges `BTREE_ENTRY_OVERHEAD` (64 B) per entry in addition to

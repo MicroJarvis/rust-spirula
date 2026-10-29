@@ -28,7 +28,13 @@ struct BinReader {
 }
 
 impl BinReader {
-    fn open(path: &Path, cancel: Option<&CancelToken>) -> Result<Self, spirula_core::DomainError> {
+    /// Charge [`ParseMem`] for metadata length **before** `try_reserve` / read so
+    /// an over-budget file fails on budget, not after a large allocation.
+    fn open(
+        path: &Path,
+        mem: &mut ParseMem,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Self, spirula_core::DomainError> {
         let meta = std::fs::metadata(path).map_err(|e| {
             let code = if e.kind() == std::io::ErrorKind::NotFound {
                 ErrorCode::NotFound
@@ -54,6 +60,11 @@ impl BinReader {
                 ),
             ));
         }
+        // Charge metadata length before allocating so a huge file fails on budget,
+        // not only after a successful read (mirrors text `read_capped`).
+        mem.charge(len, "file")?;
+        let mut charged = len;
+
         let mut file = File::open(path).map_err(|e| {
             err_path(
                 ErrorCode::ReadFailed,
@@ -101,6 +112,10 @@ impl BinReader {
                     ),
                 ));
             }
+            if read_total > charged {
+                mem.charge(read_total - charged, "file")?;
+                charged = read_total;
+            }
             data.extend_from_slice(&buf[..n]);
             cp.tick(n)?;
         }
@@ -109,10 +124,6 @@ impl BinReader {
             pos: 0,
             path: path.display().to_string(),
         })
-    }
-
-    fn byte_len(&self) -> u64 {
-        self.data.len() as u64
     }
 
     fn remaining(&self) -> usize {
@@ -193,12 +204,11 @@ pub fn read_cameras_binary(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapCamera>, spirula_core::DomainError> {
-    let mut r = BinReader::open(path, cancel)?;
+    let mut mem = ParseMem::new();
+    let mut r = BinReader::open(path, &mut mem, cancel)?;
     let n = r.u64()?;
     ensure_count(n, MAX_CAMERAS, "cameras")?;
     let mut cameras = BTreeMap::new();
-    let mut mem = ParseMem::new();
-    mem.charge(r.byte_len(), "file")?;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
@@ -240,13 +250,12 @@ pub fn read_images_binary(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<BTreeMap<i32, ColmapImage>, spirula_core::DomainError> {
-    let mut r = BinReader::open(path, cancel)?;
+    let mut mem = ParseMem::new();
+    let mut r = BinReader::open(path, &mut mem, cancel)?;
     let n = r.u64()?;
     ensure_count(n, MAX_IMAGES, "images")?;
     let mut images = BTreeMap::new();
     let mut obs_budget = 0u64;
-    let mut mem = ParseMem::new();
-    mem.charge(r.byte_len(), "file")?;
     let mut cp = ParseCancel::new(cancel);
     for _ in 0..n {
         cp.tick(1)?;
@@ -321,15 +330,14 @@ pub fn read_points3d_binary(
     path: &Path,
     cancel: Option<&CancelToken>,
 ) -> Result<ColmapPoints3D, spirula_core::DomainError> {
-    let mut r = BinReader::open(path, cancel)?;
+    let mut mem = ParseMem::new();
+    let mut r = BinReader::open(path, &mut mem, cancel)?;
     let n = r.u64()?;
     ensure_count(n, MAX_POINTS, "points3D")?;
     // Reject multi-GB reserve from a tiny file declaring huge `n`.
     let need = checked_mul_u64(n, MIN_POINT3D_RECORD_BYTES, "points3D")?;
     ensure_remaining(r.remaining() as u64, need, "points3D")?;
     let mut points = Vec::new();
-    let mut mem = ParseMem::new();
-    mem.charge(r.byte_len(), "file")?;
     let n_usize = usize::try_from(n).map_err(|_| {
         err(
             ErrorCode::ValueOutOfRange,
@@ -390,4 +398,50 @@ pub fn read_points3d_binary(
     }
     cp.poll_now()?;
     Ok(ColmapPoints3D { points })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spirula_core::{ContextKey, ErrorCode};
+
+    use crate::temp_harness::TempHarness;
+
+    #[test]
+    fn open_charges_file_bytes_before_reserve() {
+        let h = TempHarness::new().unwrap();
+        let p = h.path().join("cameras.bin");
+        // Larger than the injected ParseMem cap; charge must reject before
+        // try_reserve allocates the file buffer.
+        let body = vec![0u8; 64];
+        std::fs::write(&p, &body).unwrap();
+
+        let mut mem = ParseMem::with_cap(16);
+        let err = match BinReader::open(&p, &mut mem, None) {
+            Ok(_) => panic!("expected ValueOutOfRange before reserve"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(err.context_value(ContextKey::Field), Some("file"));
+        assert!(
+            err.message().contains("parse memory"),
+            "expected charge failure, got {}",
+            err.message()
+        );
+        // Failed charge does not bump used — proves we never reached a
+        // successful post-read charge after allocating.
+        assert_eq!(mem.used(), 0);
+    }
+
+    #[test]
+    fn open_default_budget_reads_small_binary() {
+        let h = TempHarness::new().unwrap();
+        let p = h.path().join("cameras.bin");
+        // Empty table: 8-byte count header only.
+        std::fs::write(&p, 0u64.to_le_bytes()).unwrap();
+        let mut mem = ParseMem::new();
+        let r = BinReader::open(&p, &mut mem, None).unwrap();
+        assert_eq!(r.data.len(), 8);
+        assert_eq!(mem.used(), 8);
+    }
 }
