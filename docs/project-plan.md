@@ -114,8 +114,8 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 |---|---|---|---|---|---|---|
 | P3-F01 | 相机投影与坐标约定 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 实现透视、全景和畸变参数；固定坐标系和单位；对比参考投影数值与边界相机。正交在参考 `CameraModelType` 中不存在 → 按 AD-P3-F01-01 显式 unsupported，不发明无参考契约的模型 | 迁移投影、畸变、全景和坐标系；fixture 数值与参考一致；正交返回 `SP-INP-004` 而非静默丢弃 | 已完成 |
 | P3-F02 | 图像方向与 mask | `spirula-io` | P1-F02 | 读取图像尺寸和 EXIF 方向；规范化 mask 尺寸与通道；测试缺失、旋转和非法元数据 | 处理图像元数据、EXIF 方向和 mask；非法元数据有稳定错误 | 已完成 |
-| P3-F03 | COLMAP 数据集读取 | `spirula-io` | P0-F02, P0-F04 | 解析 COLMAP 相机和图像表；解析点云与关联关系；用 golden fixture 验证单位和 round-trip | 读取相机、图像和点云；round-trip 或 golden fixture 通过 | 当前 |
-| P3-F04 | Nerfstudio/Metashape 适配 | `spirula-io` | P3-F03 | 识别 Nerfstudio/Metashape 版本；映射相机和图像字段；记录缺失字段、默认值和格式差异 | 兼容读取并记录格式差异、缺失字段和迁移策略 | 未开始 |
+| P3-F03 | COLMAP 数据集读取 | `spirula-io` | P0-F02, P0-F04 | 解析 COLMAP 相机和图像表；解析点云与关联关系；用 golden fixture 验证单位和 round-trip | 读取相机、图像和点云；round-trip 或 golden fixture 通过 | 已完成 |
+| P3-F04 | Nerfstudio/Metashape 适配 | `spirula-io` | P3-F03 | 识别 Nerfstudio/Metashape 版本；映射相机和图像字段；记录缺失字段、默认值和格式差异 | 兼容读取并记录格式差异、缺失字段和迁移策略 | 当前 |
 | P3-F05 | 点云、场景变换与区域 | `spirula-core`/`spirula-io` | P1-F04, P3-F01 | 读取点云属性；应用场景平移/旋转/缩放；验证区域边界、序列化和非法输入不改原文件 | 变换、区域和不变量可序列化；非法输入不改变原文件 | 未开始 |
 | P3-F06 | splat 场景格式 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 定义 splat 属性布局和精度；加入版本与校验；验证空场景、极值和兼容读取 | 定义 splat 属性、版本、校验和兼容读取；与最小 fixture 对照 | 未开始 |
 | P3-F07 | checkpoint 元数据读取 | `spirula-io` | P1-F02, P1-F05 | 读取 header/schema；校验块长度/hash及恢复前提；区分模型初始化、完整训练恢复与损坏；保留旧格式读取 | 旧版本及缺块错误稳定；模型 PLY 不误报为完整 resume；P5-F05 补齐新 bundle 读取 | 未开始 |
@@ -124,7 +124,7 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
 
-Phase 3 执行要点（2026-10-27 评审；P3-F02 已落地 main）：
+Phase 3 执行要点（2026-10-27 评审；P3-F03 独立 READY，未合入 main）：
 
 - **P3-F01 已完成（独立 READY 后落地）**：代码 tip
   `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立审查 READY
@@ -138,11 +138,16 @@ Phase 3 执行要点（2026-10-27 评审；P3-F02 已落地 main）：
   admitted `PrepareOrientedImage` / `PrepareNormalizedMask`；focused/e2e、
   after-start cancel、wide probe、golden cmp、xtask verify 8/8 与
   `git diff --check` 通过。第三方 `image` 解码 mid-call 不可抢占为诚实
-  Non-claim/boundary，不阻塞 READY。计划当前为 **P3-F03**（进行中 / HOLD；
-  见 [phase-3/colmap.md](phase-3/colmap.md)）。
-- **P3-F03 是数据侧关键路径**，P3-F04、P3-F08、P5-F08、P4-F01 以及 P5/P6 的
-  大部分真实流程都经由它。P3-F03 应优先推进；P3-F05、P3-F06 不得排在
-  P3-F03 之前阻塞主线。
+  Non-claim/boundary，不阻塞 READY。
+- **P3-F03 已完成（独立 READY）**：代码 tip
+  `813729f8238f6730ad0235416371197fc4bd985a`；契约
+  [phase-3/colmap.md](phase-3/colmap.md)。C-DATA-01..03 / C-DATA-06；text+LE
+  binary COLMAP；18-model bake + P3-F01 fit；admitted `LoadDataset` /
+  CLI `load-dataset`；有界 IO / 取消 / 累计 load 内存预算。剩余诚实边界：dense
+  `fit_model` 单次 LM 不可抢占。计划编号总数仍为 **75**（**P2-F08** 未开始）。
+  计划当前为 **P3-F04**。
+- **P3-F03 是数据侧关键路径**（已交付）：P3-F04、P3-F08、P5-F08、P4-F01 以及
+  P5/P6 的大部分真实流程都经由它。P3-F05、P3-F06 不得排在 P3-F04 之前阻塞主线。
 - P3-F01 只交付 CPU `f64` 投影与相机数学；GPU/WGSL 投影和可微投影 Jacobian
   分别属于 P4-F01/P4-F09，不得用本功能的结果声称渲染或训练已就绪。
 
@@ -243,11 +248,11 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 ## 4. 首批功能顺序
 
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
-P3-F01、P3-F02；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
+P3-F01、P3-F02、P3-F03；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P3-F03**（进行中 / HOLD）。后续按依赖推进，每个编号
-独立 worktree、实现和验收；下列分组只是执行顺序，不会把组内多个编号合并成
-一个已完成功能：
+出口通过）。**当前功能为 P3-F04**。计划编号总数 **75**（**P2-F08** 未开始）。
+后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
+不会把组内多个编号合并成一个已完成功能：
 
 1. P1-F06–P1-F09（已完成）：基础检查、唯一会话、测量和最小 CLI。
 2. P2-F01–P2-F07（已完成）：GPU 能力、真实窄资源路径与最小可运行包。
@@ -257,12 +262,13 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    [phase-3/camera.md](phase-3/camera.md)）→ P3-F02（已完成并落地，tip
    `6f2b79ca5da9af5d8b14f5b2e2cd9b16cdacbc90`；契约
    [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)）→
-   **P3-F03（当前，进行中 / HOLD）**–P3-F08：微型数据集、格式和有界加载继续各自前置。
-   正交在参考中无 `CameraModelType` → AD-P3-F01-01 显式 unsupported
-   （`SP-INP-004`）；CPU host golden 与后续 GPU 容差分离；exact-fit active
-   source `-1` 保留 original metadata。其中 **P3-F03（COLMAP 读取）是数据侧
-   关键路径**：P5-F08、P4-F01 以及几乎所有 P3 后续编号都直接或间接依赖它，应
-   优先推进，不排在 P3-F05/F06 之后。
+   P3-F03（已完成，tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
+   [phase-3/colmap.md](phase-3/colmap.md)）→ **P3-F04（当前）**–P3-F08：
+   微型数据集、格式和有界加载继续各自前置。正交在参考中无 `CameraModelType`
+   → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；CPU host golden 与后续
+   GPU 容差分离；exact-fit active source `-1` 保留 original metadata。其中
+   **P3-F03（COLMAP 读取）是数据侧关键路径**（已交付）：P5-F08、P4-F01 以及
+   几乎所有 P3 后续编号都直接或间接依赖它；P3-F05/F06 不得排在 P3-F04 之前。
 5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
 7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。
@@ -414,13 +420,16 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 登记）。**P3-F02 已完成并落地 main**（代码 tip
 `6f2b79ca5da9af5d8b14f5b2e2cd9b16cdacbc90`；merge `da0ea36…`；契约
 [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md)；C-DATA-07..10；
-第三方 `image` mid-decode Non-claim 不阻塞 READY）。按原路线 **当前功能为
-P3-F03**（进行中 / HOLD）。**诚实边界**：P2-F01–P2-F07 与 P6-F07 tip 全部完成
-**不** 等于 Phase 2 出口通过——surface present 仍未验证（**P2-F08 未开始**）；
-正式 UI / train/preview / P6-F03 导航未接入；不声称真实硬件 OOM；60 s
-watchdog 仍 deferred。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与
-依赖调整，见 [审查记录](research/ooosplat-brush-review.md)。训练与正式 UI
-实现状态没有因 P6-F07 tip、P3-F01 或 P3-F02 落地而提前完成。
+第三方 `image` mid-decode Non-claim 不阻塞 READY）。**P3-F03 已完成（独立
+READY）**（代码 tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
+[phase-3/colmap.md](phase-3/colmap.md)；C-DATA-01..03 / C-DATA-06）。按原路线
+**当前功能为 P3-F04**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
+与 P6-F07 tip 全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未
+验证（**P2-F08 未开始**）；正式 UI / train/preview / P6-F03 导航未接入；不声称
+真实硬件 OOM；60 s watchdog 仍 deferred；dense `fit_model` 单次 LM 不可抢占。
+2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+[审查记录](research/ooosplat-brush-review.md)。训练与正式 UI 实现状态没有因
+P6-F07 tip、P3-F01、P3-F02 或 P3-F03 READY 而提前完成。
 
 2026-10-27 计划评审新增 **P2-F08（wgpu surface present 验证）**，编号总数
 由 74 增至 75（此前文档中的“74 编号”仅保留该日之前的历史含义）。原因：

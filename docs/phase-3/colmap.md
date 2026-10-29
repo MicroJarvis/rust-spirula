@@ -1,7 +1,6 @@
 # P3-F03: COLMAP dataset reading
 
-Status: **进行中 / HOLD** (awaiting independent re-review after load cancelable
-bake wiring + cumulative load-memory budget / move-consume frames).
+Status: **READY**. Code tip `813729f8238f6730ad0235416371197fc4bd985a`.
 Owner: `spirula-io` (production parsers) + admitted `spirula-application` /
 `spirula-cli` session entry. Prerequisites P0-F02 / P0-F04 / P3-F01.
 Not Nerfstudio/Metashape parsers (P3-F04 → typed **unavailable**), not
@@ -139,17 +138,14 @@ input. Rejected payloads are UTF-8-safe length-limited via
   (no committed C++; regen via `tools/bake-pin-golden`).
 - `fixtures/golden/dataset.json` retained; `fixtures.rs` remains a checker only.
 
-## Remaining gaps (HOLD)
+## Remaining gaps
 
-- Independent re-review of round-5 + load-budget/cancel wiring (Metashape
-  `path=` pin, C++ bake-pin oracle + absolute ray holdout, chunked binary IO,
-  text budget-before-alloc, after-start image-count / FIFO `read_capped`,
-  load `bake_and_fit_cancelable` + cumulative `MAX_LOAD_MEMORY_BYTES`).
 - Dense mid-`fit_model` inside `fit_camera_auto_cancelable` remains
   non-preemptible (azimuth/candidate polls only). Load can cancel between
   cameras and between domain-scan azimuth steps / candidate models, but not
   inside a single dense LM solve.
-- P3-F04/F05/F08 and P2-F08 deliberately untouched.
+- Later features (out of scope here): **P3-F04**, **P3-F05**, **P3-F08**,
+  and **P2-F08**.
 
 ## Verification
 
