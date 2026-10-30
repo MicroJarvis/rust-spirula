@@ -41,7 +41,7 @@ gap). Drop drain deadline ≠ proven hard worker join — see
 non-preemptible.
 
 **P3-F04 进行中 (HOLD)** — tip `2eca8fc…` (JSON capacity-cliff DOM bound;
-(no merge). Nerfstudio `transforms.json` + self-contained PLY + Metashape
+no merge). Nerfstudio `transforms.json` + self-contained PLY + Metashape
 XML (+ `.psx` typed unsupported without zip). Lens adapt pins C++ 650–745
 (no fake COLMAP model remaps). See
 [nerfstudio-metashape.md](nerfstudio-metashape.md). Does not include P3-F05
