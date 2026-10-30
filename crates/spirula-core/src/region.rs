@@ -200,6 +200,7 @@ impl Region {
 
     pub fn box_region(center: Vec3, half: Vec3, rotation: Mat3) -> Result<Self, DomainError> {
         require_nonneg_half(half)?;
+        let rotation = rotation.try_rotation()?;
         Ok(Self::Leaf {
             kind: RegionKind::Box,
             geom: RegionGeom::Box {
@@ -226,6 +227,7 @@ impl Region {
 
     pub fn ellipsoid(center: Vec3, half: Vec3, rotation: Mat3) -> Result<Self, DomainError> {
         require_nonneg_half(half)?;
+        let rotation = rotation.try_rotation()?;
         Ok(Self::Leaf {
             kind: RegionKind::Ellipsoid,
             geom: RegionGeom::Ellipsoid {
@@ -238,6 +240,7 @@ impl Region {
 
     pub fn cylinder(center: Vec3, half: Vec3, rotation: Mat3) -> Result<Self, DomainError> {
         require_nonneg_half(half)?;
+        let rotation = rotation.try_rotation()?;
         Ok(Self::Leaf {
             kind: RegionKind::Cylinder,
             geom: RegionGeom::Cylinder {
@@ -513,5 +516,19 @@ mod tests {
     #[test]
     fn reject_negative_radius() {
         assert!(Region::sphere(Vec3::try_new(0.0, 0.0, 0.0).unwrap(), -1.0).is_err());
+    }
+
+    #[test]
+    fn reject_non_rotation_region_frame() {
+        let stretched =
+            Mat3::try_from_row_major([2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]).unwrap();
+        assert!(
+            Region::box_region(
+                Vec3::try_new(0.0, 0.0, 0.0).unwrap(),
+                Vec3::try_new(1.0, 1.0, 1.0).unwrap(),
+                stretched,
+            )
+            .is_err()
+        );
     }
 }

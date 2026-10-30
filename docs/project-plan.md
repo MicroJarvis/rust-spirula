@@ -116,8 +116,8 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 | P3-F02 | 图像方向与 mask | `spirula-io` | P1-F02 | 读取图像尺寸和 EXIF 方向；规范化 mask 尺寸与通道；测试缺失、旋转和非法元数据 | 处理图像元数据、EXIF 方向和 mask；非法元数据有稳定错误 | 已完成 |
 | P3-F03 | COLMAP 数据集读取 | `spirula-io` | P0-F02, P0-F04 | 解析 COLMAP 相机和图像表；解析点云与关联关系；用 golden fixture 验证单位和 round-trip | 读取相机、图像和点云；round-trip 或 golden fixture 通过 | 已完成 |
 | P3-F04 | Nerfstudio/Metashape 适配 | `spirula-io` | P3-F03 | 识别 Nerfstudio/Metashape 版本；映射相机和图像字段；记录缺失字段、默认值和格式差异 | 兼容读取并记录格式差异、缺失字段和迁移策略 | 已完成 |
-| P3-F05 | 点云、场景变换与区域 | `spirula-core`/`spirula-io` | P1-F04, P3-F01 | 读取点云属性；应用场景平移/旋转/缩放；验证区域边界、序列化和非法输入不改原文件 | 变换、区域和不变量可序列化；非法输入不改变原文件 | 当前 |
-| P3-F06 | splat 场景格式 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 定义 splat 属性布局和精度；加入版本与校验；验证空场景、极值和兼容读取 | 定义 splat 属性、版本、校验和兼容读取；与最小 fixture 对照 | 未开始 |
+| P3-F05 | 点云、场景变换与区域 | `spirula-core`/`spirula-io` | P1-F04, P3-F01 | 读取点云属性；应用场景平移/旋转/缩放；验证区域边界、序列化和非法输入不改原文件 | 变换、区域和不变量可序列化；非法输入不改变原文件 | 已完成 |
+| P3-F06 | splat 场景格式 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 定义 splat 属性布局和精度；加入版本与校验；验证空场景、极值和兼容读取 | 定义 splat 属性、版本、校验和兼容读取；与最小 fixture 对照 | 当前 |
 | P3-F07 | checkpoint 元数据读取 | `spirula-io` | P1-F02, P1-F05 | 读取 header/schema；校验块长度/hash及恢复前提；区分模型初始化、完整训练恢复与损坏；保留旧格式读取 | 旧版本及缺块错误稳定；模型 PLY 不误报为完整 resume；P5-F05 补齐新 bundle 读取 | 未开始 |
 | P3-F08 | 有界训练数据加载与缓存 | `spirula-io` | P3-F02, P3-F03, P1-F08 | 解码并发/在途字节/packed cache/预取预算；分辨率感知解码；定义采样顺序、取消和预取排空/重建 | 高分辨率与缓存满样本不越预算；失败不 panic；相同采样状态可重建顺序；记录吞吐和内存 | 未开始 |
 
@@ -151,12 +151,13 @@ Phase 3 执行要点（2026-10-27 评审；P3-F03 独立 READY，未合入 main�
   [phase-3/nerfstudio-metashape.md](phase-3/nerfstudio-metashape.md)。
   C-DATA-01 扩展 + C-DATA-04/05；Nerfstudio / PLY / Metashape XML；`.psx`
   typed unsupported；lens / 预算 / BOM+CDATA harness 与 focused 29/29、
-  `dataset_load_e2e` 11/11、xtask verify 8/8。诚实 Non-claim：场景中心化
-  （P3-F05）、splat（P3-F06）、训练 cache（P3-F08）、`.psx` zip 运行时。
-- **P3-F05 HOLD**（独立审查前不合并）：契约
+  `dataset_load_e2e` 11/11、xtask verify 8/8。诚实 Non-claim：splat（P3-F06）、
+  训练 cache（P3-F08）、`.psx` zip 运行时。
+- **P3-F05 已完成**（独立审查通过并合入主线）：契约
   [phase-3/scene-transform-region.md](phase-3/scene-transform-region.md)。
   C-DATA-15/16 + Region/AABB；`spirula-scene-transform` JSON、六模式中心化、
-  `applied_transform` undo、normalize 元数据、区域原子写入。不开始 P3-F06。
+  `applied_transform` undo、normalize 元数据、相似变换应用和区域原子写入。
+  下一项为 P3-F06。
 - **P3-F03 是数据侧关键路径**（已交付）：P3-F04（已交付）、P3-F08、P5-F08、
   P4-F01 以及 P5/P6 的大部分真实流程都经由它。
 - P3-F01 只交付 CPU `f64` 投影与相机数学；GPU/WGSL 投影和可微投影 Jacobian
@@ -261,7 +262,7 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
 P3-F01、P3-F02、P3-F03、P3-F04；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P3-F05（HOLD）**。计划编号总数 **75**（**P2-F08** 未开始）。
+出口通过）。**当前功能为 P3-F06**。计划编号总数 **75**（**P2-F08** 未开始）。
 后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
 不会把组内多个编号合并成一个已完成功能：
 
@@ -277,7 +278,7 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    [phase-3/colmap.md](phase-3/colmap.md)）→ P3-F04（已完成，tip
    `4c7519ae717c6f501da7fa07650f2993b69d93bb`；契约
    [phase-3/nerfstudio-metashape.md](phase-3/nerfstudio-metashape.md)）→
-   **P3-F05（HOLD）**–P3-F08：微型数据集、格式和有界加载继续各自前置。正交在
+   **P3-F05（已完成）** → **P3-F06**–P3-F08：微型数据集、格式和有界加载继续各自前置。正交在
    参考中无 `CameraModelType` → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；
    CPU host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
    original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**（已交付）：
@@ -436,14 +437,14 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 第三方 `image` mid-decode Non-claim 不阻塞 READY）。**P3-F03 已完成（独立
 READY）**（代码 tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
 [phase-3/colmap.md](phase-3/colmap.md)；C-DATA-01..03 / C-DATA-06）。按原路线
-**当前功能为 P3-F05（HOLD）**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
+**当前功能为 P3-F06**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
 与 P6-F07 tip 全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未
 验证（**P2-F08 未开始**）；正式 UI / train/preview / P6-F03 导航未接入；不声称
 真实硬件 OOM；60 s watchdog 仍 deferred；dense `fit_model` 单次 LM 不可抢占；
 P3-F05 Non-claim：mesh/prism/label region、EXIF normalize leveling、P3-F06 splat、
 P3-F08 cache。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与正式 UI 实现状态没有因
-P6-F07 tip、P3-F01–P3-F05 HOLD 而提前完成。
+P6-F07 tip、P3-F01–P3-F05 已完成而提前完成。
 
 2026-10-27 计划评审新增 **P2-F08（wgpu surface present 验证）**，编号总数
 由 74 增至 75（此前文档中的“74 编号”仅保留该日之前的历史含义）。原因：

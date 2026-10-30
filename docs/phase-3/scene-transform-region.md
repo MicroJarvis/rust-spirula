@@ -1,6 +1,6 @@
 # P3-F05 — Scene transform, center, and region
 
-**Status:** HOLD (awaiting independent review). Not merged.
+**Status:** 已完成 (independent review passed; ready to merge).
 
 ## Scope
 
@@ -10,8 +10,9 @@ Vertical slice for C-DATA-15 / C-DATA-16 plus Region/AABB JSON:
    `train_from_world`, emitted `world_from_train` inverse, matrix / quaternion /
    Euler / centering / georeference fields; illegal inputs rejected.
 2. **Apply path** on P3-F03/F04 `ParsedDataset`: undo Nerfstudio
-   `applied_transform`, resolve/apply scene center to poses + points, fill
-   normalize metadata (`train_frame_scale`, `train_to_normalized`,
+   `applied_transform`, resolve/apply scene center to poses + points, expose
+   the shared similarity application path (translation/rotation/scale), and
+   fill normalize metadata (`train_frame_scale`, `train_to_normalized`,
    `normalized_rotation`). Preserves `center_json = A @ center + b`.
 3. **Six center modes** + `auto` / empty-cloud fallback / finite threshold.
 4. **Region / AABB**: box, sphere, ellipsoid, cylinder, halfspace, CSG
@@ -63,4 +64,14 @@ region kinds (explicit Non-claim; C++ also has those).
 
 - Mesh / prism / label regions not implemented (reject unknown `type`).
 - EXIF-driven normalize leveling not wired (identity EXIF path).
+- Dataset loading applies centering by default; arbitrary saved similarities
+  are available through `apply_scene_transform_to_dataset` and are not
+  silently injected into loader configuration.
+
+## Verification
+
+- `cargo test --workspace` — pass, including 11 P3-F05 integration tests.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — pass.
+- `cargo run -p spirula-xtask -- verify` — 8/8 checks passed.
+- `git diff --check` — clean.
 - Does not load splat PLY layouts (P3-F06) or training cache (P3-F08).

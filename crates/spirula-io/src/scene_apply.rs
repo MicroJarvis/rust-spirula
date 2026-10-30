@@ -211,6 +211,26 @@ fn collect_points(points: &ColmapPoints3D) -> Vec<[f64; 3]> {
     points.points.iter().map(|p| p.xyz).collect()
 }
 
+/// Apply a domain similarity to every camera pose and point in a dataset.
+///
+/// The transform is left-multiplied onto OpenGL camera-to-world poses and
+/// applied to point coordinates. This is the shared path for scene
+/// translation, rotation, and scale; it keeps the camera orientation a proper
+/// rotation while scaling only the camera origin.
+pub fn apply_scene_transform_to_dataset(
+    ds: &mut ParsedDataset,
+    transform: SceneTransform,
+) -> Result<(), DomainError> {
+    for frame in &mut ds.frames {
+        frame.c2w = transform.apply_c2w(&frame.c2w)?;
+    }
+    for point in &mut ds.points.points {
+        let p = Vec3::try_new(point.xyz[0], point.xyz[1], point.xyz[2])?;
+        point.xyz = transform.apply(p)?.to_array();
+    }
+    Ok(())
+}
+
 fn parse_center(
     cfg: &SceneApplyConfig,
     c2w: &[[f64; 12]],
@@ -360,16 +380,7 @@ pub fn apply_scene_to_dataset(
     // center_json = A @ center + b in the transforms.json / file frame.
     let center_json = applied.apply_point(center);
 
-    for frame in &mut ds.frames {
-        frame.c2w[3] -= center[0];
-        frame.c2w[7] -= center[1];
-        frame.c2w[11] -= center[2];
-    }
-    for p in &mut ds.points.points {
-        p.xyz[0] -= center[0];
-        p.xyz[1] -= center[1];
-        p.xyz[2] -= center[2];
-    }
+    apply_scene_transform_to_dataset(ds, SceneTransform::from_center(resolved.center)?)?;
 
     ds.center_mode = resolved.mode.as_str().to_owned();
     ds.center = center;
@@ -564,5 +575,59 @@ mod tests {
         assert!((ds.frames[0].c2w[3]).abs() < 1e-12);
         assert_eq!(ds.points.points[0].xyz, [0.0, 0.0, 0.0]);
         assert_eq!(ds.center_json, [10.0, 20.0, 30.0]); // A@0+b with center 0? center is 0
+    }
+
+    #[test]
+    fn similarity_transform_updates_points_and_camera_origins() {
+        let mut ds = ParsedDataset {
+            dataset_dir: PathBuf::from("."),
+            recon_dir: PathBuf::from("."),
+            format: DatasetFormat::Colmap,
+            cameras: BTreeMap::new(),
+            frames: vec![empty_frame([
+                1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 1.0, 3.0,
+            ])],
+            points: ColmapPoints3D {
+                points: vec![ColmapPoint3D {
+                    point3d_id: 1,
+                    xyz: [1.0, 0.0, 0.0],
+                    rgb: [0; 3],
+                    error: 0.0,
+                    track: vec![],
+                }],
+            },
+            split: SplitIndices::default(),
+            summary: DatasetLoadSummary {
+                path: ".".into(),
+                format: "colmap".into(),
+                recon_dir: ".".into(),
+                num_cameras: 0,
+                num_images: 1,
+                num_points: 1,
+                num_train: 0,
+                num_eval: 0,
+                num_validation: 0,
+            },
+            center_mode: "none".into(),
+            center: [0.0; 3],
+            center_json: [0.0; 3],
+            raw_to_file: [0.0; 16],
+            train_frame_scale: 0.0,
+            train_to_normalized: [0.0; 16],
+            normalized_rotation: [0.0; 9],
+        }
+        .with_identity_scene();
+        let transform = SceneTransform::try_new(
+            Mat3::try_from_row_major([0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]).unwrap(),
+            Vec3::try_new(10.0, 20.0, 30.0).unwrap(),
+            2.0,
+        )
+        .unwrap();
+        apply_scene_transform_to_dataset(&mut ds, transform).unwrap();
+        assert_eq!(ds.points.points[0].xyz, [10.0, 22.0, 30.0]);
+        assert_eq!(ds.frames[0].c2w[3], 6.0);
+        assert_eq!(ds.frames[0].c2w[7], 22.0);
+        assert_eq!(ds.frames[0].c2w[11], 36.0);
+        assert_eq!(ds.frames[0].c2w[0..3], [0.0, -1.0, 0.0]);
     }
 }

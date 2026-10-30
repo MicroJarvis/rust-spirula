@@ -47,6 +47,7 @@ pub use region_io::{
     parse_region_bytes, read_region_json, region_from_value, region_to_json, region_to_value,
     write_region_json,
 };
+pub use scene_apply::apply_scene_transform_to_dataset;
 pub use scene_apply::{
     AppliedTransform, SceneApplyConfig, apply_scene_to_dataset, compute_normalized_transform,
 };

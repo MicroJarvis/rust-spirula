@@ -6,7 +6,7 @@
 | P3-F02 image orientation / mask | [image-orient-mask.md](image-orient-mask.md) | 已完成 |
 | P3-F03 COLMAP dataset read | [colmap.md](colmap.md) | 已完成 |
 | P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | READY |
-| P3-F05 scene transform / center / region | [scene-transform-region.md](scene-transform-region.md) | HOLD |
+| P3-F05 scene transform / center / region | [scene-transform-region.md](scene-transform-region.md) | 已完成 |
 | P3-F06..F08 | (not started) | 未开始 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
@@ -50,7 +50,7 @@ capacity cliff / XML BOM+CDATA. Focused `nerfstudio_metashape` 29/29;
 [nerfstudio-metashape.md](nerfstudio-metashape.md). Honest Non-claims: scene
 center/normalize (P3-F05), splat (P3-F06), cache (P3-F08), `.psx` zip load.
 
-**P3-F05 HOLD** in worktree `codex/p3-f05` (baseline main merge `947108e`).
-C-DATA-15/16 + Region/AABB JSON; see
-[scene-transform-region.md](scene-transform-region.md). Does **not** start
-P3-F06.
+**P3-F05 已完成** in worktree `codex/p3-f05` (baseline main merge `947108e`).
+C-DATA-15/16 + Region/AABB JSON, similarity application, and atomic writes; see
+[scene-transform-region.md](scene-transform-region.md). The next plan current is
+P3-F06 (splat scene format).

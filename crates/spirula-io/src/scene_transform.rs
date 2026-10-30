@@ -442,11 +442,25 @@ pub fn parse_scene_transform_bytes(bytes: &[u8]) -> Result<SceneTransformDoc, Do
     if let Some(wft) = obj.get("world_from_train") {
         let inv = parse_similarity(wft, "world_from_train")?;
         let expect = train_from_world.inverse()?;
-        let ds = (inv.scale() - expect.scale()).abs();
-        if ds > 1e-9 {
+        let scale_delta = (inv.scale() - expect.scale()).abs();
+        let rotation_delta = inv
+            .rotation()
+            .row_major()
+            .into_iter()
+            .zip(expect.rotation().row_major())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        let translation_delta = inv
+            .translation()
+            .to_array()
+            .into_iter()
+            .zip(expect.translation().to_array())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        if scale_delta > 1e-9 || rotation_delta > 1e-9 || translation_delta > 1e-9 {
             return Err(err(
                 ErrorCode::ValueOutOfRange,
-                "world_from_train.scale",
+                "world_from_train",
                 "world_from_train is not the inverse of train_from_world",
             ));
         }
@@ -655,5 +669,23 @@ mod tests {
         for i in 0..9 {
             assert!((a[i] - b[i]).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn reject_inconsistent_inverse_rotation_and_translation() {
+        let bad = br#"{
+          "format":"spirula-scene-transform","version":1,
+          "centering":{"mode":"none","center_world":[0,0,0]},
+          "train_from_world":{
+            "scale":2.0,"translation":[1,2,3],
+            "rotation":{"matrix_3x3_flat_row_major":[1,0,0,0,1,0,0,0,1]}
+          },
+          "world_from_train":{
+            "scale":0.5,"translation":[0,0,0],
+            "rotation":{"matrix_3x3_flat_row_major":[1,0,0,0,0,-1,0,1,0]}
+          }
+        }"#;
+        let err = parse_scene_transform_bytes(bad).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
     }
 }
