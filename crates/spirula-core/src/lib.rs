@@ -29,7 +29,9 @@ mod math;
 mod perf;
 mod presentation;
 mod progress;
+mod region;
 mod scene;
+mod scene_center;
 mod source_camera;
 
 pub use camera::{CameraPose, OpenCvDistortion, PinholeCamera};
@@ -72,7 +74,12 @@ pub use presentation::{
 pub use progress::{
     OutcomeView, ProgressMetric, ProgressPublisher, ProgressSnapshot, TerminalOutcome,
 };
+pub use region::{Aabb, CsgOp, Region, RegionGeom, RegionKind};
 pub use scene::{GaussianSplat, SH_C0, SceneTransform, SplatSet};
+pub use scene_center::{
+    CENTER_MODE_NAMES, CenterMode, ResolvedCenter, camera_positions, focus_of_attention,
+    geometric_median, resolve_scene_center, scene_center,
+};
 pub use source_camera::{
     COLMAP_DIVISION, COLMAP_EUCM, COLMAP_FOV, COLMAP_FULL_OPENCV,
     COLMAP_RAD_TAN_THIN_PRISM_FISHEYE, COLMAP_SIMPLE_DIVISION, MAX_PARAMS, SKEW_BASE_EQUISOLID,

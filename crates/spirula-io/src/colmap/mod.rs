@@ -2,9 +2,9 @@
 //!
 //! Production parsers for text + little-endian binary `cameras` / `images` /
 //! `points3D`, directory probing, OpenGL c2w conversion, train/eval/validation
-//! splits, and 18-model bake/fit via P3-F01. Scene center/normalize stays in
-//! P3-F05. Nerfstudio/Metashape live in sibling modules; this crate keeps
-//! COLMAP plus shared probe/`load_dataset` dispatch.
+//! splits, and 18-model bake/fit via P3-F01. Scene center/normalize apply is
+//! wired from `load_dataset` (P3-F05). Nerfstudio/Metashape live in sibling
+//! modules; this crate keeps COLMAP plus shared probe/`load_dataset` dispatch.
 //!
 //! Pin: `9a24f09927944a795e7ba1bd8243a625bf419479`
 //! (`ColmapParser.cpp`, `DatasetCommon.cpp`, `DatasetParser.h`).

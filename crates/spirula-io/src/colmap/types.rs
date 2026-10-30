@@ -203,7 +203,7 @@ pub struct DatasetLoadSummary {
     pub num_validation: u64,
 }
 
-/// Full parse result (P3-F03). No scene center / normalize (P3-F05).
+/// Full parse result (P3-F03) with optional scene-center / normalize (P3-F05).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedDataset {
     pub dataset_dir: PathBuf,
@@ -214,6 +214,38 @@ pub struct ParsedDataset {
     pub points: ColmapPoints3D,
     pub split: SplitIndices,
     pub summary: DatasetLoadSummary,
+    /// Resolved centering mode name (`none`, `point-median`, …).
+    pub center_mode: String,
+    /// Center subtracted from world-frame poses/points.
+    pub center: [f64; 3],
+    /// Same center expressed in the file / `applied_transform` frame (`A c + b`).
+    pub center_json: [f64; 3],
+    /// Raw → file affine 4×4 (`applied_transform`; identity for COLMAP).
+    pub raw_to_file: [f64; 16],
+    /// `1 / scale_factor` of the would-be normalized frame.
+    pub train_frame_scale: f32,
+    /// `inv(T_n_from_train)` row-major 4×4 (viewer remap).
+    pub train_to_normalized: [f32; 16],
+    /// Up→+Z rotation inside normalize, row-major 3×3.
+    pub normalized_rotation: [f32; 9],
+}
+
+impl ParsedDataset {
+    /// Identity scene metadata (pre-centering).
+    pub fn with_identity_scene(mut self) -> Self {
+        self.center_mode = "none".into();
+        self.center = [0.0; 3];
+        self.center_json = [0.0; 3];
+        self.raw_to_file = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        self.train_frame_scale = 1.0;
+        self.train_to_normalized = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        self.normalized_rotation = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        self
+    }
 }
 
 /// Per-file encoding preference after probing a reconstruction dir.

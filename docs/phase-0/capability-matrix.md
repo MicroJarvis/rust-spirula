@@ -32,8 +32,8 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-12 | distortion tiers | `core/CameraModel.h:28-50` | coefficients | tier + 8-wide row | slot order per tier; zero extension; cheapest exact tier | P3-F01 golden | `spirula-core` | 已完成 |
 | C-DATA-13 | unrepresentable lens fitting | `data/DistortionFit.h`, `data/SourceCamera.h` | source params | fitted tier + redistort | fit never rejects a dataset; exact below 0.1 px is left alone | P3-F01 numeric fixture | `spirula-core` | 已完成 |
 | C-DATA-14 | projection/coordinate conventions | `data/CameraMath.h:1-42`, `core/CameraDistortion.cuh` | camera + point | pixel/ray | OpenGL c2w, CV +Z rays, normalized image coords | P3-F01 fixture numbers | `spirula-core` | 已完成 |
-| C-DATA-15 | scene transform serialization | `data/SceneTransform.cpp:244-331` | centering + similarity | `scene_transform.json` | all matrix/quaternion/Euler spellings; georeference block | `fixtures/scene` + P3-F05 | `spirula-core`/`spirula-io` | 进行中 |
-| C-DATA-16 | scene-center modes | `data/SceneCenter.h`, `DatasetCommon.cpp:523-545` | camera/point statistics | translation | `none/point-median/camera-median/camera-focus/point-mean/camera-mean`, `auto` resolves | P3-F05 unit tests | `spirula-core` | 未开始 |
+| C-DATA-15 | scene transform serialization | `data/SceneTransform.cpp:244-331` | centering + similarity | `scene_transform.json` | all matrix/quaternion/Euler spellings; georeference block | `fixtures/scene` + P3-F05 | `spirula-core`/`spirula-io` | 已完成 |
+| C-DATA-16 | scene-center modes | `data/SceneCenter.h`, `DatasetCommon.cpp:523-545` | camera/point statistics | translation | `none/point-median/camera-median/camera-focus/point-mean/camera-mean`, `auto` resolves | P3-F05 unit tests | `spirula-core` | 已完成 |
 | C-DATA-17 | seed point cloud PLY | `NerfstudioParser.cpp:235-276` | PLY | points + RGB | requires x/y/z + RGB, ascii/BE; double coordinates | `fixtures/splats/points.ply` + P3-F05 | `spirula-io` | 未开始 |
 | C-DATA-18 | splat PLY read/write | `checkpoint/SplatPly.cpp` | PLY | splat scene | property order/raw meaning; ASCII read, binary LE write | `fixtures/splats/tiny_splat.ply` + P3-F06 | `spirula-io` | 未开始 |
 | C-DATA-19 | checkpoint read | `engine/EngineCheckpoint.cpp`, `core/CheckpointIO.h` | `state.tar` + `.npy` | state blocks | ustar + NPY v1-v3; `state.json` fields and `format_version` 1 | `fixtures/checkpoints` + P3-F07 | `spirula-io` | 未开始 |
@@ -170,9 +170,11 @@ refer to [fixtures.md](fixtures.md).
   P3-F01 fit; OpenGL c2w; recon probe + explicit path; train/eval/validation
   splits; Nerfstudio/Metashape typed unavailable; admitted `LoadDataset` /
   CLI `load-dataset`. HOLD for independent review — not marked 已完成.
-- `C-DATA-15` has the similarity `p_train = scale * R * p_world + t` and its
-  inverse (P1-F04). Scene JSON, centering modes, and georeference stay in
-  P3-F05, so the row stays `进行中`. `C-DATA-16` stays `未开始`.
+- `C-DATA-15` / `C-DATA-16` are **已完成** in P3-F05 (`spirula-core` center /
+  region; `spirula-io` scene-transform / region JSON + dataset apply). The
+  shared similarity path covers translation, rotation, and scale; arbitrary
+  saved transforms remain explicit API calls. See
+  [phase-3/scene-transform-region.md](../phase-3/scene-transform-region.md).
 - `C-REN-01` has CPU splat checks for finite means, `wxyz` quaternions, log
   scales, and logit opacity (P1-F04). Device arrays and SH bands stay in
   P4-F01, and the PLY layout stays in P3-F06, so the row stays `进行中`.
