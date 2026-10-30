@@ -697,7 +697,7 @@ fn resource_budget_charges_json_dom_before_tiny_reject() {
 fn resource_budget_rejects_json_dom_before_serde_alloc() {
     let h = TempHarness::new().unwrap();
     let ds = h.path().join("dom");
-    // ~2 KiB JSON: file charge fits a mid budget; 24× DOM cap must not.
+    // ~2 KiB JSON: file charge fits a mid budget; DOM cap must not.
     let mut frames = String::new();
     for i in 0..12 {
         if i > 0 {
@@ -716,7 +716,7 @@ fn resource_budget_rejects_json_dom_before_serde_alloc() {
     );
     write_ns(&ds, &body);
     let file_len = body.len() as u64;
-    // Enough for transforms_json file bytes, below json_dom_budget_cap (24×+256).
+    // Enough for transforms_json file bytes, below json_dom_budget_cap.
     let budget = file_len + 512;
     let e = load_dataset_budgeted(
         &ds,
@@ -733,6 +733,54 @@ fn resource_budget_rejects_json_dom_before_serde_alloc() {
         e.context_value(ContextKey::Field),
         Some("json_dom"),
         "must reject on pre-serde DOM charge, not a later post-hoc estimate"
+    );
+}
+
+#[test]
+fn json_budget_rejects_zero_array_capacity_cliff() {
+    // Independent REVIEW counterexample (`/tmp/spirula-p3f04-review` json_memory_bound):
+    // unused array of 131073 zeros → Vec capacity 262144; array-only allocated
+    // bytes = capacity * size_of::<Value>() (= 8_388_608 on 64-bit) exceeds the
+    // false `24*len+256` claim. Budget = len + old_claim + 100_000 must reject
+    // under the corrected pre-allocation cap (and must not accept).
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("cliff");
+    let n = 131_073usize;
+    let mut text = String::from("{\"unused\":[");
+    for i in 0..n {
+        if i != 0 {
+            text.push(',');
+        }
+        text.push('0');
+    }
+    text.push_str(
+        "],\"camera_model\":\"PINHOLE\",\"fl_x\":100,\"fl_y\":100,\"cx\":32,\"cy\":24,\"w\":64,\"h\":48,\"frames\":[{\"file_path\":\"a.png\",\"transform_matrix\":[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}]}",
+    );
+    let meta: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let arr = meta["unused"].as_array().unwrap();
+    let array_only = arr.capacity() * std::mem::size_of::<serde_json::Value>();
+    let old_claimed = text.len() * 24 + 256;
+    assert!(
+        array_only > old_claimed,
+        "counterexample setup: array_only={array_only} old_claimed={old_claimed}"
+    );
+    write_ns(&ds, &text);
+    let budget = (text.len() + old_claimed + 100_000) as u64;
+    let e = load_dataset_budgeted(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+        budget,
+    )
+    .expect_err("capacity-cliff budget must reject");
+    assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(
+        e.context_value(ContextKey::Field),
+        Some("json_dom"),
+        "must fail on pre-serde json_dom charge covering Vec capacity"
     );
 }
 

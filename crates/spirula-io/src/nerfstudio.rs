@@ -717,15 +717,28 @@ pub(crate) fn estimate_json_bytes(v: &Value) -> u64 {
 /// Conservative upper bound on live `serde_json::Value` size for a UTF-8 JSON
 /// document of `text_len` bytes.
 ///
-/// Why conservative (charge **before** DOM materialization): on 64-bit, each
-/// scalar/container is a tagged `Value` (~24B) plus heap (`String` header,
-/// `Vec`/`Map` nodes ~24–64B). Adversarial shapes like `[0,0,…]` or `["",…"]`
-/// expand ~16–24× versus UTF-8 length. `24 * text_len + 256` upper-bounds that
-/// expansion with margin so budget rejection cannot race an unbounded
-/// `serde_json` allocation. File bytes are charged separately by
-/// [`read_capped_text`].
+/// Charge **before** DOM materialization. Independent counterexample: an unused
+/// array of `131073` zeros (`text_len≈262329`) yields `Vec` capacity `262144`
+/// and array-only bytes `capacity * size_of::<Value>() = 8_388_608`, which
+/// exceeds any `24 * len + 256` claim. Bound therefore assumes:
+/// - ≤1 `Value` slot per input byte with **2×** capacity rounding
+///   (`2 * size_of::<Value>() * len`);
+/// - another `size_of::<Value>() * len` for object/map entry Values / nesting;
+/// - `len` bytes for decoded string/key payloads (≤ source UTF-8);
+/// - fixed deserializer scratch.
+///
+/// File bytes are charged separately by [`read_capped_text`].
 pub(crate) fn json_dom_budget_cap(text_len: usize) -> u64 {
-    (text_len as u64).saturating_mul(24).saturating_add(256)
+    let n = text_len as u64;
+    let value = std::mem::size_of::<serde_json::Value>() as u64;
+    let array_slots = n.saturating_mul(value.saturating_mul(2));
+    let containers = n.saturating_mul(value);
+    let payloads = n;
+    let scratch = 4096u64;
+    array_slots
+        .saturating_add(containers)
+        .saturating_add(payloads)
+        .saturating_add(scratch)
 }
 
 /// Charge [`json_dom_budget_cap`] **before** allocating the DOM, then parse via

@@ -51,16 +51,16 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 
 - File size + cumulative `ParseMem` **before** allocation/grow (same
   ceilings as COLMAP load where shared). Charges cover:
-  - JSON: `json_dom_budget_cap = 24×text_len+256` charged **before**
-    `serde_json` DOM materialization (conservative vs adversarial
-    `[0,…]` / `["",…]` expansion on 64-bit `Value` layout); file bytes
-    already charged by `read_capped_text`.
-  - XML: `xml_chars` charged before `Vec<char>` reserve; every name /
-    attr / text `String` charged before collect/decode/push_str.
-  - PLY: header element/property `String`/`Vec` growth charged before
-    push; ASCII floats are **token-bounded** (find whitespace on bytes,
-    then UTF-8/parse only that slice — not `from_utf8` of the remaining
-    body).
+  - JSON: `json_dom_budget_cap` charged **before** `serde_json::from_reader`
+    covers `2×size_of::<Value>()×len` (Vec capacity cliff), plus map /
+    nesting Values, string/key payloads, and scratch — not a false
+    `24×len` claim (independent 131073-zero array counterexample).
+  - XML: `xml_chars` charged before `Vec<char>` reserve; name / attr /
+    text `String` charged before collect/decode/push_str; attrs /
+    children use capacity-aware `prepare_vec_push` (amortized doubling).
+  - PLY: header element/property growth via `prepare_vec_push`; offsets
+    and ASCII row scratch charged before reserve; ASCII floats are
+    **token-bounded** (not `from_utf8` of the remaining body).
   - Builds/missing paths, Metashape→JSON conversion, image-dir walk
     names, and PLY points share the **same** live budget.
 - Cooperative cancel: JSON parse uses `serde_json::from_reader` with

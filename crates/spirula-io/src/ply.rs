@@ -12,7 +12,7 @@ use spirula_core::{CancelToken, ErrorCode};
 
 use crate::colmap::budget::{
     MAX_COLMAP_FILE_BYTES, MAX_LOAD_MEMORY_BYTES, MAX_POINTS, ParseCancel, ParseMem, ensure_count,
-    err, err_path, try_reserve_elems,
+    err, err_path, prepare_vec_push, try_reserve_elems,
 };
 use crate::colmap::{ColmapPoint3D, ColmapPoints3D};
 
@@ -290,7 +290,7 @@ impl<'a> PlyVertexView<'a> {
                         )
                     })?;
                     mem.charge_str_bytes(tok[1].len(), "ply_element")?;
-                    mem.charge_elems::<PlyElement>(1, "ply_element")?;
+                    prepare_vec_push(&mut elements, mem, "ply_element")?;
                     elements.push(PlyElement {
                         name: tok[1].to_owned(),
                         count,
@@ -325,7 +325,7 @@ impl<'a> PlyVertexView<'a> {
                         ));
                     }
                     mem.charge_str_bytes(tok[2].len(), "ply_property")?;
-                    mem.charge_elems::<PlyProp>(1, "ply_property")?;
+                    prepare_vec_push(&mut el.props, mem, "ply_property")?;
                     el.props.push(PlyProp {
                         name: tok[2].to_owned(),
                         ty: PlyType::from_name(tok[1])?,
@@ -557,11 +557,19 @@ pub(crate) fn read_ply_points_mem(
     try_reserve_elems(&mut points, n, mem, "ply_points")?;
 
     let nprops = view.types.len();
-    let mut offsets = Vec::with_capacity(nprops);
+    let mut offsets = Vec::new();
+    try_reserve_elems(&mut offsets, nprops, mem, "ply_offsets")?;
     let mut stride = 0usize;
     for ty in &view.types {
         offsets.push(stride);
         stride += ty.size();
+    }
+
+    // One ASCII row scratch buffer for the whole vertex loop (not per-row alloc).
+    let mut ascii_vals = Vec::new();
+    if !view.binary {
+        try_reserve_elems(&mut ascii_vals, nprops, mem, "ply_ascii_vals")?;
+        ascii_vals.resize(nprops, 0.0f64);
     }
 
     if view.binary {
@@ -602,11 +610,10 @@ pub(crate) fn read_ply_points_mem(
         let mut p = &view.bytes[view.data_off..];
         for i in 0..n {
             cp.tick(1)?;
-            let mut vals = vec![0.0f64; nprops];
-            for (k, slot) in vals.iter_mut().enumerate() {
+            for slot in ascii_vals.iter_mut() {
                 *slot = parse_ascii_f64(&mut p, &what)?;
-                let _ = k;
             }
+            let vals = &ascii_vals;
             let x = vals[ix];
             let y = vals[iy];
             let z = vals[iz];

@@ -7,7 +7,7 @@
 
 use spirula_core::{CancelToken, ErrorCode};
 
-use crate::colmap::budget::{ParseCancel, ParseMem, err};
+use crate::colmap::budget::{ParseCancel, ParseMem, err, prepare_vec_push};
 
 /// Nesting depth cap for Metashape camera-export XML.
 pub const MAX_XML_DEPTH: u32 = 64;
@@ -336,7 +336,7 @@ fn parse_element(
         }
         *i += 1;
         let av = parse_attr_value(ctx, i)?;
-        ctx.mem.charge_elems::<(String, String)>(1, "xml_attr")?;
+        prepare_vec_push(&mut attrs, ctx.mem, "xml_attr")?;
         attrs.push((an, av));
     }
 
@@ -379,6 +379,7 @@ fn parse_element(
                 continue;
             }
             let child = parse_element(ctx, i, depth + 1)?;
+            prepare_vec_push(&mut children, ctx.mem, "xml_children")?;
             children.push(child);
         } else {
             let start = *i;
@@ -465,6 +466,7 @@ pub fn parse_xml_bytes(
             continue;
         }
         let child = parse_element(&mut ctx, &mut i, 1)?;
+        prepare_vec_push(&mut root.children, ctx.mem, "xml_children")?;
         root.children.push(child);
     }
     if root.children.is_empty() {

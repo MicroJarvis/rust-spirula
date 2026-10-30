@@ -163,6 +163,31 @@ pub(crate) fn try_reserve_elems<T>(
     Ok(())
 }
 
+/// Charge amortized capacity growth **before** a `push` that would reallocate.
+///
+/// Std `Vec` grows empty→≥4 then ≈2×. Charging only `1` elem per push under-bounds
+/// the live allocation (capacity slots). Call immediately before every `push`.
+pub(crate) fn prepare_vec_push<T>(
+    vec: &mut Vec<T>,
+    mem: &mut ParseMem,
+    field: &str,
+) -> Result<(), DomainError> {
+    if vec.len() < vec.capacity() {
+        return Ok(());
+    }
+    let old = vec.capacity();
+    // Conservative match for std amortized growth on large `T` (XmlNode, PlyElement, …).
+    let additional = if old == 0 { 4 } else { old };
+    try_reserve_elems(vec, additional, mem, field)?;
+    // If the allocator rounded higher than our doubling guess, pay the delta
+    // before the subsequent push observes the larger capacity.
+    let grew = vec.capacity().saturating_sub(old);
+    if grew > additional {
+        mem.charge_elems::<T>(grew - additional, field)?;
+    }
+    Ok(())
+}
+
 /// Shared cancel checkpoint wrapper for parse loops.
 pub(crate) struct ParseCancel<'a> {
     pub cp: CancelCheckpoint<'a>,
