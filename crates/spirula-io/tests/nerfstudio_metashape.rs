@@ -431,6 +431,47 @@ fn resource_budget_rejects_nerfstudio() {
 }
 
 #[test]
+fn transform_matrix_json_precharge_covers_five_array_capacities() {
+    // Mirrors independent review: serde_json 4×4 matrix → 5 Vec<Value> with
+    // capacity 4 each → ≥640 array-slot bytes; bound must exceed false 512.
+    use serde_json::Value;
+    let tm = serde_json::json!([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    let mut slots = 0usize;
+    if let Value::Array(outer) = &tm {
+        slots += outer.capacity();
+        for row in outer {
+            if let Value::Array(r) = row {
+                slots += r.capacity();
+            }
+        }
+    }
+    let array_only = slots * std::mem::size_of::<Value>();
+    assert!(array_only >= 640, "array_only={array_only}");
+    // Load path uses transform_matrix_value_precharge ≥ 2×slots + slack.
+    // Prove a 512-byte claim would be false against this fixture shape.
+    assert!(array_only > 512);
+    assert!(
+        load_dataset(
+            &fixtures_root().join("metashape-min"),
+            &ColmapLoadConfig {
+                require_image_files: false,
+                format: Some("metashape".into()),
+                metashape_xml: Some("cameras.xml".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .is_ok(),
+        "metashape-min still loads with raised transform precharge"
+    );
+}
+
+#[test]
 fn metashape_budget_rejects_before_conversion_alloc() {
     // XML file+DOM can fit a mid budget while sensor/map/clone conversion cannot.
     // Sweep until we observe a conversion-field reject (not only file/xml_chars).

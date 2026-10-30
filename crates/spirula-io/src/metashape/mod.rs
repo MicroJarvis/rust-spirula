@@ -26,10 +26,39 @@ use crate::nerfstudio::{estimate_json_bytes, load_nerfstudio_meta_value_mem};
 /// Conservative pre-charge for one Metashape sensor `serde_json::Value` (keys,
 /// numbers, model/distortion strings, and map capacity slack) **before** `json!`.
 const SENSOR_VALUE_PRECHARGE: u64 = 4096;
-/// Pre-charge for one 4×4 `transform_matrix` JSON array before materialization.
-const TRANSFORM_MATRIX_PRECHARGE: u64 = 512;
 /// Root `{"frames":[…]}` wrapper (frame Values already charged at clone).
 const META_ROOT_PRECHARGE: u64 = 128;
+
+/// Bytes for `json!([[f64;4];4])` array **buffers** alone on 64-bit:
+/// 1 outer + 4 row `Vec<Value>`, each capacity ≥4 → `5 * 4 * size_of::<Value>()`.
+/// (`512` is too small: that floor is already 640.)
+pub(crate) fn transform_matrix_array_slots_bytes() -> u64 {
+    let value = std::mem::size_of::<Value>() as u64;
+    const ARRAYS: u64 = 5;
+    const CAP_PER: u64 = 4;
+    ARRAYS.saturating_mul(CAP_PER).saturating_mul(value)
+}
+
+/// Pre-charge **before** `json!` builds a 4×4 `transform_matrix` Value.
+///
+/// Covers [`transform_matrix_array_slots_bytes`] with 2× allocator size-class
+/// slack plus fixed tag/Number scratch (numbers live in the row slots).
+pub(crate) fn transform_matrix_value_precharge() -> u64 {
+    transform_matrix_array_slots_bytes()
+        .saturating_mul(2)
+        .saturating_add(256)
+}
+
+/// Pre-charge **before** `frame["transform_matrix"] = tm` mutates the object.
+///
+/// Key `String` + one map entry (`String` header + `Value` slot) + growth slack
+/// for `serde_json::Map` / IndexMap reallocation on insert.
+pub(crate) fn transform_matrix_map_insert_precharge(key: &str) -> u64 {
+    let value = std::mem::size_of::<Value>() as u64;
+    let key_bytes = (key.len() as u64).saturating_add(24); // String heap + header
+    let entry = value.saturating_add(64); // Value slot + map node slack
+    key_bytes.saturating_add(entry).saturating_add(256) // map Vec/(IndexMap) capacity doubling slack
+}
 
 use self::xml::{XmlNode, parse_xml_bytes};
 
@@ -695,15 +724,22 @@ pub(crate) fn metashape_meta_from_xml(
             m[r * 4 + 1] = -m[r * 4 + 1];
             m[r * 4 + 2] = -m[r * 4 + 2];
         }
-        // Charge the transform_matrix Value bound *before* `json!` allocates it.
-        mem.charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")?;
+        // Charge the transform_matrix Value bound *before* `json!` allocates it
+        // (≥5×4×size_of::<Value>() array slots, not a false 512).
+        mem.charge(transform_matrix_value_precharge(), "metashape_frames")?;
         let tm = json!([
             [m[0], m[1], m[2], m[3]],
             [m[4], m[5], m[6], m[7]],
             [m[8], m[9], m[10], m[11]],
             [m[12], m[13], m[14], m[15]],
         ]);
-        vc.frame["transform_matrix"] = tm;
+        // Charge map/key growth *before* inserting into the frame object.
+        const TM_KEY: &str = "transform_matrix";
+        mem.charge(
+            transform_matrix_map_insert_precharge(TM_KEY),
+            "metashape_frames",
+        )?;
+        vc.frame[TM_KEY] = tm;
         // Clone peak: charge frame estimate before clone; Vec slot via prepare_vec_push
         // (max growth charged before try_reserve — no post-alloc delta).
         prepare_vec_push(&mut frames, mem, "metashape_frames")?;
@@ -814,4 +850,98 @@ pub fn load_metashape_dataset_budgeted(
 /// Reason string for probe when only `.psx` markers are present.
 pub fn psx_unsupported_reason() -> &'static str {
     "Metashape .psx detected; nested zip project load needs a zip runtime (use camera-export .xml + .ply)"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spirula_core::ErrorCode;
+
+    #[test]
+    fn transform_matrix_precharge_covers_json_array_capacity() {
+        // Independent check: 5 Vecs × capacity 4 × size_of::<Value>() = 640.
+        assert!(
+            transform_matrix_array_slots_bytes() >= 640,
+            "floor for 64-bit Value layout"
+        );
+        let tm = json!([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        let mut slots = 0usize;
+        let Value::Array(outer) = &tm else {
+            panic!("expected array");
+        };
+        slots += outer.capacity();
+        for row in outer {
+            let Value::Array(r) = row else {
+                panic!("expected row array");
+            };
+            slots += r.capacity();
+        }
+        let array_only = (slots as u64) * (std::mem::size_of::<Value>() as u64);
+        assert!(
+            array_only >= transform_matrix_array_slots_bytes(),
+            "observed array_only={array_only} floor={}",
+            transform_matrix_array_slots_bytes()
+        );
+        assert!(
+            transform_matrix_value_precharge() >= array_only,
+            "precharge {} must cover observed array slots {}",
+            transform_matrix_value_precharge(),
+            array_only
+        );
+        // False historical constant must not be used as the bound.
+        assert!(transform_matrix_value_precharge() > 512);
+    }
+
+    #[test]
+    fn transform_matrix_precharge_rejects_before_json_alloc() {
+        // Cap below value precharge: charge must fail before json! would run.
+        let need = transform_matrix_value_precharge();
+        let mut mem = ParseMem::with_cap(need.saturating_sub(1));
+        let e = mem
+            .charge(transform_matrix_value_precharge(), "metashape_frames")
+            .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(
+            e.context_value(spirula_core::ContextKey::Field),
+            Some("metashape_frames")
+        );
+    }
+
+    #[test]
+    fn transform_matrix_map_insert_precharge_before_mutation() {
+        let mut frame = json!({"camera_model":"PINHOLE","w":64,"h":48});
+        let tm = json!([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        let key = "transform_matrix";
+        let insert = transform_matrix_map_insert_precharge(key);
+        assert!(insert > 0);
+        // Budget exactly one byte short of insert charge → reject before mutate.
+        let mut mem = ParseMem::with_cap(insert.saturating_sub(1));
+        let e = mem
+            .charge(
+                transform_matrix_map_insert_precharge(key),
+                "metashape_frames",
+            )
+            .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+        assert!(frame.get(key).is_none(), "must not mutate after reject");
+        // With enough budget, charge then assign succeeds.
+        let mut mem = ParseMem::with_cap(insert);
+        mem.charge(
+            transform_matrix_map_insert_precharge(key),
+            "metashape_frames",
+        )
+        .unwrap();
+        frame[key] = tm;
+        assert!(frame.get(key).is_some());
+    }
 }

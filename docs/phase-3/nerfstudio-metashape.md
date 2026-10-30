@@ -64,6 +64,9 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
   - Metashape→JSON conversion charges sensor/component/camera/frame map
     entries and Value clones **before** each `json!` / insert / clone
     (no post-return `estimate_json_bytes` after conversion returns).
+    `transform_matrix` precharge covers 5×4×`size_of::<Value>()` array
+    slots (≥640) with allocator slack — not a false `512` — and map/key
+    growth is charged before `frame["transform_matrix"] = …`.
   - Image-dir walk charges `visited` BTree paths and filename Vec growth
     **before** insert/push.
   - Builds/missing paths and PLY points share the **same** live budget.
