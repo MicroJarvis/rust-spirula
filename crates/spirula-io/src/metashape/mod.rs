@@ -30,8 +30,8 @@ const SENSOR_VALUE_PRECHARGE: u64 = 4096;
 const META_ROOT_PRECHARGE: u64 = 128;
 
 /// Bytes for `json!([[f64;4];4])` array **buffers** alone on 64-bit:
-/// 1 outer + 4 row `Vec<Value>`, each capacity ≥4 → `5 * 4 * size_of::<Value>()`.
-/// (`512` is too small: that floor is already 640.)
+/// 1 outer + 4 row `Vec<Value>`, each capacity ≥4 → `5 * 4 * size_of::<Value>()`
+/// (= 640 when `Value` is 32 bytes). A `512` constant cannot cover this floor.
 pub(crate) fn transform_matrix_array_slots_bytes() -> u64 {
     let value = std::mem::size_of::<Value>() as u64;
     const ARRAYS: u64 = 5;
@@ -39,15 +39,18 @@ pub(crate) fn transform_matrix_array_slots_bytes() -> u64 {
     ARRAYS.saturating_mul(CAP_PER).saturating_mul(value)
 }
 
-/// Pre-charge **before** `json!` builds a 4×4 `transform_matrix` Value.
+/// Defensible pre-charge **before** `json!` builds a 4×4 `transform_matrix`.
 ///
-/// Covers [`transform_matrix_array_slots_bytes`] with 2× allocator size-class
-/// slack plus fixed tag/Number scratch (numbers live in the row slots).
-pub(crate) fn transform_matrix_value_precharge() -> u64 {
-    transform_matrix_array_slots_bytes()
-        .saturating_mul(2)
-        .saturating_add(256)
-}
+/// Must stay **strictly above** [`transform_matrix_array_slots_bytes`] (and the
+/// false historical `512`). `4096` covers the 640-byte slot floor, 2× allocator
+/// size-class slack, and Number/tag scratch without under-bounding peak.
+pub(crate) const TRANSFORM_MATRIX_PRECHARGE: u64 = 4096;
+
+const _: () = {
+    assert!(TRANSFORM_MATRIX_PRECHARGE > 512);
+    // 5*4*32 = 640 on typical 64-bit Value layout; keep headroom even if Value grows.
+    assert!(TRANSFORM_MATRIX_PRECHARGE >= 5 * 4 * 32);
+};
 
 /// Pre-charge **before** `frame["transform_matrix"] = tm` mutates the object.
 ///
@@ -724,9 +727,10 @@ pub(crate) fn metashape_meta_from_xml(
             m[r * 4 + 1] = -m[r * 4 + 1];
             m[r * 4 + 2] = -m[r * 4 + 2];
         }
-        // Charge the transform_matrix Value bound *before* `json!` allocates it
-        // (≥5×4×size_of::<Value>() array slots, not a false 512).
-        mem.charge(transform_matrix_value_precharge(), "metashape_frames")?;
+        // Charge TRANSFORM_MATRIX_PRECHARGE (4096, not 512) *before* `json!`.
+        // Floor is 5×4×size_of::<Value>() array slots (≥640); 512 is insufficient.
+        debug_assert!(TRANSFORM_MATRIX_PRECHARGE > transform_matrix_array_slots_bytes());
+        mem.charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")?;
         let tm = json!([
             [m[0], m[1], m[2], m[3]],
             [m[4], m[5], m[6], m[7]],
@@ -860,10 +864,8 @@ mod tests {
     #[test]
     fn transform_matrix_precharge_covers_json_array_capacity() {
         // Independent check: 5 Vecs × capacity 4 × size_of::<Value>() = 640.
-        assert!(
-            transform_matrix_array_slots_bytes() >= 640,
-            "floor for 64-bit Value layout"
-        );
+        let floor = transform_matrix_array_slots_bytes();
+        assert!(floor >= 640, "floor for 64-bit Value layout, got {floor}");
         let tm = json!([
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -883,27 +885,57 @@ mod tests {
         }
         let array_only = (slots as u64) * (std::mem::size_of::<Value>() as u64);
         assert!(
-            array_only >= transform_matrix_array_slots_bytes(),
-            "observed array_only={array_only} floor={}",
-            transform_matrix_array_slots_bytes()
+            array_only >= floor,
+            "observed array_only={array_only} floor={floor}"
         );
         assert!(
-            transform_matrix_value_precharge() >= array_only,
+            TRANSFORM_MATRIX_PRECHARGE >= array_only,
             "precharge {} must cover observed array slots {}",
-            transform_matrix_value_precharge(),
+            TRANSFORM_MATRIX_PRECHARGE,
             array_only
         );
-        // False historical constant must not be used as the bound.
-        assert!(transform_matrix_value_precharge() > 512);
+        // Runtime: false 512 cannot cover measured peak.
+        assert!(array_only > 512);
+    }
+
+    #[test]
+    fn transform_matrix_budget_512_insufficient_for_matrix_peak() {
+        // Regression: a budget that only covers the false 512 constant must
+        // reject, because the matrix peak (array slots alone) exceeds 512.
+        let peak = transform_matrix_array_slots_bytes();
+        assert!(peak > 512, "peak={peak} must exceed false 512 bound");
+        assert!(
+            TRANSFORM_MATRIX_PRECHARGE >= peak,
+            "4096 must cover peak {peak}"
+        );
+
+        let mut mem512 = ParseMem::with_cap(512);
+        let e = mem512
+            .charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")
+            .expect_err("512-cap cannot fund TRANSFORM_MATRIX_PRECHARGE");
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+
+        // Even charging only the measured array-slot floor must fail under 512.
+        let mut mem512b = ParseMem::with_cap(512);
+        let e2 = mem512b
+            .charge(peak, "metashape_frames")
+            .expect_err("512-cap cannot fund array-slot peak");
+        assert_eq!(e2.code(), ErrorCode::ValueOutOfRange);
+
+        // Real precharge fits under its own cap (sanity).
+        let mut mem_ok = ParseMem::with_cap(TRANSFORM_MATRIX_PRECHARGE);
+        mem_ok
+            .charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")
+            .expect("4096-cap funds TRANSFORM_MATRIX_PRECHARGE");
     }
 
     #[test]
     fn transform_matrix_precharge_rejects_before_json_alloc() {
         // Cap below value precharge: charge must fail before json! would run.
-        let need = transform_matrix_value_precharge();
+        let need = TRANSFORM_MATRIX_PRECHARGE;
         let mut mem = ParseMem::with_cap(need.saturating_sub(1));
         let e = mem
-            .charge(transform_matrix_value_precharge(), "metashape_frames")
+            .charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")
             .unwrap_err();
         assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
         assert_eq!(

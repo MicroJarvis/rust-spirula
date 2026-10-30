@@ -433,7 +433,8 @@ fn resource_budget_rejects_nerfstudio() {
 #[test]
 fn transform_matrix_json_precharge_covers_five_array_capacities() {
     // Mirrors independent review: serde_json 4×4 matrix → 5 Vec<Value> with
-    // capacity 4 each → ≥640 array-slot bytes; bound must exceed false 512.
+    // capacity 4 each → ≥640 array-slot bytes; TRANSFORM_MATRIX_PRECHARGE=4096
+    // (never 512). A 512-byte budget must not cover the matrix peak.
     use serde_json::Value;
     let tm = serde_json::json!([
         [1.0, 0.0, 0.0, 0.0],
@@ -450,11 +451,9 @@ fn transform_matrix_json_precharge_covers_five_array_capacities() {
             }
         }
     }
-    let array_only = slots * std::mem::size_of::<Value>();
+    let array_only = (slots * std::mem::size_of::<Value>()) as u64;
     assert!(array_only >= 640, "array_only={array_only}");
-    // Load path uses transform_matrix_value_precharge ≥ 2×slots + slack.
-    // Prove a 512-byte claim would be false against this fixture shape.
-    assert!(array_only > 512);
+    assert!(array_only > 512, "512 cannot cover matrix array peak");
     assert!(
         load_dataset(
             &fixtures_root().join("metashape-min"),
@@ -467,7 +466,7 @@ fn transform_matrix_json_precharge_covers_five_array_capacities() {
             None,
         )
         .is_ok(),
-        "metashape-min still loads with raised transform precharge"
+        "metashape-min still loads with TRANSFORM_MATRIX_PRECHARGE=4096"
     );
 }
 
