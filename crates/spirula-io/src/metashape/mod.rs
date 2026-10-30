@@ -19,8 +19,17 @@ use crate::colmap::DatasetFormat;
 use crate::colmap::ParsedDataset;
 use crate::colmap::budget::{
     MAX_COLMAP_FILE_BYTES, MAX_LOAD_MEMORY_BYTES, ParseCancel, ParseMem, err, err_path,
+    prepare_vec_push,
 };
 use crate::nerfstudio::{estimate_json_bytes, load_nerfstudio_meta_value_mem};
+
+/// Conservative pre-charge for one Metashape sensor `serde_json::Value` (keys,
+/// numbers, model/distortion strings, and map capacity slack) **before** `json!`.
+const SENSOR_VALUE_PRECHARGE: u64 = 4096;
+/// Pre-charge for one 4×4 `transform_matrix` JSON array before materialization.
+const TRANSFORM_MATRIX_PRECHARGE: u64 = 512;
+/// Root `{"frames":[…]}` wrapper (frame Values already charged at clone).
+const META_ROOT_PRECHARGE: u64 = 128;
 
 use self::xml::{XmlNode, parse_xml_bytes};
 
@@ -161,10 +170,6 @@ fn split_doubles(s: &str) -> Vec<f64> {
         .collect()
 }
 
-fn split_tokens(s: &str) -> Vec<String> {
-    s.split_whitespace().map(|t| t.to_owned()).collect()
-}
-
 fn norm_slashes(s: &str) -> String {
     s.replace('\\', "/")
 }
@@ -203,6 +208,22 @@ fn list_image_filenames(
     Ok(out)
 }
 
+fn charge_visited_path(mem: &mut ParseMem, key: &Path) -> Result<(), spirula_core::DomainError> {
+    mem.charge_btree_entries::<PathBuf>(1, "image_walk_visited")?;
+    mem.charge_str_bytes(key.as_os_str().len(), "image_walk_visited")
+}
+
+fn push_image_filename(
+    out: &mut Vec<String>,
+    s: String,
+    mem: &mut ParseMem,
+) -> Result<(), spirula_core::DomainError> {
+    prepare_vec_push(out, mem, "image_filenames")?;
+    mem.charge_str_bytes(s.len(), "image_filenames")?;
+    out.push(s);
+    Ok(())
+}
+
 fn walk_dir(
     dir: &Path,
     root: &Path,
@@ -222,9 +243,11 @@ fn walk_dir(
     cp.tick(1)?;
     // Do not follow symlink cycles: canonicalize when possible; skip repeats.
     let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if !visited.insert(key) {
+    if visited.contains(&key) {
         return Ok(());
     }
+    charge_visited_path(mem, &key)?;
+    visited.insert(key);
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Ok(());
     };
@@ -243,8 +266,7 @@ fn walk_dir(
                 && let Ok(rel) = p.strip_prefix(root)
             {
                 let s = rel.to_string_lossy().replace('\\', "/");
-                mem.charge_str_bytes(s.len(), "image_filenames")?;
-                out.push(s);
+                push_image_filename(out, s, mem)?;
             }
             continue;
         }
@@ -254,8 +276,7 @@ fn walk_dir(
             && let Ok(rel) = p.strip_prefix(root)
         {
             let s = rel.to_string_lossy().replace('\\', "/");
-            mem.charge_str_bytes(s.len(), "image_filenames")?;
-            out.push(s);
+            push_image_filename(out, s, mem)?;
         }
     }
     Ok(())
@@ -374,6 +395,11 @@ pub(crate) fn metashape_meta_from_xml(
             }
         }
 
+        // Charge map entry + sensor Value **before** json! / insert.
+        mem.charge_btree_entries::<(String, Value)>(1, "metashape_sensors")?;
+        mem.charge_str_bytes(id.len(), "metashape_sensors")?;
+        mem.charge(SENSOR_VALUE_PRECHARGE, "metashape_sensors")?;
+
         let mut s = json!({
             "camera_model": camera_model,
             "w": w,
@@ -438,6 +464,10 @@ pub(crate) fn metashape_meta_from_xml(
                 format!("MetashapeParser: sensor {id} has no adjusted calibration"),
             ));
         }
+        let actual = estimate_json_bytes(&s);
+        if actual > SENSOR_VALUE_PRECHARGE {
+            mem.charge(actual - SENSOR_VALUE_PRECHARGE, "metashape_sensors")?;
+        }
         sensor_dict.insert(id.to_owned(), s);
     }
 
@@ -476,13 +506,22 @@ pub(crate) fn metashape_meta_from_xml(
                         }
                     }
                 }
+                mem.charge_btree_entries::<(String, [f64; 16])>(1, "metashape_components")?;
+                mem.charge_str_bytes(cid.len(), "metashape_components")?;
                 component_transforms.insert(cid.clone(), m);
             }
             let mut ids = Vec::new();
             for ci in component.iter("camera_ids") {
-                ids.extend(split_tokens(&ci.text));
+                for tok in ci.text.split_whitespace() {
+                    prepare_vec_push(&mut ids, mem, "metashape_components")?;
+                    mem.charge_str_bytes(tok.len(), "metashape_components")?;
+                    ids.push(tok.to_owned());
+                }
             }
             if !ids.is_empty() {
+                prepare_vec_push(&mut component_groups, mem, "metashape_components")?;
+                mem.charge_str_bytes(cid.len(), "metashape_components")?;
+                // ids Vec header already charged via push growth; keep group slot.
                 component_groups.push((cid, ids));
             }
         }
@@ -569,14 +608,24 @@ pub(crate) fn metashape_meta_from_xml(
         let mut m = [0.0; 16];
         m.copy_from_slice(&t[..16]);
 
+        let component_id = camera.attr("component_id").unwrap_or("").to_owned();
+        // Peak: BTree slot + key + component_id + transform + sensor clone frame.
+        mem.charge_btree_entries::<(String, ValidCamera)>(1, "metashape_cameras")?;
+        mem.charge_str_bytes(cam_id.len(), "metashape_cameras")?;
+        mem.charge_str_bytes(component_id.len(), "metashape_cameras")?;
+        mem.charge(estimate_json_bytes(sensor), "metashape_cameras")?;
+        mem.charge_str_bytes(matches[0].len(), "metashape_cameras")?;
+
         let mut frame = sensor.clone();
         frame["file_path"] = json!(matches[0]);
+        prepare_vec_push(&mut valid_order, mem, "metashape_cameras")?;
+        mem.charge_str_bytes(cam_id.len(), "metashape_cameras")?;
         valid_order.push(cam_id.to_owned());
         valid_cameras.insert(
             cam_id.to_owned(),
             ValidCamera {
                 transform: m,
-                component_id: camera.attr("component_id").unwrap_or("").to_owned(),
+                component_id,
                 frame,
             },
         );
@@ -584,10 +633,15 @@ pub(crate) fn metashape_meta_from_xml(
 
     let mut group: Vec<String> = Vec::new();
     if component_groups.is_empty() {
-        group = valid_order.clone();
+        for id in &valid_order {
+            prepare_vec_push(&mut group, mem, "metashape_group")?;
+            mem.charge_str_bytes(id.len(), "metashape_group")?;
+            group.push(id.clone());
+        }
     } else {
         let mut best = 0usize;
         let mut best_count = 0usize;
+        mem.charge_elems::<usize>(component_groups.len(), "metashape_group")?;
         let mut counts = vec![0usize; component_groups.len()];
         for (g, (_cid, ids)) in component_groups.iter().enumerate() {
             for id in ids {
@@ -600,10 +654,17 @@ pub(crate) fn metashape_meta_from_xml(
                 best = g;
             }
         }
-        let mut ids = component_groups[best].1.clone();
+        let mut ids = Vec::new();
+        for id in &component_groups[best].1 {
+            prepare_vec_push(&mut ids, mem, "metashape_group")?;
+            mem.charge_str_bytes(id.len(), "metashape_group")?;
+            ids.push(id.clone());
+        }
         ids.sort();
         for id in &valid_order {
             if ids.binary_search(id).is_ok() {
+                prepare_vec_push(&mut group, mem, "metashape_group")?;
+                mem.charge_str_bytes(id.len(), "metashape_group")?;
                 group.push(id.clone());
             }
         }
@@ -634,6 +695,7 @@ pub(crate) fn metashape_meta_from_xml(
             m[r * 4 + 1] = -m[r * 4 + 1];
             m[r * 4 + 2] = -m[r * 4 + 2];
         }
+        mem.charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")?;
         let tm = json!([
             [m[0], m[1], m[2], m[3]],
             [m[4], m[5], m[6], m[7]],
@@ -641,6 +703,8 @@ pub(crate) fn metashape_meta_from_xml(
             [m[12], m[13], m[14], m[15]],
         ]);
         vc.frame["transform_matrix"] = tm;
+        prepare_vec_push(&mut frames, mem, "metashape_frames")?;
+        mem.charge(estimate_json_bytes(&vc.frame), "metashape_frames")?;
         frames.push(vc.frame.clone());
     }
     if frames.is_empty() {
@@ -654,6 +718,9 @@ pub(crate) fn metashape_meta_from_xml(
         ));
     }
 
+    // Frame Values already charged; charge only the root object wrapper before
+    // moving frames into the final meta (no post-return estimate_json_bytes).
+    mem.charge(META_ROOT_PRECHARGE, "metashape_meta")?;
     let mut meta = json!({ "frames": frames });
     if let Some(ply) = ply_path {
         let rel = ply
@@ -661,6 +728,7 @@ pub(crate) fn metashape_meta_from_xml(
             .unwrap_or(ply)
             .to_string_lossy()
             .replace('\\', "/");
+        mem.charge_str_bytes(rel.len().saturating_add(16), "metashape_meta")?;
         meta["ply_file_path"] = json!(rel);
     }
     Ok(meta)
@@ -727,9 +795,9 @@ pub fn load_metashape_dataset_budgeted(
     }
 
     let ply_ref = ply.as_deref().filter(|p| p.is_file());
+    // Conversion charges sensor/component/camera/frame/walk peak **before** each
+    // allocate inside `metashape_meta_from_xml` (no post-return estimate).
     let meta = metashape_meta_from_xml(dataset_dir, &xml_path, ply_ref, cfg, cancel, &mut mem)?;
-    // Converted transforms.json-shaped DOM lives alongside XML charges.
-    mem.charge(estimate_json_bytes(&meta), "metashape_meta_json")?;
     cp.poll_now()?;
 
     let mut loaded = load_nerfstudio_meta_value_mem(&meta, dataset_dir, cfg, cancel, &mut mem)?;

@@ -379,6 +379,55 @@ fn resource_budget_rejects_nerfstudio() {
 }
 
 #[test]
+fn metashape_budget_rejects_before_conversion_alloc() {
+    // XML file+DOM can fit a mid budget while sensor/map/clone conversion cannot.
+    // Sweep until we observe a conversion-field reject (not only file/xml_chars).
+    let ds = fixtures_root().join("metashape-min");
+    let cfg = ColmapLoadConfig {
+        require_image_files: false,
+        format: Some("metashape".into()),
+        metashape_xml: Some("cameras.xml".into()),
+        metashape_ply: Some("points.ply".into()),
+        image_dir: "images".into(),
+        ..Default::default()
+    };
+    assert!(
+        load_dataset_budgeted(&ds, &cfg, None, 1 << 28).is_ok(),
+        "fixture must load under a large budget"
+    );
+    const CONVERSION_FIELDS: &[&str] = &[
+        "metashape_sensors",
+        "metashape_components",
+        "metashape_cameras",
+        "metashape_frames",
+        "metashape_group",
+        "metashape_meta",
+        "image_walk_visited",
+        "image_filenames",
+    ];
+    let mut saw_conversion = false;
+    // Fine sweep: past tiny file/xml rejects into conversion pre-charges.
+    for budget in (1_000u64..120_000).step_by(500) {
+        match load_dataset_budgeted(&ds, &cfg, None, budget) {
+            Ok(_) => break,
+            Err(e) => {
+                assert_eq!(e.code(), ErrorCode::ValueOutOfRange, "budget={budget}");
+                let field = e.context_value(ContextKey::Field).unwrap_or("");
+                if CONVERSION_FIELDS.contains(&field) {
+                    saw_conversion = true;
+                    break;
+                }
+                // Still in file/xml_chars/xml_* — keep raising budget.
+            }
+        }
+    }
+    assert!(
+        saw_conversion,
+        "expected a conversion/walk pre-alloc reject after XML fits"
+    );
+}
+
+#[test]
 fn require_image_files_missing_stable() {
     let h = TempHarness::new().unwrap();
     let ds = h.path().join("miss");

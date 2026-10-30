@@ -61,8 +61,12 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
   - PLY: header element/property growth via `prepare_vec_push`; offsets
     and ASCII row scratch charged before reserve; ASCII floats are
     **token-bounded** (not `from_utf8` of the remaining body).
-  - Builds/missing paths, Metashape→JSON conversion, image-dir walk
-    names, and PLY points share the **same** live budget.
+  - Metashape→JSON conversion charges sensor/component/camera/frame map
+    entries and Value clones **before** each `json!` / insert / clone
+    (no post-return `estimate_json_bytes` after conversion returns).
+  - Image-dir walk charges `visited` BTree paths and filename Vec growth
+    **before** insert/push.
+  - Builds/missing paths and PLY points share the **same** live budget.
 - Cooperative cancel: JSON parse uses `serde_json::from_reader` with
   per-byte ticks (IoRead); XML ticks inside long attribute/text/comment
   scans; PLY header/skip/body loops tick. After-start cancel proven for
