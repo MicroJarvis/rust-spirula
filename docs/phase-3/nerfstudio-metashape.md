@@ -1,6 +1,6 @@
 # P3-F04: Nerfstudio / Metashape adapters
 
-Status: **进行中 (HOLD)**. Tip: *(pin after fix commit)*.
+Status: **进行中 (HOLD)**. Tip: `20a43c906ea4d266e66d84bb531ca94c8331bdb5`.
 Owner: `spirula-io` (+ admitted `spirula-application` / `spirula-cli`
 load path). Prerequisites: P3-F03. Lens path follows
 `NerfstudioParser.cpp:650-745` (declared model + raw/skew fit; empty
