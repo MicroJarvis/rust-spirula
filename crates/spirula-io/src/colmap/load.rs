@@ -17,10 +17,10 @@ use super::probe::{
 };
 use super::split::compute_splits;
 use super::text::{read_cameras_text, read_images_text, read_points3d_text};
-use super::types::DatasetProbe;
 use super::types::{
     BakedIntrinsics, ColmapCamera, ColmapFileFmt, ColmapImage, ColmapObservation, ColmapPoint3D,
-    ColmapPoints3D, DatasetFormat, DatasetLoadSummary, LoadedFrame, ParsedDataset, SplitIndices,
+    ColmapPoints3D, DatasetFormat, DatasetLoadSummary, DatasetProbe, LoadedFrame, ParsedDataset,
+    SplitIndices,
 };
 
 fn read_cameras(
@@ -151,7 +151,7 @@ pub(crate) fn validate_image_name(name: &str) -> Result<(), spirula_core::Domain
     Ok(())
 }
 
-/// Load a COLMAP dataset. Points optional. Nerfstudio/Metashape → typed unavailable.
+/// Load a COLMAP dataset. Points optional.
 pub fn load_colmap_dataset(
     dataset_dir: &Path,
     cfg: &ColmapLoadConfig,
@@ -171,27 +171,6 @@ pub fn load_colmap_dataset_budgeted(
     let mut cp = ParseCancel::new(cancel);
     let mut mem = ParseMem::with_cap(memory_budget_bytes);
     cp.poll_now()?;
-
-    // Auto-detect / typed unavailable for other formats.
-    match probe_dataset_cancelable(dataset_dir, cfg.recon_dir.as_deref(), cancel)? {
-        DatasetProbe::Unavailable { format, reason } => {
-            return Err(err(
-                ErrorCode::UnimplementedOption,
-                "format",
-                format!("{reason} ({})", format.as_str()),
-            )
-            .with_context(spirula_core::ContextKey::Format, format.as_str())
-            .expect("format"));
-        }
-        DatasetProbe::NotADataset { hint } => {
-            return Err(err(
-                ErrorCode::UnsupportedFormat,
-                "dataset",
-                format!("not a supported dataset: {hint}"),
-            ));
-        }
-        DatasetProbe::Available { .. } => {}
-    }
 
     let recon_hint = cfg.recon_dir.as_deref();
     let (recon_dir, _, _) = find_colmap_recon_cancelable(dataset_dir, recon_hint, cancel)?;
@@ -407,13 +386,82 @@ pub fn load_colmap_dataset_budgeted(
     })
 }
 
-/// Probe then load. Same as [`load_colmap_dataset`] for COLMAP paths.
+/// Unified entry: explicit `cfg.format` or auto-detect (NS > COLMAP > Metashape).
 pub fn load_dataset(
     dataset_dir: &Path,
     cfg: &ColmapLoadConfig,
     cancel: Option<&CancelToken>,
 ) -> Result<ParsedDataset, spirula_core::DomainError> {
-    load_colmap_dataset(dataset_dir, cfg, cancel)
+    load_dataset_budgeted(dataset_dir, cfg, cancel, MAX_LOAD_MEMORY_BYTES)
+}
+
+/// Same as [`load_dataset`] with an explicit cumulative memory budget.
+pub fn load_dataset_budgeted(
+    dataset_dir: &Path,
+    cfg: &ColmapLoadConfig,
+    cancel: Option<&CancelToken>,
+    memory_budget_bytes: u64,
+) -> Result<ParsedDataset, spirula_core::DomainError> {
+    let fmt_hint = cfg
+        .format
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let format = if let Some(name) = fmt_hint {
+        match name {
+            "colmap" => DatasetFormat::Colmap,
+            "nerfstudio" => DatasetFormat::Nerfstudio,
+            "metashape" => DatasetFormat::Metashape,
+            other => {
+                return Err(err(
+                    ErrorCode::UnsupportedFormat,
+                    "format",
+                    format!(
+                        "unsupported data format: '{other}' (expected colmap, nerfstudio or metashape)"
+                    ),
+                ));
+            }
+        }
+    } else {
+        match probe_dataset_cancelable(dataset_dir, cfg.recon_dir.as_deref(), cancel)? {
+            DatasetProbe::Available { format, .. } => format,
+            DatasetProbe::Unavailable { format, reason } => {
+                return Err(err(
+                    ErrorCode::UnimplementedOption,
+                    "format",
+                    format!("{reason} ({})", format.as_str()),
+                )
+                .with_context(spirula_core::ContextKey::Format, format.as_str())
+                .expect("format"));
+            }
+            DatasetProbe::NotADataset { hint } => {
+                return Err(err(
+                    ErrorCode::UnsupportedFormat,
+                    "dataset",
+                    format!("not a supported dataset: {hint}"),
+                ));
+            }
+        }
+    };
+
+    match format {
+        DatasetFormat::Colmap => {
+            load_colmap_dataset_budgeted(dataset_dir, cfg, cancel, memory_budget_bytes)
+        }
+        DatasetFormat::Nerfstudio => crate::nerfstudio::load_nerfstudio_dataset_budgeted(
+            dataset_dir,
+            cfg,
+            cancel,
+            memory_budget_bytes,
+        ),
+        DatasetFormat::Metashape => crate::metashape::load_metashape_dataset_budgeted(
+            dataset_dir,
+            cfg,
+            cancel,
+            memory_budget_bytes,
+        ),
+    }
 }
 
 #[cfg(test)]

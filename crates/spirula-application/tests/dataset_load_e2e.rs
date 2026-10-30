@@ -1,4 +1,4 @@
-//! End-to-end: application LoadDataset → spirula-io COLMAP (P3-F03).
+//! End-to-end: application LoadDataset → spirula-io (P3-F03/F04).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,6 +10,14 @@ use spirula_core::{ErrorCode, OutcomeView};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/datasets/tiny-colmap")
+}
+
+fn nerfstudio_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/datasets/nerfstudio-min")
+}
+
+fn metashape_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/datasets/metashape-min")
 }
 
 fn wait_terminal(
@@ -63,6 +71,49 @@ fn session_load_dataset_e2e() {
         _ => None,
     });
     assert_eq!(loaded, Some((1, 4, 1)));
+}
+
+#[test]
+fn session_load_nerfstudio_and_metashape_format() {
+    for (path, expect_format) in [
+        (nerfstudio_fixtures(), "nerfstudio"),
+        (metashape_fixtures(), "metashape"),
+    ] {
+        let app = ApplicationService::start(SessionLimits::for_test());
+        let id = match app.submit(Command::new(CommandPayload::LoadDataset {
+            path: path.display().to_string(),
+            recon_dir: String::new(),
+            eval_mode: "all".into(),
+            split: "train".into(),
+        })) {
+            SubmitOutcome::Accepted { id } => id,
+            SubmitOutcome::Rejected { error } => panic!("reject {expect_format}: {error}"),
+        };
+        let terminal = wait_terminal(&app, id);
+        match &terminal.event {
+            Event::Completed {
+                outcome: OutcomeView::Completed { .. },
+            } => {}
+            other => panic!("{expect_format} unexpected terminal {other:?}"),
+        }
+        let snap = app.snapshot();
+        let replay = app
+            .replay(spirula_application::EventCursor::new(snap.session_id, 0))
+            .expect("replay");
+        let spirula_application::ReplayOutcome::ControlEvents(events) = replay else {
+            panic!("{expect_format} resync unexpected");
+        };
+        let format = events.iter().find_map(|e| match &e.event {
+            Event::DatasetLoaded { format, .. } if e.command_id == Some(id) => Some(format.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            format.as_deref(),
+            Some(expect_format),
+            "path={}",
+            path.display()
+        );
+    }
 }
 
 #[test]

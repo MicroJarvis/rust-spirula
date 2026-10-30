@@ -5,7 +5,7 @@
 | P3-F01 camera projection / coordinates | [camera.md](camera.md) | 已完成 |
 | P3-F02 image orientation / mask | [image-orient-mask.md](image-orient-mask.md) | 已完成 |
 | P3-F03 COLMAP dataset read | [colmap.md](colmap.md) | 已完成 |
-| P3-F04 Nerfstudio/Metashape | (not started) | 当前 |
+| P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | READY |
 | P3-F05..F08 | (not started) | 未开始 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
@@ -36,7 +36,16 @@ owned prepare-path CPU uses bounded-chunk `CancelCheckpoint::tick` (≤250 ms
 gap). Drop drain deadline ≠ proven hard worker join — see
 [image-orient-mask.md](image-orient-mask.md).
 
-**P3-F03 已完成（独立 READY）** (code tip
-`813729f8238f6730ad0235416371197fc4bd985a`; not merged to main). C-DATA-01..03 /
-C-DATA-06; see [colmap.md](colmap.md). Remaining honest gap: dense `fit_model`
-single LM call non-preemptible. Current plan work is **P3-F04**.
+**P3-F03 已完成并落地 main** (merge `a35823f…`). C-DATA-01..03 / C-DATA-06; see
+[colmap.md](colmap.md). Remaining honest gap: dense `fit_model` single LM call
+non-preemptible.
+
+**P3-F04 READY** (code tip `4c7519ae717c6f501da7fa07650f2993b69d93bb`;
+prior fixes `548ce6d…`, `442b695…`, `4c7519a…`). C-DATA-01 extend + C-DATA-04/05;
+Nerfstudio `transforms.json` + self-contained PLY + Metashape XML; `.psx`
+typed unsupported without zip. Independent harness: lens / Unicode / JSON
+capacity cliff / XML BOM+CDATA. Focused `nerfstudio_metashape` 29/29;
+`dataset_load_e2e` 11/11; xtask verify 8/8. See
+[nerfstudio-metashape.md](nerfstudio-metashape.md). Honest Non-claims: scene
+center/normalize (P3-F05), splat (P3-F06), cache (P3-F08), `.psx` zip load.
+**Next plan current: P3-F05** (not started in this worktree).

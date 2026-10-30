@@ -111,17 +111,17 @@ fn nontrivial_pose_lens_no_points_and_filename_split() {
 }
 
 #[test]
-fn probe_nerfstudio_and_metashape_unavailable() {
+fn probe_nerfstudio_available_metashape_xml_vs_psx() {
     let h = TempHarness::new().unwrap();
     let ns = h.path().join("ns");
     fs::create_dir_all(&ns).unwrap();
     fs::write(ns.join("transforms.json"), "{}").unwrap();
     match probe_dataset(&ns, None).unwrap() {
-        DatasetProbe::Unavailable {
+        DatasetProbe::Available {
             format: DatasetFormat::Nerfstudio,
             ..
         } => {}
-        other => panic!("expected nerfstudio unavailable, got {other:?}"),
+        other => panic!("expected nerfstudio available, got {other:?}"),
     }
 
     let ms = h.path().join("ms");
@@ -140,14 +140,15 @@ fn probe_nerfstudio_and_metashape_unavailable() {
     }
     fs::write(ms.join("export.xml"), "<document><chunk/></document>").unwrap();
     match probe_dataset(&ms, None).unwrap() {
-        DatasetProbe::Unavailable {
+        DatasetProbe::Available {
             format: DatasetFormat::Metashape,
             ..
         } => {}
-        other => panic!("expected metashape unavailable for good.xml, got {other:?}"),
+        other => panic!("expected metashape available for good.xml, got {other:?}"),
     }
     fs::remove_file(ms.join("export.xml")).unwrap();
     // Pin: project form is `<document path=.../>` — no literal `psx:` required.
+    // .psx-only remains typed unavailable (no zip runtime).
     fs::write(ms.join("project.psx"), "<document path=\"scene.psz\"/>").unwrap();
     match probe_dataset(&ms, None).unwrap() {
         DatasetProbe::Unavailable {

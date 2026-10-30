@@ -3,29 +3,32 @@
 //! Production parsers for text + little-endian binary `cameras` / `images` /
 //! `points3D`, directory probing, OpenGL c2w conversion, train/eval/validation
 //! splits, and 18-model bake/fit via P3-F01. Scene center/normalize stays in
-//! P3-F05; Nerfstudio/Metashape parsers stay in P3-F04 (typed unavailable).
+//! P3-F05. Nerfstudio/Metashape live in sibling modules; this crate keeps
+//! COLMAP plus shared probe/`load_dataset` dispatch.
 //!
 //! Pin: `9a24f09927944a795e7ba1bd8243a625bf419479`
 //! (`ColmapParser.cpp`, `DatasetCommon.cpp`, `DatasetParser.h`).
 
-mod bake;
+pub(crate) mod bake;
 mod binary;
-mod budget;
-mod config;
-mod load;
+pub(crate) mod budget;
+pub(crate) mod config;
+pub(crate) mod load;
 mod models;
 mod pose;
 mod probe;
-mod split;
+pub(crate) mod split;
 mod text;
-mod types;
+pub(crate) mod types;
 
 pub use budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_LOAD_MEMORY_BYTES, MAX_OBSERVATIONS,
     MAX_POINTS, MAX_TRACK_ELEMS,
 };
 pub use config::ColmapLoadConfig;
-pub use load::{load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset};
+pub use load::{
+    load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset, load_dataset_budgeted,
+};
 pub use models::{
     COLMAP_MODELS, ColmapModelInfo, model_by_id, model_id_by_name, require_exact_param_count,
     require_model_by_name,

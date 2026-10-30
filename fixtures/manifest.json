@@ -79,6 +79,41 @@
       "sha256": "68032d0248fda5398a0d7a11611b03d21e5e2028afce38d52f40b1e3c1ae1a7d"
     },
     {
+      "path": "datasets/metashape-min/cameras.xml",
+      "bytes": 677,
+      "sha256": "9c282af2048783932ff65daedfeb438a85d517c20516b76b79a178953cf88c9e"
+    },
+    {
+      "path": "datasets/metashape-min/images/cam0.jpg",
+      "bytes": 74,
+      "sha256": "426898cf248757257229d0df51bad36b9edc2e74ca3022a9277a90bac59ed400"
+    },
+    {
+      "path": "datasets/metashape-min/points.ply",
+      "bytes": 180,
+      "sha256": "ffe3142c1a55ec33fdf33dd6bec85cf819f8683004caa1e60358a9c0093003e1"
+    },
+    {
+      "path": "datasets/nerfstudio-min/images/frame_00001.png",
+      "bytes": 74,
+      "sha256": "426898cf248757257229d0df51bad36b9edc2e74ca3022a9277a90bac59ed400"
+    },
+    {
+      "path": "datasets/nerfstudio-min/sparse_pc.ply",
+      "bytes": 202,
+      "sha256": "a4db86e9d732b1e1627797a261b14f731fe7d74ced5553918b32324f2fe914c6"
+    },
+    {
+      "path": "datasets/nerfstudio-min/transforms.json",
+      "bytes": 587,
+      "sha256": "a1e167713cdbc008ae5960c6d88d3adc17b4f52ed2cb96f89fea40928271cb34"
+    },
+    {
+      "path": "datasets/ply-binary-le.ply",
+      "bytes": 190,
+      "sha256": "60cae5d4ec74a9be66ef49d10742dfa7386fe42f81010f6b1d72aced41733d9d"
+    },
+    {
       "path": "datasets/tiny-colmap/cameras.bin",
       "bytes": 64,
       "sha256": "2b068d2f3df87a9a89d4707a2bba6c2d6caaebdc5f8c103e39f134767e6a5ab0"
