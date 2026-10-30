@@ -1079,5 +1079,13 @@ pub(crate) fn load_nerfstudio_meta_value_mem(
         points,
         split,
         summary,
-    })
+        center_mode: String::new(),
+        center: [0.0; 3],
+        center_json: [0.0; 3],
+        raw_to_file: [0.0; 16],
+        train_frame_scale: 0.0,
+        train_to_normalized: [0.0; 16],
+        normalized_rotation: [0.0; 9],
+    }
+    .with_identity_scene())
 }

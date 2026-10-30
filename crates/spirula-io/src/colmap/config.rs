@@ -24,6 +24,14 @@ pub struct ColmapLoadConfig {
     pub metashape_ply: Option<String>,
     /// Optional Metashape `.psx` path (typed unsupported without zip runtime).
     pub metashape_psx: Option<String>,
+    /// Scene-center mode: `none` / named / `auto` (P3-F05). Default `none`.
+    pub scene_center: String,
+    /// Auto threshold in scene radii (C++ `center_auto_threshold`). Default 20.
+    pub scene_center_threshold: f32,
+    /// Explicit center override; when set, `scene_center` must not be `auto`.
+    pub scene_center_explicit: Option<[f64; 3]>,
+    /// When true (default), undo applied_transform (NS), apply center, fill normalize.
+    pub apply_scene: bool,
 }
 
 impl Default for ColmapLoadConfig {
@@ -41,6 +49,10 @@ impl Default for ColmapLoadConfig {
             metashape_xml: None,
             metashape_ply: None,
             metashape_psx: None,
+            scene_center: "none".into(),
+            scene_center_threshold: 20.0,
+            scene_center_explicit: None,
+            apply_scene: true,
         }
     }
 }

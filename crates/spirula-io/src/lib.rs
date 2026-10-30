@@ -7,7 +7,8 @@
 //! mask normalize (flip/offset), and depth/normal aux maps.
 //! P3-F03 owns COLMAP text/binary dataset reading (not `fixtures` checkers).
 //! P3-F04 owns Nerfstudio / Metashape adapters + shared PLY vertex reader.
-//! Checkpoint bundle schema and completion markers stay in P5-F05.
+//! P3-F05 owns scene-transform / region JSON, scene-center apply, and normalize
+//! metadata on [`ParsedDataset`]. Checkpoint bundle schema stays in P5-F05.
 
 pub mod atomic;
 pub mod camera_catalog;
@@ -26,7 +27,10 @@ pub mod metashape;
 pub mod nerfstudio;
 pub mod perf;
 pub mod ply;
+pub mod region_io;
 pub mod sample_workload;
+pub mod scene_apply;
+pub mod scene_transform;
 pub mod temp_harness;
 
 pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entry};
@@ -39,6 +43,18 @@ pub use colmap::{
 pub use metashape::{load_metashape_dataset, load_metashape_dataset_budgeted};
 pub use nerfstudio::{load_nerfstudio_dataset, load_nerfstudio_dataset_budgeted};
 pub use ply::{read_ply_points, read_ply_points_budgeted};
+pub use region_io::{
+    parse_region_bytes, read_region_json, region_from_value, region_to_json, region_to_value,
+    write_region_json,
+};
+pub use scene_apply::{
+    AppliedTransform, SceneApplyConfig, apply_scene_to_dataset, compute_normalized_transform,
+};
+pub use scene_transform::{
+    GeoReference, SCENE_TRANSFORM_FORMAT, SCENE_TRANSFORM_VERSION, SceneTransformDoc,
+    parse_scene_transform_bytes, read_scene_transform_json, scene_transform_to_json,
+    write_scene_transform_json,
+};
 
 pub use atomic::{
     PublishLease, PublishOptions, PublishOutcome, acquire_publish_lease, is_publish_temp,

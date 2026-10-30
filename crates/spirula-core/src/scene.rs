@@ -1,7 +1,7 @@
 //! Similarity transform and raw Gaussian splat values.
 //!
-//! JSON spelling, centering modes, and PLY bytes stay in P3-F05 and P3-F06.
-//! See `docs/phase-1/geometry.md`.
+//! Scene-transform JSON I/O and centering application live in `spirula-io`
+//! (P3-F05). PLY splat bytes stay in P3-F06. See `docs/phase-1/geometry.md`.
 
 use crate::DomainError;
 use crate::math::{Mat3, Quat, Vec3, invalid, out_of_range};
@@ -52,6 +52,53 @@ impl SceneTransform {
     pub fn apply(self, world: Vec3) -> Result<Vec3, DomainError> {
         let rotated = self.rotation.try_mul_vec(world)?.try_scale(self.scale)?;
         rotated.try_add(self.translation)
+    }
+
+    /// Pure translation centering: `p_train = p_world - center` (`R=I`, `s=1`).
+    pub fn from_center(center: Vec3) -> Result<Self, DomainError> {
+        let t = center.try_scale(-1.0)?;
+        Self::try_new(Mat3::identity(), t, 1.0)
+    }
+
+    /// Identity similarity.
+    pub fn identity() -> Self {
+        Self::try_new(
+            Mat3::identity(),
+            Vec3::try_new(0.0, 0.0, 0.0).expect("zero"),
+            1.0,
+        )
+        .expect("identity")
+    }
+
+    /// Apply to OpenGL camera-to-world 3×4 (`R|t` row-major flat 12).
+    ///
+    /// `R' = R_xf * R_c`, `t' = scale * R_xf * t_c + t_xf`.
+    pub fn apply_c2w(self, c2w: &[f64; 12]) -> Result<[f64; 12], DomainError> {
+        let r_c = Mat3::try_from_row_major([
+            c2w[0], c2w[1], c2w[2], c2w[4], c2w[5], c2w[6], c2w[8], c2w[9], c2w[10],
+        ])?;
+        let t_c = Vec3::try_new(c2w[3], c2w[7], c2w[11])?;
+        let r_p = self.rotation.try_mul(r_c)?;
+        let t_p = self
+            .rotation
+            .try_mul_vec(t_c)?
+            .try_scale(self.scale)?
+            .try_add(self.translation)?;
+        let rm = r_p.row_major();
+        Ok([
+            rm[0],
+            rm[1],
+            rm[2],
+            t_p.x(),
+            rm[3],
+            rm[4],
+            rm[5],
+            t_p.y(),
+            rm[6],
+            rm[7],
+            rm[8],
+            t_p.z(),
+        ])
     }
 
     /// `R_w = R^T`, `scale_w = 1/scale`, `t_w = -(1/scale) R^T t`.

@@ -1,0 +1,20 @@
+{
+  "schema": "spirula-scene-cpp-compare",
+  "version": 1,
+  "source": "C++ scene_transform_json / fixtures/scene/scene_transform.json",
+  "notes": [
+    "Active train_from_world matches fixtures/scene/scene_transform.json.",
+    "Apply samples match fixtures/golden/scene.json.",
+    "Inverse: world_from_train.scale = 1/0.5; translation_before_rotation of train equals -center_world when R rotates 90° about Z with the fixture similarity."
+  ],
+  "fixture": "fixtures/scene/scene_transform.json",
+  "apply_golden": "fixtures/golden/scene.json",
+  "expected_train_from_world": {
+    "scale": 0.5,
+    "translation": [1.5, -2.0, 0.25],
+    "rotation_flat_row_major": [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+  },
+  "region_fixture": "fixtures/scene/region_sphere.json",
+  "region_contains": [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]],
+  "region_excludes": [[3.0, 0.0, 0.0]]
+}

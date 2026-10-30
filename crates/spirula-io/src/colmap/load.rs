@@ -383,7 +383,15 @@ pub fn load_colmap_dataset_budgeted(
         points,
         split,
         summary,
-    })
+        center_mode: String::new(),
+        center: [0.0; 3],
+        center_json: [0.0; 3],
+        raw_to_file: [0.0; 16],
+        train_frame_scale: 0.0,
+        train_to_normalized: [0.0; 16],
+        normalized_rotation: [0.0; 9],
+    }
+    .with_identity_scene())
 }
 
 /// Unified entry: explicit `cfg.format` or auto-detect (NS > COLMAP > Metashape).
@@ -445,23 +453,46 @@ pub fn load_dataset_budgeted(
         }
     };
 
-    match format {
+    let mut ds = match format {
         DatasetFormat::Colmap => {
-            load_colmap_dataset_budgeted(dataset_dir, cfg, cancel, memory_budget_bytes)
+            load_colmap_dataset_budgeted(dataset_dir, cfg, cancel, memory_budget_bytes)?
         }
         DatasetFormat::Nerfstudio => crate::nerfstudio::load_nerfstudio_dataset_budgeted(
             dataset_dir,
             cfg,
             cancel,
             memory_budget_bytes,
-        ),
+        )?,
         DatasetFormat::Metashape => crate::metashape::load_metashape_dataset_budgeted(
             dataset_dir,
             cfg,
             cancel,
             memory_budget_bytes,
-        ),
+        )?,
+    };
+
+    if cfg.apply_scene {
+        let mut apply_cfg = crate::scene_apply::SceneApplyConfig {
+            center_mode: cfg.scene_center.clone(),
+            center_auto_threshold: cfg.scene_center_threshold,
+            center: cfg.scene_center_explicit,
+            applied_transform: crate::scene_apply::AppliedTransform::identity(),
+            compute_normalize: true,
+        };
+        if matches!(format, DatasetFormat::Nerfstudio | DatasetFormat::Metashape) {
+            let transforms = dataset_dir.join("transforms.json");
+            if transforms.is_file()
+                && let Ok(bytes) = std::fs::read(&transforms)
+                && let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                && let Some(at) = meta.get("applied_transform")
+            {
+                apply_cfg.applied_transform =
+                    crate::scene_apply::AppliedTransform::from_json_value(at)?;
+            }
+        }
+        let _ = crate::scene_apply::apply_scene_to_dataset(&mut ds, &apply_cfg)?;
     }
+    Ok(ds)
 }
 
 #[cfg(test)]
