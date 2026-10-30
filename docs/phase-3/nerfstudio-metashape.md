@@ -72,9 +72,10 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
   scans; PLY header/skip/body loops tick. After-start cancel proven for
   JSON parse, XML long attr, PLY ASCII, and Metashape dir walk.
 - XML nesting capped (`MAX_XML_DEPTH`); legal `<!-- … -->` comments
-  (including trailing siblings under a parent) and numeric entities
-  (`&#NNN;` / `&#xHH;`) are accepted. Image-dir walk skips symlink
-  cycles via canonicalize/`visited` and caps depth.
+  (including trailing siblings under a parent), numeric entities
+  (`&#NNN;` / `&#xHH;`), leading UTF-8 BOM (C++ `skip_prolog`), and
+  `<![CDATA[…]]>` raw text (C++ `parse_element`) are accepted. Image-dir
+  walk skips symlink cycles via canonicalize/`visited` and caps depth.
 - Stable `DomainError` (no panic on malformed input; UTF-8 labels use
   char-safe `match_substring`).
 
@@ -95,6 +96,7 @@ Under `fixtures/datasets/`:
 | `nerfstudio-min/` | `transforms.json` + ASCII PLY + one PNG |
 | `ply-binary-le.ply` | binary_little_endian vertex golden |
 | `metashape-min/` | camera-export XML + PLY + image |
+| `metashape-xml-compat/` | UTF-8 BOM + CDATA-wrapped transform variants of min cameras.xml |
 | Counter-examples | truncated PLY, big-endian, list prop, non-finite / singular / path escape |
 
 ## Non-claims

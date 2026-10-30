@@ -87,6 +87,58 @@ fn metashape_xml_loads_with_opengl_yz_flip() {
 }
 
 #[test]
+fn metashape_xml_utf8_bom_loads() {
+    // Independent harness xml_compat xml_bom + fixtures/metashape-xml-compat.
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("bom");
+    std::fs::create_dir_all(&ds).unwrap();
+    std::fs::copy(
+        fixtures_root().join("metashape-xml-compat/cameras-bom.xml"),
+        ds.join("cameras.xml"),
+    )
+    .unwrap();
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            format: Some("metashape".into()),
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .expect("BOM Metashape XML");
+    assert_eq!(loaded.frames.len(), 1);
+}
+
+#[test]
+fn metashape_xml_cdata_transform_loads() {
+    // Independent harness xml_compat xml_cdata + fixtures/metashape-xml-compat.
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("cdata");
+    std::fs::create_dir_all(&ds).unwrap();
+    std::fs::copy(
+        fixtures_root().join("metashape-xml-compat/cameras-cdata.xml"),
+        ds.join("cameras.xml"),
+    )
+    .unwrap();
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            format: Some("metashape".into()),
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+    )
+    .expect("CDATA Metashape transform");
+    assert_eq!(loaded.frames.len(), 1);
+    let c = &loaded.frames[0].c2w;
+    assert!((c[0] - 1.0).abs() < 1e-9);
+    assert!((c[5] + 1.0).abs() < 1e-9);
+    assert!((c[11] - 1.0).abs() < 1e-9);
+}
+
+#[test]
 fn auto_detect_priority_nerfstudio_over_colmap_over_metashape() {
     let h = TempHarness::new().unwrap();
     let ds = h.path().join("ds");

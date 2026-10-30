@@ -1,9 +1,12 @@
 //! Minimal XML DOM for Metashape camera exports (elements, attrs, text).
 //! Recursive `iter` / `findall` match C++ `XmlNode` usage.
 //!
+//! Compatibility (pinned C++ `src/data/Xml.h`): UTF-8 BOM skipped in prolog;
+//! `<![CDATA[…]]>` contents append as raw element text (no entity decode).
+//!
 //! Memory: every `String` / `Vec` grow is charged **before** allocate. Long
-//! attribute / text scans tick cancel. Comments (`<!-- … -->`) and PIs are
-//! skipped as sibling markup (including trailing comments under a parent).
+//! attribute / text / CDATA scans tick cancel. Comments (`<!-- … -->`) and PIs
+//! are skipped as sibling markup (including trailing comments under a parent).
 
 use spirula_core::{CancelToken, ErrorCode};
 
@@ -145,8 +148,55 @@ fn skip_ws(chars: &[char], i: &mut usize) {
     }
 }
 
+/// C++ `skip_prolog`: drop a leading UTF-8 BOM (`U+FEFF`) then whitespace.
+fn skip_prolog(chars: &[char], i: &mut usize) {
+    if *i < chars.len() && chars[*i] == '\u{feff}' {
+        *i += 1;
+    }
+    skip_ws(chars, i);
+}
+
+/// True when `chars[i..]` starts with `<![CDATA[`.
+fn is_cdata_open(chars: &[char], i: usize) -> bool {
+    const OPEN: &[char] = &['<', '!', '[', 'C', 'D', 'A', 'T', 'A', '['];
+    chars.len().saturating_sub(i) >= OPEN.len() && chars[i..i + OPEN.len()] == *OPEN
+}
+
+/// Append `<![CDATA[…]]>` raw contents to `text` (C++ `parse_element` CDATA).
+/// Caller: `chars[*i] == '<'` and [`is_cdata_open`]. Charges before grow; ticks
+/// cancel across the scan.
+fn append_cdata_text(
+    ctx: &mut ParseCtx<'_>,
+    i: &mut usize,
+    text: &mut String,
+) -> Result<(), spirula_core::DomainError> {
+    debug_assert!(is_cdata_open(ctx.chars, *i));
+    let chars = ctx.chars;
+    *i += 9; // skip "<![CDATA["
+    let start = *i;
+    while *i + 2 < chars.len() {
+        ctx.cp.tick(1)?;
+        if chars[*i] == ']' && chars[*i + 1] == ']' && chars[*i + 2] == '>' {
+            let slice = &chars[start..*i];
+            let raw = ctx.collect_str(slice, "xml_cdata")?;
+            // push_str growth ≤ raw.len(); charge before mutate (raw text, no decode).
+            ctx.charge_str_bytes(raw.len(), "xml_text")?;
+            text.push_str(&raw);
+            *i += 3;
+            return Ok(());
+        }
+        *i += 1;
+    }
+    Err(err(
+        ErrorCode::MalformedRecord,
+        "xml",
+        "Metashape XML: unterminated CDATA section",
+    ))
+}
+
 /// Skip `<? … ?>`, `<!-- … -->`, or other `<! … >` markup. Ticks cancel on long
 /// scans. Caller has already consumed `'<'`; `chars[*i]` is `'?'` or `'!'`.
+/// CDATA must not use this path — see [`append_cdata_text`].
 fn skip_pi_or_comment(
     ctx: &mut ParseCtx<'_>,
     i: &mut usize,
@@ -373,6 +423,10 @@ fn parse_element(
                 *i += 1;
                 break;
             }
+            if is_cdata_open(chars, *i) {
+                append_cdata_text(ctx, i, &mut text)?;
+                continue;
+            }
             if *i + 1 < chars.len() && (chars[*i + 1] == '?' || chars[*i + 1] == '!') {
                 *i += 1;
                 skip_pi_or_comment(ctx, i)?;
@@ -437,7 +491,7 @@ pub fn parse_xml_bytes(
     };
     ctx.cp.poll_now()?;
 
-    skip_ws(&chars, &mut i);
+    skip_prolog(&chars, &mut i);
     ctx.charge_str_bytes("#document".len(), "xml_name")?;
     ctx.charge_node()?;
     let mut root = XmlNode {
@@ -495,6 +549,42 @@ mod tests {
         assert_eq!(root.attr("label"), Some("AAB&"));
         assert_eq!(root.find("child").map(|c| c.text.as_str()), Some("B"));
         assert_eq!(root.children.len(), 1);
+    }
+
+    #[test]
+    fn utf8_bom_skipped_in_prolog() {
+        let mut mem = ParseMem::with_cap(1 << 20);
+        let mut bytes = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+        bytes.extend(br#"<root><child>ok</child></root>"#);
+        let doc = parse_xml_bytes(&bytes, &mut mem, None).expect("BOM parse");
+        assert_eq!(
+            doc.find("root")
+                .and_then(|r| r.find("child"))
+                .map(|c| c.text.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn cdata_appends_raw_text_without_entity_decode() {
+        let mut mem = ParseMem::with_cap(1 << 20);
+        // CDATA keeps `&lt;` literal; adjacent text still decodes entities.
+        let xml = br#"<root><transform><![CDATA[1 0 &lt; 0]]></transform>x&amp;y</root>"#;
+        let doc = parse_xml_bytes(xml, &mut mem, None).expect("CDATA parse");
+        let root = doc.find("root").expect("root");
+        assert_eq!(
+            root.find("transform").map(|t| t.text.as_str()),
+            Some("1 0 &lt; 0")
+        );
+        assert_eq!(root.text.as_str(), "x&y");
+    }
+
+    #[test]
+    fn cdata_with_gt_inside_does_not_end_at_first_angle() {
+        let mut mem = ParseMem::with_cap(1 << 20);
+        let xml = br#"<t><![CDATA[a>b>c]]></t>"#;
+        let doc = parse_xml_bytes(xml, &mut mem, None).expect("CDATA gt");
+        assert_eq!(doc.find("t").map(|t| t.text.as_str()), Some("a>b>c"));
     }
 
     #[test]
