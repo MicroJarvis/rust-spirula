@@ -695,6 +695,7 @@ pub(crate) fn metashape_meta_from_xml(
             m[r * 4 + 1] = -m[r * 4 + 1];
             m[r * 4 + 2] = -m[r * 4 + 2];
         }
+        // Charge the transform_matrix Value bound *before* `json!` allocates it.
         mem.charge(TRANSFORM_MATRIX_PRECHARGE, "metashape_frames")?;
         let tm = json!([
             [m[0], m[1], m[2], m[3]],
@@ -703,6 +704,8 @@ pub(crate) fn metashape_meta_from_xml(
             [m[12], m[13], m[14], m[15]],
         ]);
         vc.frame["transform_matrix"] = tm;
+        // Clone peak: charge frame estimate before clone; Vec slot via prepare_vec_push
+        // (max growth charged before try_reserve — no post-alloc delta).
         prepare_vec_push(&mut frames, mem, "metashape_frames")?;
         mem.charge(estimate_json_bytes(&vc.frame), "metashape_frames")?;
         frames.push(vc.frame.clone());

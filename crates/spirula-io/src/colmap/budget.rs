@@ -163,10 +163,28 @@ pub(crate) fn try_reserve_elems<T>(
     Ok(())
 }
 
+/// Upper bound on `Vec` capacity after a growth that makes room for one more
+/// element when `len == capacity`.
+///
+/// Covers std amortized doubling (`max(2×old, len+1)`, empty→≥8 to match the
+/// largest `MIN_NON_ZERO_CAP` for 1-byte `T`) plus ≤2× size-class slack from the
+/// allocator. All of this is charged **before** `try_reserve` so we never pay
+/// an unexpected capacity delta after the allocation has already happened.
+pub(crate) fn max_vec_grow_capacity(old_cap: usize, len: usize) -> usize {
+    let needed = len.saturating_add(1);
+    let amortized = if old_cap == 0 {
+        needed.max(8)
+    } else {
+        old_cap.saturating_mul(2).max(needed)
+    };
+    amortized.saturating_mul(2)
+}
+
 /// Charge amortized capacity growth **before** a `push` that would reallocate.
 ///
-/// Std `Vec` grows empty→≥4 then ≈2×. Charging only `1` elem per push under-bounds
-/// the live allocation (capacity slots). Call immediately before every `push`.
+/// Charges [`max_vec_grow_capacity`] − current capacity up front, then
+/// `try_reserve(1)`. No post-allocation top-up. Call immediately before every
+/// `push` that may grow.
 pub(crate) fn prepare_vec_push<T>(
     vec: &mut Vec<T>,
     mem: &mut ParseMem,
@@ -176,15 +194,22 @@ pub(crate) fn prepare_vec_push<T>(
         return Ok(());
     }
     let old = vec.capacity();
-    // Conservative match for std amortized growth on large `T` (XmlNode, PlyElement, …).
-    let additional = if old == 0 { 4 } else { old };
-    try_reserve_elems(vec, additional, mem, field)?;
-    // If the allocator rounded higher than our doubling guess, pay the delta
-    // before the subsequent push observes the larger capacity.
-    let grew = vec.capacity().saturating_sub(old);
-    if grew > additional {
-        mem.charge_elems::<T>(grew - additional, field)?;
-    }
+    let max_cap = max_vec_grow_capacity(old, vec.len());
+    let charge_n = max_cap.saturating_sub(old).max(1);
+    mem.charge_elems::<T>(charge_n, field)?;
+    vec.try_reserve(1).map_err(|_| {
+        err(
+            ErrorCode::ValueOutOfRange,
+            field,
+            format!("{field} reservation for push failed"),
+        )
+    })?;
+    debug_assert!(
+        vec.capacity() <= max_cap || vec.capacity() <= old.saturating_add(charge_n),
+        "prepare_vec_push: capacity {} exceeded pre-charged max {}",
+        vec.capacity(),
+        max_cap
+    );
     Ok(())
 }
 
@@ -206,5 +231,46 @@ impl<'a> ParseCancel<'a> {
 
     pub fn poll_now(&mut self) -> Result<(), DomainError> {
         self.cp.poll_now()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_vec_push_charges_max_growth_before_reserve() {
+        let mut mem = ParseMem::with_cap(1 << 20);
+        let mut v: Vec<u64> = Vec::new();
+        // Empty→growth: must succeed without any post-alloc charge path.
+        prepare_vec_push(&mut v, &mut mem, "t").unwrap();
+        v.push(1);
+        assert!(v.capacity() >= 1);
+        assert!(v.capacity() <= max_vec_grow_capacity(0, 0));
+
+        // Fill to capacity so the next prepare grows again.
+        while v.len() < v.capacity() {
+            v.push(v.len() as u64);
+        }
+        let old = v.capacity();
+        let used_before = mem.used();
+        prepare_vec_push(&mut v, &mut mem, "t").unwrap();
+        let charged = mem.used() - used_before;
+        let max_cap = max_vec_grow_capacity(old, v.len());
+        let expected = (max_cap.saturating_sub(old).max(1) as u64)
+            * (std::mem::size_of::<u64>() as u64).max(1);
+        assert_eq!(charged, expected, "charge equals max pre-reserve bound");
+        v.push(99);
+        assert!(v.capacity() <= max_cap);
+    }
+
+    #[test]
+    fn prepare_vec_push_rejects_when_max_growth_exceeds_budget() {
+        let mut v: Vec<u32> = Vec::new();
+        // Cap below empty-grow charge (8 × size_of::<u32> = 32).
+        let mut mem = ParseMem::with_cap(16);
+        let e = prepare_vec_push(&mut v, &mut mem, "t").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+        assert!(v.capacity() == 0, "must not allocate after budget reject");
     }
 }
