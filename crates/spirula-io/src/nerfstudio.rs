@@ -8,6 +8,7 @@
 //! Pin: `NerfstudioParser.cpp` @ `9a24f099…`.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
@@ -18,6 +19,7 @@ use spirula_core::{
     fit_camera_auto_cancelable, source_project,
 };
 
+use crate::cancel_checkpoint::CANCEL_WORK_CHUNK;
 use crate::colmap::budget::{
     MAX_CAMERAS, MAX_COLMAP_FILE_BYTES, MAX_IMAGES, MAX_LOAD_MEMORY_BYTES, ParseCancel, ParseMem,
     ensure_count, err, err_path, try_reserve_elems,
@@ -672,15 +674,7 @@ pub fn load_nerfstudio_dataset_budgeted(
 
     let text = read_capped_text(&transforms_path, &mut mem, cancel)?;
     cp.poll_now()?;
-    let meta: Value = serde_json::from_str(&text).map_err(|e| {
-        err(
-            ErrorCode::MalformedRecord,
-            "transforms_json",
-            format!("NerfstudioParser: JSON parse error: {e}"),
-        )
-    })?;
-    // Charge JSON DOM overhead (file bytes already charged; DOM is a second live copy).
-    mem.charge(text.len() as u64, "json_dom")?;
+    let meta = parse_json_dom_budgeted(&text, &mut mem, cancel)?;
 
     let mut loaded = load_nerfstudio_meta_value_mem(&meta, dataset_dir, cfg, cancel, &mut mem)?;
     loaded.recon_dir = transforms_path.clone();
@@ -717,6 +711,91 @@ pub(crate) fn estimate_json_bytes(v: &Value) -> u64 {
                 .saturating_add(16)
                 .saturating_add(estimate_json_bytes(val))
         }),
+    }
+}
+
+/// Conservative upper bound on live `serde_json::Value` size for a UTF-8 JSON
+/// document of `text_len` bytes.
+///
+/// Why conservative (charge **before** DOM materialization): on 64-bit, each
+/// scalar/container is a tagged `Value` (~24B) plus heap (`String` header,
+/// `Vec`/`Map` nodes ~24–64B). Adversarial shapes like `[0,0,…]` or `["",…"]`
+/// expand ~16–24× versus UTF-8 length. `24 * text_len + 256` upper-bounds that
+/// expansion with margin so budget rejection cannot race an unbounded
+/// `serde_json` allocation. File bytes are charged separately by
+/// [`read_capped_text`].
+pub(crate) fn json_dom_budget_cap(text_len: usize) -> u64 {
+    (text_len as u64).saturating_mul(24).saturating_add(256)
+}
+
+/// Charge [`json_dom_budget_cap`] **before** allocating the DOM, then parse via
+/// `serde_json::from_reader` with per-byte cancel ticks (IoRead pulls one byte
+/// at a time, so after-start cancel is observed during parse — not only
+/// post-parse polling).
+fn parse_json_dom_budgeted(
+    text: &str,
+    mem: &mut ParseMem,
+    cancel: Option<&CancelToken>,
+) -> Result<Value, spirula_core::DomainError> {
+    mem.charge(json_dom_budget_cap(text.len()), "json_dom")?;
+    if let Some(c) = cancel {
+        c.check()?;
+    }
+
+    struct CancelByteReader<'a> {
+        data: &'a [u8],
+        pos: usize,
+        cancel: Option<&'a CancelToken>,
+        pending: usize,
+        canceled: Option<spirula_core::DomainError>,
+    }
+
+    impl Read for CancelByteReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            // One byte per read matches serde_json IoRead::bytes() so cancel
+            // ticks advance in lockstep with the deserializer.
+            let n = 1.min(buf.len());
+            buf[0] = self.data[self.pos];
+            self.pos += 1;
+            self.pending = self.pending.saturating_add(n);
+            while self.pending >= CANCEL_WORK_CHUNK {
+                self.pending -= CANCEL_WORK_CHUNK;
+                if let Some(token) = self.cancel
+                    && let Err(e) = token.check()
+                {
+                    self.canceled = Some(e);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "parse canceled",
+                    ));
+                }
+            }
+            Ok(n)
+        }
+    }
+
+    let mut reader = CancelByteReader {
+        data: text.as_bytes(),
+        pos: 0,
+        cancel,
+        pending: 0,
+        canceled: None,
+    };
+    match serde_json::from_reader(&mut reader) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            if let Some(e) = reader.canceled {
+                return Err(e);
+            }
+            Err(err(
+                ErrorCode::MalformedRecord,
+                "transforms_json",
+                "NerfstudioParser: JSON parse error",
+            ))
+        }
     }
 }
 

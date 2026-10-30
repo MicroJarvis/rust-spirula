@@ -1,6 +1,6 @@
 # P3-F04: Nerfstudio / Metashape adapters
 
-Status: **进行中 (HOLD)**. Tip: `5c2acee509e57a2c6381142fae015167a1580bf3`.
+Status: **进行中 (HOLD)**. Tip: *(pin after fix commit)*.
 Owner: `spirula-io` (+ admitted `spirula-application` / `spirula-cli`
 load path). Prerequisites: P3-F03. Lens path follows
 `NerfstudioParser.cpp:650-745` (declared model + raw/skew fit; empty
@@ -49,16 +49,28 @@ Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 
 ## Budgets / cancel
 
-- File size + cumulative `ParseMem` before allocation (same ceilings as
-  COLMAP load where shared). JSON DOM, builds/missing paths, XML
-  `Vec<char>` + DOM strings, Metashape→JSON conversion, image-dir walk
-  names, and PLY points all charge the **same** live budget (PLY is not a
-  disposable sub-cap that frees before frames).
-- Cooperative `CancelCheckpoint` / `ParseCancel` on JSON/PLY/XML parse,
-  recursive image-dir walk, and per-frame emit; after-start cancel proven
-  for PLY and Metashape dir walk.
-- XML nesting capped (`MAX_XML_DEPTH`); image-dir walk skips symlink cycles
-  via canonicalize/`visited` and caps depth.
+- File size + cumulative `ParseMem` **before** allocation/grow (same
+  ceilings as COLMAP load where shared). Charges cover:
+  - JSON: `json_dom_budget_cap = 24×text_len+256` charged **before**
+    `serde_json` DOM materialization (conservative vs adversarial
+    `[0,…]` / `["",…]` expansion on 64-bit `Value` layout); file bytes
+    already charged by `read_capped_text`.
+  - XML: `xml_chars` charged before `Vec<char>` reserve; every name /
+    attr / text `String` charged before collect/decode/push_str.
+  - PLY: header element/property `String`/`Vec` growth charged before
+    push; ASCII floats are **token-bounded** (find whitespace on bytes,
+    then UTF-8/parse only that slice — not `from_utf8` of the remaining
+    body).
+  - Builds/missing paths, Metashape→JSON conversion, image-dir walk
+    names, and PLY points share the **same** live budget.
+- Cooperative cancel: JSON parse uses `serde_json::from_reader` with
+  per-byte ticks (IoRead); XML ticks inside long attribute/text/comment
+  scans; PLY header/skip/body loops tick. After-start cancel proven for
+  JSON parse, XML long attr, PLY ASCII, and Metashape dir walk.
+- XML nesting capped (`MAX_XML_DEPTH`); legal `<!-- … -->` comments
+  (including trailing siblings under a parent) and numeric entities
+  (`&#NNN;` / `&#xHH;`) are accepted. Image-dir walk skips symlink
+  cycles via canonicalize/`visited` and caps depth.
 - Stable `DomainError` (no panic on malformed input; UTF-8 labels use
   char-safe `match_substring`).
 

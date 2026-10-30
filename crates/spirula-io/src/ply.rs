@@ -225,7 +225,14 @@ struct PlyVertexView<'a> {
 }
 
 impl<'a> PlyVertexView<'a> {
-    fn parse(bytes: &'a [u8], what: &str) -> Result<Self, spirula_core::DomainError> {
+    fn parse(
+        bytes: &'a [u8],
+        what: &str,
+        mem: &mut ParseMem,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Self, spirula_core::DomainError> {
+        let mut cp = ParseCancel::new(cancel);
+        cp.poll_now()?;
         let mut pos = 0usize;
         if header_line(bytes, &mut pos, what)? != "ply" {
             return Err(err(
@@ -237,6 +244,7 @@ impl<'a> PlyVertexView<'a> {
         let mut binary = false;
         let mut elements: Vec<PlyElement> = Vec::new();
         loop {
+            cp.tick(1)?;
             let line = header_line(bytes, &mut pos, what)?;
             let tok = split_ws(line);
             if tok.is_empty() {
@@ -281,6 +289,8 @@ impl<'a> PlyVertexView<'a> {
                             format!("PLY: bad element count {}", tok[2]),
                         )
                     })?;
+                    mem.charge_str_bytes(tok[1].len(), "ply_element")?;
+                    mem.charge_elems::<PlyElement>(1, "ply_element")?;
                     elements.push(PlyElement {
                         name: tok[1].to_owned(),
                         count,
@@ -314,6 +324,8 @@ impl<'a> PlyVertexView<'a> {
                             "PLY: bad property line",
                         ));
                     }
+                    mem.charge_str_bytes(tok[2].len(), "ply_property")?;
+                    mem.charge_elems::<PlyProp>(1, "ply_property")?;
                     el.props.push(PlyProp {
                         name: tok[2].to_owned(),
                         ty: PlyType::from_name(tok[1])?,
@@ -352,8 +364,10 @@ impl<'a> PlyVertexView<'a> {
                         ));
                     }
                     cursor += need as usize;
+                    cp.tick(need.min(usize::MAX as u64) as usize)?;
                 } else {
                     for _ in 0..el.count {
+                        cp.tick(1)?;
                         let rest = &bytes[cursor..];
                         let nl = rest.iter().position(|&b| b == b'\n').ok_or_else(|| {
                             err(
@@ -391,6 +405,12 @@ impl<'a> PlyVertexView<'a> {
                     ));
                 }
             }
+            // Charge name/type column tables before cloning out of header props.
+            for p in &el.props {
+                mem.charge_str_bytes(p.name.len(), "ply_vertex_cols")?;
+            }
+            mem.charge_elems::<String>(el.props.len(), "ply_vertex_cols")?;
+            mem.charge_elems::<PlyType>(el.props.len(), "ply_vertex_cols")?;
             return Ok(Self {
                 bytes,
                 data_off: cursor,
@@ -431,14 +451,12 @@ fn parse_ascii_f64(p: &mut &[u8], what: &str) -> Result<f64, spirula_core::Domai
             format!("PLY: short ascii row in {what}"),
         ));
     }
-    let s = std::str::from_utf8(p).unwrap_or("");
-    let mut end = 0usize;
-    for (i, c) in s.char_indices() {
-        if c.is_ascii_whitespace() {
-            break;
-        }
-        end = i + c.len_utf8();
-    }
+    // Token-bounded: find whitespace (or EOF) on bytes first, then UTF-8/parse
+    // only that slice — never `from_utf8` the entire remaining body (O(n²)).
+    let end = p
+        .iter()
+        .position(|&b| b.is_ascii_whitespace())
+        .unwrap_or(p.len());
     if end == 0 {
         return Err(err(
             ErrorCode::MalformedRecord,
@@ -446,7 +464,13 @@ fn parse_ascii_f64(p: &mut &[u8], what: &str) -> Result<f64, spirula_core::Domai
             format!("PLY: short ascii row in {what}"),
         ));
     }
-    let tok = &s[..end];
+    let tok = std::str::from_utf8(&p[..end]).map_err(|_| {
+        err(
+            ErrorCode::MalformedRecord,
+            "ply_ascii",
+            format!("PLY: non-UTF8 ascii token in {what}"),
+        )
+    })?;
     let v: f64 = tok.parse().map_err(|_| {
         err(
             ErrorCode::MalformedRecord,
@@ -490,7 +514,7 @@ pub(crate) fn read_ply_points_mem(
     let bytes = read_capped(path, mem, cancel)?;
     cp.poll_now()?;
     let what = path.display().to_string();
-    let view = PlyVertexView::parse(&bytes, &what)?;
+    let view = PlyVertexView::parse(&bytes, &what, mem, cancel)?;
     ensure_count(view.count, MAX_POINTS, "ply_points")?;
     cp.tick(1)?;
 

@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use spirula_core::{CameraModel, CancelReason, CancelToken, DistortionTier, ErrorCode};
+use spirula_core::{CameraModel, CancelReason, CancelToken, ContextKey, DistortionTier, ErrorCode};
 use spirula_io::temp_harness::TempHarness;
 use spirula_io::{
     ColmapLoadConfig, DatasetFormat, DatasetProbe, load_dataset, load_dataset_budgeted,
-    probe_dataset, read_ply_points,
+    probe_dataset, read_ply_points, read_ply_points_budgeted,
 };
 
 fn identity_tm() -> &'static str {
@@ -691,6 +691,168 @@ fn resource_budget_charges_json_dom_before_tiny_reject() {
     )
     .unwrap_err();
     assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+}
+
+#[test]
+fn resource_budget_rejects_json_dom_before_serde_alloc() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("dom");
+    // ~2 KiB JSON: file charge fits a mid budget; 24× DOM cap must not.
+    let mut frames = String::new();
+    for i in 0..12 {
+        if i > 0 {
+            frames.push(',');
+        }
+        frames.push_str(&format!(
+            r#"{{"file_path":"f{i:04}.png","transform_matrix":{}}}"#,
+            identity_tm()
+        ));
+    }
+    let body = format!(
+        r#"{{
+  "camera_model":"PINHOLE","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "frames":[{frames}]
+}}"#
+    );
+    write_ns(&ds, &body);
+    let file_len = body.len() as u64;
+    // Enough for transforms_json file bytes, below json_dom_budget_cap (24×+256).
+    let budget = file_len + 512;
+    let e = load_dataset_budgeted(
+        &ds,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        None,
+        budget,
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(
+        e.context_value(ContextKey::Field),
+        Some("json_dom"),
+        "must reject on pre-serde DOM charge, not a later post-hoc estimate"
+    );
+}
+
+#[test]
+fn after_start_cancel_during_json_parse() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("jcancel");
+    // > CANCEL_WORK_CHUNK bytes so IoRead byte ticks observe cancel mid-parse.
+    let mut frames = String::new();
+    for i in 0..2_500 {
+        if i > 0 {
+            frames.push(',');
+        }
+        frames.push_str(&format!(
+            r#"{{"file_path":"f{i:05}.png","transform_matrix":{}}}"#,
+            identity_tm()
+        ));
+    }
+    write_ns(
+        &ds,
+        &format!(
+            r#"{{
+  "camera_model":"PINHOLE","fl_x":100,"fl_y":100,"cx":32,"cy":24,"w":64,"h":48,
+  "frames":[{frames}]
+}}"#
+        ),
+    );
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    let path = ds.clone();
+    let handle = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(2));
+        assert!(c2.request(CancelReason::User));
+    });
+    let start = Instant::now();
+    let err = load_dataset(
+        &path,
+        &ColmapLoadConfig {
+            require_image_files: false,
+            ..Default::default()
+        },
+        Some(&cancel),
+    )
+    .unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+    assert!(
+        start.elapsed() < Duration::from_millis(2500),
+        "JSON cancel too slow: {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn ply_ascii_token_bounded_not_quadratic() {
+    let h = TempHarness::new().unwrap();
+    let p = h.path().join("tok.ply");
+    // Long ASCII body: O(n²) from_utf8-on-suffix would blow the time budget.
+    let n = 80_000u32;
+    let mut ply = format!(
+        "ply\nformat ascii 1.0\nelement vertex {n}\nproperty float x\nproperty float y\nproperty float z\nend_header\n"
+    );
+    for i in 0..n {
+        ply.push_str(&format!("{i}.0 0.0 0.0\n"));
+    }
+    std::fs::write(&p, ply).unwrap();
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    let path = p.clone();
+    let handle = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5));
+        assert!(c2.request(CancelReason::User));
+    });
+    let start = Instant::now();
+    let err = read_ply_points_budgeted(&path, Some(&cancel), 1 << 30).unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code(), ErrorCode::Canceled);
+    assert!(
+        start.elapsed() < Duration::from_millis(2500),
+        "ASCII PLY cancel too slow (possible O(n²)): {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn metashape_xml_trailing_comment_and_numeric_entities() {
+    let h = TempHarness::new().unwrap();
+    let ds = h.path().join("ent");
+    std::fs::create_dir_all(ds.join("images")).unwrap();
+    std::fs::write(ds.join("images/cam0.png"), b"x").unwrap();
+    std::fs::write(
+        ds.join("cameras.xml"),
+        r#"<?xml version="1.0"?>
+<document><!-- head --><chunk>
+  <sensors><sensor id="0" type="frame">
+    <resolution width="64" height="48"/>
+    <calibration class="adjusted" type="frame">
+      <f>100</f><cx>0</cx><cy>0</cy>
+      <k1>0</k1><k2>0</k2><k3>0</k3><k4>0</k4>
+      <p1>0</p1><p2>0</p2><b1>0</b1><b2>0</b2>
+    </calibration>
+  </sensor></sensors>
+  <cameras><camera id="0" label="cam0" sensor_id="0">
+    <transform>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</transform>
+  </camera><!-- trailing sibling --></cameras>
+</chunk></document>"#,
+    )
+    .unwrap();
+    let loaded = load_dataset(
+        &ds,
+        &ColmapLoadConfig {
+            format: Some("metashape".into()),
+            require_image_files: false,
+            metashape_xml: Some("cameras.xml".into()),
+            ..Default::default()
+        },
+        None,
+    )
+    .expect("comments + entities path");
+    assert_eq!(loaded.frames.len(), 1);
 }
 
 #[test]
