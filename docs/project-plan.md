@@ -153,7 +153,10 @@ Phase 3 执行要点（2026-10-27 评审；P3-F03 独立 READY，未合入 main�
   typed unsupported；lens / 预算 / BOM+CDATA harness 与 focused 29/29、
   `dataset_load_e2e` 11/11、xtask verify 8/8。诚实 Non-claim：场景中心化
   （P3-F05）、splat（P3-F06）、训练 cache（P3-F08）、`.psx` zip 运行时。
-  计划当前为 **P3-F05**。
+- **P3-F05 HOLD**（独立审查前不合并）：契约
+  [phase-3/scene-transform-region.md](phase-3/scene-transform-region.md)。
+  C-DATA-15/16 + Region/AABB；`spirula-scene-transform` JSON、六模式中心化、
+  `applied_transform` undo、normalize 元数据、区域原子写入。不开始 P3-F06。
 - **P3-F03 是数据侧关键路径**（已交付）：P3-F04（已交付）、P3-F08、P5-F08、
   P4-F01 以及 P5/P6 的大部分真实流程都经由它。
 - P3-F01 只交付 CPU `f64` 投影与相机数学；GPU/WGSL 投影和可微投影 Jacobian
@@ -258,7 +261,7 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
 P3-F01、P3-F02、P3-F03、P3-F04；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P3-F05**。计划编号总数 **75**（**P2-F08** 未开始）。
+出口通过）。**当前功能为 P3-F05（HOLD）**。计划编号总数 **75**（**P2-F08** 未开始）。
 后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
 不会把组内多个编号合并成一个已完成功能：
 
@@ -274,7 +277,7 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    [phase-3/colmap.md](phase-3/colmap.md)）→ P3-F04（已完成，tip
    `4c7519ae717c6f501da7fa07650f2993b69d93bb`；契约
    [phase-3/nerfstudio-metashape.md](phase-3/nerfstudio-metashape.md)）→
-   **P3-F05（当前）**–P3-F08：微型数据集、格式和有界加载继续各自前置。正交在
+   **P3-F05（HOLD）**–P3-F08：微型数据集、格式和有界加载继续各自前置。正交在
    参考中无 `CameraModelType` → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；
    CPU host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
    original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**（已交付）：
@@ -433,14 +436,14 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 第三方 `image` mid-decode Non-claim 不阻塞 READY）。**P3-F03 已完成（独立
 READY）**（代码 tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
 [phase-3/colmap.md](phase-3/colmap.md)；C-DATA-01..03 / C-DATA-06）。按原路线
-**当前功能为 P3-F05**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
+**当前功能为 P3-F05（HOLD）**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
 与 P6-F07 tip 全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未
 验证（**P2-F08 未开始**）；正式 UI / train/preview / P6-F03 导航未接入；不声称
 真实硬件 OOM；60 s watchdog 仍 deferred；dense `fit_model` 单次 LM 不可抢占；
-P3-F04 Non-claim：`.psx` zip / 场景中心化（P3-F05）/ splat / 训练 cache。
-2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+P3-F05 Non-claim：mesh/prism/label region、EXIF normalize leveling、P3-F06 splat、
+P3-F08 cache。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与正式 UI 实现状态没有因
-P6-F07 tip、P3-F01–P3-F04 READY 而提前完成。
+P6-F07 tip、P3-F01–P3-F05 HOLD 而提前完成。
 
 2026-10-27 计划评审新增 **P2-F08（wgpu surface present 验证）**，编号总数
 由 74 增至 75（此前文档中的“74 编号”仅保留该日之前的历史含义）。原因：
