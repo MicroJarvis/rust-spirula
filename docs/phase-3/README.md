@@ -7,7 +7,8 @@
 | P3-F03 COLMAP dataset read | [colmap.md](colmap.md) | 已完成 |
 | P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | READY |
 | P3-F05 scene transform / center / region | [scene-transform-region.md](scene-transform-region.md) | 已完成 |
-| P3-F06..F08 | (not started) | 未开始 |
+| P3-F06 splat scene format | [splat-format.md](splat-format.md) | 已完成 |
+| P3-F07 checkpoint metadata / P3-F08 bounded cache | (not started) | 未开始 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
 `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`; landed on main). Orthographic
@@ -54,3 +55,8 @@ center/normalize (P3-F05), splat (P3-F06), cache (P3-F08), `.psx` zip load.
 C-DATA-15/16 + Region/AABB JSON, similarity application, and atomic writes; see
 [scene-transform-region.md](scene-transform-region.md). The next plan current is
 P3-F06 (splat scene format).
+
+**P3-F06 已完成** in worktree `codex/p3-f06`; see
+[splat-format.md](splat-format.md). The implementation is intentionally limited
+to the reference degree-0 Gaussian PLY property identity. The next plan current
+is P3-F07.

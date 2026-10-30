@@ -6,7 +6,8 @@
 //! P3-F02 owns image decode (PNG/JPEG/BMP/TGA/TIFF/EXR), EXIF orientation,
 //! mask normalize (flip/offset), and depth/normal aux maps.
 //! P3-F03 owns COLMAP text/binary dataset reading (not `fixtures` checkers).
-//! P3-F04 owns Nerfstudio / Metashape adapters + shared PLY vertex reader.
+//! P3-F04 owns Nerfstudio / Metashape adapters + seed-point PLY reader.
+//! P3-F06 owns Gaussian splat PLY read/write with the reference property set.
 //! P3-F05 owns scene-transform / region JSON, scene-center apply, and normalize
 //! metadata on [`ParsedDataset`]. Checkpoint bundle schema stays in P5-F05.
 
@@ -42,7 +43,10 @@ pub use colmap::{
 };
 pub use metashape::{load_metashape_dataset, load_metashape_dataset_budgeted};
 pub use nerfstudio::{load_nerfstudio_dataset, load_nerfstudio_dataset_budgeted};
-pub use ply::{read_ply_points, read_ply_points_budgeted};
+pub use ply::{
+    read_ply_points, read_ply_points_budgeted, read_ply_splats, read_ply_splats_budgeted,
+    write_ply_splats, write_ply_splats_budgeted,
+};
 pub use region_io::{
     parse_region_bytes, read_region_json, region_from_value, region_to_json, region_to_value,
     write_region_json,
