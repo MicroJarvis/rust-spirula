@@ -5,7 +5,7 @@
 | P3-F01 camera projection / coordinates | [camera.md](camera.md) | 已完成 |
 | P3-F02 image orientation / mask | [image-orient-mask.md](image-orient-mask.md) | 已完成 |
 | P3-F03 COLMAP dataset read | [colmap.md](colmap.md) | 已完成 |
-| P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | 进行中 (HOLD) |
+| P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | READY |
 | P3-F05..F08 | (not started) | 未开始 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
@@ -40,9 +40,12 @@ gap). Drop drain deadline ≠ proven hard worker join — see
 [colmap.md](colmap.md). Remaining honest gap: dense `fit_model` single LM call
 non-preemptible.
 
-**P3-F04 进行中 (HOLD)** — tip `4c7519a…` (TRANSFORM_MATRIX_PRECHARGE=4096;
-no merge). Nerfstudio `transforms.json` + self-contained PLY + Metashape
-XML (+ `.psx` typed unsupported without zip). Lens adapt pins C++ 650–745
-(no fake COLMAP model remaps). See
-[nerfstudio-metashape.md](nerfstudio-metashape.md). Does not include P3-F05
-center/normalize, P3-F06 splat, or P3-F08 cache.
+**P3-F04 READY** (code tip `4c7519ae717c6f501da7fa07650f2993b69d93bb`;
+prior fixes `548ce6d…`, `442b695…`, `4c7519a…`). C-DATA-01 extend + C-DATA-04/05;
+Nerfstudio `transforms.json` + self-contained PLY + Metashape XML; `.psx`
+typed unsupported without zip. Independent harness: lens / Unicode / JSON
+capacity cliff / XML BOM+CDATA. Focused `nerfstudio_metashape` 29/29;
+`dataset_load_e2e` 11/11; xtask verify 8/8. See
+[nerfstudio-metashape.md](nerfstudio-metashape.md). Honest Non-claims: scene
+center/normalize (P3-F05), splat (P3-F06), cache (P3-F08), `.psx` zip load.
+**Next plan current: P3-F05** (not started in this worktree).

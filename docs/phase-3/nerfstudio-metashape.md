@@ -1,12 +1,16 @@
 # P3-F04: Nerfstudio / Metashape adapters
 
-Status: **进行中 (HOLD)**. Tip: `4c7519ae717c6f501da7fa07650f2993b69d93bb`.
+Status: **READY**. Code tip `4c7519ae717c6f501da7fa07650f2993b69d93bb`
+(`git rev-parse` verified). Prior review fixes on this tip chain include
+`548ce6df71b93f7ddde8aeef089b5ab92d4d5889` (Vec grow precharge),
+`442b69569213189d3da59d3490f297523cf9a601` (transform_matrix bound raise),
+and `4c7519a…` (`TRANSFORM_MATRIX_PRECHARGE = 4096`).
 Owner: `spirula-io` (+ admitted `spirula-application` / `spirula-cli`
 load path). Prerequisites: P3-F03. Lens path follows
 `NerfstudioParser.cpp:650-745` (declared model + raw/skew fit; empty
 `camera_distortion` is **not** a known hint).
 Does **not** deliver scene center/normalize (P3-F05), splat init (P3-F06),
-or training cache (P3-F08).
+or training cache (P3-F08). `.psx` nested zip remains typed unsupported.
 
 Pinned C++ reference: `9a24f09927944a795e7ba1bd8243a625bf419479`
 (`NerfstudioParser.cpp`, `MetashapeParser.cpp`, `DatasetParser.h`,
@@ -110,15 +114,19 @@ Under `fixtures/datasets/`:
 - Outlier rejection / EXIF quarter-turn / aux mask-depth-normal discovery
   beyond explicit frame keys (follow-ups if needed).
 
-## Verification (target)
+## Verification (READY evidence on tip `4c7519a…`)
+
+Independent harness `/tmp/spirula-p3f04-review`: lens (EQUISOLID / b1 /
+THIN_PRISM+k4), Unicode label typed Err, JSON capacity-cliff reject,
+XML BOM + CDATA → usable frames.
 
 ```text
-cargo test -p spirula-io --test nerfstudio_metashape
-cargo test -p spirula-application --test dataset_load_e2e
+cargo test -p spirula-io --test nerfstudio_metashape   # 29/29
+cargo test -p spirula-application --test dataset_load_e2e  # 11/11
 cargo fmt --all -- --check
 cargo check --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo run -p spirula-xtask -- verify
+cargo run -p spirula-xtask -- verify   # 8/8
 git diff --check
 ```
