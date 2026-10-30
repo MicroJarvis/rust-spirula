@@ -1,15 +1,18 @@
-//! Self-contained PLY vertex reader (P3-F04).
+//! Self-contained PLY vertex and Gaussian splat readers (P3-F04/P3-F06).
 //!
 //! ASCII + `binary_little_endian` only. Fixed-size scalar properties; rejects
 //! list properties, big-endian, truncated bodies, unknown types, and over-budget
-//! files. Pin: `NerfstudioParser.cpp` `PlyVertexReader` / `read_ply_points`.
+//! files. Gaussian splats use the exact reference 17-property identity and
+//! write binary little-endian float32. Pin: `NerfstudioParser.cpp`
+//! `PlyVertexReader` / `read_ply_points`, `SplatPly.cpp`.
 
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use spirula_core::{CancelToken, ErrorCode};
+use spirula_core::{CancelToken, ErrorCode, GaussianSplat, Quat, SplatSet, Vec3};
 
+use crate::atomic::{PublishOptions, publish_bytes_validated};
 use crate::colmap::budget::{
     MAX_COLMAP_FILE_BYTES, MAX_LOAD_MEMORY_BYTES, MAX_POINTS, ParseCancel, ParseMem, ensure_count,
     err, err_path, prepare_vec_push, try_reserve_elems,
@@ -17,6 +20,11 @@ use crate::colmap::budget::{
 use crate::colmap::{ColmapPoint3D, ColmapPoints3D};
 
 const READ_CHUNK: usize = 256 * 1024;
+
+const SPLAT_PROPERTIES: [&str; 17] = [
+    "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1",
+    "scale_2", "rot_0", "rot_1", "rot_2", "rot_3",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PlyType {
@@ -646,6 +654,258 @@ pub(crate) fn read_ply_points_mem(
     }
 
     Ok(ColmapPoints3D { points })
+}
+
+fn splat_error(field: &str, message: impl Into<String>) -> spirula_core::DomainError {
+    err(ErrorCode::MalformedRecord, field, message)
+}
+
+fn parse_splat_bytes(
+    bytes: &[u8],
+    what: &str,
+    mem: &mut ParseMem,
+    cancel: Option<&CancelToken>,
+) -> Result<SplatSet, spirula_core::DomainError> {
+    let mut cp = ParseCancel::new(cancel);
+    cp.poll_now()?;
+    let view = PlyVertexView::parse(bytes, what, mem, cancel)?;
+    ensure_count(view.count, MAX_POINTS, "ply_splats")?;
+    if view.names.len() != SPLAT_PROPERTIES.len()
+        || view
+            .names
+            .iter()
+            .zip(SPLAT_PROPERTIES)
+            .any(|(actual, expected)| actual != expected)
+    {
+        return Err(splat_error(
+            "splat_properties",
+            format!(
+                "PLY: vertex properties must be exactly {:?} in {what}",
+                SPLAT_PROPERTIES
+            ),
+        ));
+    }
+    if view.types.iter().any(|ty| !ty.is_float()) {
+        return Err(splat_error(
+            "splat_properties",
+            format!("PLY: splat properties must be scalar floating point values in {what}"),
+        ));
+    }
+
+    let n = view.count as usize;
+    let mut splats = Vec::new();
+    try_reserve_elems(&mut splats, n, mem, "ply_splats")?;
+    let mut offsets = Vec::new();
+    try_reserve_elems(&mut offsets, view.types.len(), mem, "ply_splat_offsets")?;
+    let mut stride = 0usize;
+    for ty in &view.types {
+        offsets.push(stride);
+        stride = stride.checked_add(ty.size()).ok_or_else(|| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "ply_splat_stride",
+                "PLY: splat stride overflow",
+            )
+        })?;
+    }
+
+    let mut rows = Vec::new();
+    if view.binary {
+        let body = &view.bytes[view.data_off..];
+        let expected = n.checked_mul(stride).ok_or_else(|| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "ply_splat_body",
+                "PLY: splat body size overflow",
+            )
+        })?;
+        if body.len() != expected {
+            return Err(splat_error(
+                "ply_splat_body",
+                format!("PLY: trailing or truncated splat body in {what}"),
+            ));
+        }
+        for i in 0..n {
+            cp.tick(1)?;
+            let row = &body[i * stride..];
+            rows.push(std::array::from_fn(|j| {
+                view.types[j].read_le(&row[offsets[j]..])
+            }));
+        }
+    } else {
+        let mut p = &view.bytes[view.data_off..];
+        for _ in 0..n {
+            cp.tick(1)?;
+            let mut row = [0.0; 17];
+            for value in &mut row {
+                *value = parse_ascii_f64(&mut p, what)?;
+            }
+            rows.push(row);
+        }
+        if p.iter().any(|byte| !byte.is_ascii_whitespace()) {
+            return Err(splat_error(
+                "ply_ascii",
+                format!("PLY: extra ascii tokens after splat rows in {what}"),
+            ));
+        }
+    }
+
+    for (i, row) in rows.into_iter().enumerate() {
+        if row.iter().any(|value| !value.is_finite()) {
+            return Err(spirula_core::DomainError::try_new(
+                ErrorCode::ValueOutOfRange,
+                format!("PLY: non-finite splat value at vertex {i} in {what}"),
+            )
+            .expect("message"));
+        }
+        let splat = GaussianSplat::try_new(
+            Vec3::try_new(row[0], row[1], row[2])?,
+            Quat::try_from_wxyz(row[13], row[14], row[15], row[16])?,
+            Vec3::try_new(row[10], row[11], row[12])?,
+            row[9],
+            Vec3::try_new(row[6], row[7], row[8])?,
+        )?;
+        splats.push(splat);
+    }
+    SplatSet::try_from_splats(splats)
+}
+
+/// Read a Gaussian splat PLY in the reference property order.
+pub fn read_ply_splats(
+    path: &Path,
+    cancel: Option<&CancelToken>,
+) -> Result<SplatSet, spirula_core::DomainError> {
+    read_ply_splats_budgeted(path, cancel, MAX_LOAD_MEMORY_BYTES)
+}
+
+/// Read a Gaussian splat PLY with a cumulative memory budget.
+pub fn read_ply_splats_budgeted(
+    path: &Path,
+    cancel: Option<&CancelToken>,
+    memory_budget_bytes: u64,
+) -> Result<SplatSet, spirula_core::DomainError> {
+    let mut mem = ParseMem::with_cap(memory_budget_bytes);
+    let bytes = read_capped(path, &mut mem, cancel)?;
+    parse_splat_bytes(&bytes, &path.display().to_string(), &mut mem, cancel)
+}
+
+fn write_f32(out: &mut Vec<u8>, value: f64) {
+    out.extend_from_slice(&(value as f32).to_le_bytes());
+}
+
+fn splat_bytes(
+    set: &SplatSet,
+    cancel: Option<&CancelToken>,
+    max_bytes: u64,
+) -> Result<Vec<u8>, spirula_core::DomainError> {
+    let mut cp = ParseCancel::new(cancel);
+    cp.poll_now()?;
+    let mut out = Vec::new();
+    out.extend_from_slice(
+        b"ply\nformat binary_little_endian 1.0\ncomment spirula Gaussian splat PLY\nelement vertex ",
+    );
+    out.extend_from_slice(set.len().to_string().as_bytes());
+    out.extend_from_slice(b"\n");
+    for property in SPLAT_PROPERTIES {
+        out.extend_from_slice(b"property float ");
+        out.extend_from_slice(property.as_bytes());
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"end_header\n");
+    let body_bytes = set
+        .len()
+        .checked_mul(SPLAT_PROPERTIES.len() * 4)
+        .ok_or_else(|| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "ply_splat_size",
+                "splat output size overflow",
+            )
+        })?;
+    let total_bytes = out.len().checked_add(body_bytes).ok_or_else(|| {
+        err(
+            ErrorCode::ValueOutOfRange,
+            "ply_splat_size",
+            "splat output size overflow",
+        )
+    })?;
+    if total_bytes as u64 > max_bytes {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "ply_splat_size",
+            format!("splat output requires {total_bytes} bytes, budget is {max_bytes}"),
+        ));
+    }
+    out.try_reserve(body_bytes).map_err(|_| {
+        err(
+            ErrorCode::ValueOutOfRange,
+            "ply_splat_size",
+            "splat output reservation failed",
+        )
+    })?;
+    for splat in set.splats() {
+        cp.tick(1)?;
+        let mean = splat.mean().to_array();
+        let mut raw = Vec::with_capacity(17);
+        raw.extend_from_slice(&mean);
+        raw.extend_from_slice(&[0.0; 3]);
+        raw.extend_from_slice(&splat.dc().to_array());
+        raw.push(splat.opacity_logit());
+        raw.extend_from_slice(&splat.scale_log().to_array());
+        raw.extend_from_slice(&splat.rotation().wxyz());
+        if raw.iter().any(|value| !(*value as f32).is_finite()) {
+            return Err(spirula_core::DomainError::try_new(
+                ErrorCode::ValueOutOfRange,
+                "splat value cannot be represented as finite float32",
+            )
+            .expect("message"));
+        }
+        for value in mean {
+            write_f32(&mut out, value);
+        }
+        for _ in 0..3 {
+            write_f32(&mut out, 0.0);
+        }
+        for value in splat.dc().to_array() {
+            write_f32(&mut out, value);
+        }
+        write_f32(&mut out, splat.opacity_logit());
+        for value in splat.scale_log().to_array() {
+            write_f32(&mut out, value);
+        }
+        for value in splat.rotation().wxyz() {
+            write_f32(&mut out, value);
+        }
+    }
+    Ok(out)
+}
+
+/// Atomically write a reference-compatible binary little-endian splat PLY.
+pub fn write_ply_splats(
+    path: &Path,
+    set: &SplatSet,
+    cancel: Option<&CancelToken>,
+) -> Result<(), spirula_core::DomainError> {
+    write_ply_splats_budgeted(path, set, cancel, MAX_COLMAP_FILE_BYTES)
+}
+
+/// Atomically write a splat PLY with an explicit output byte budget.
+pub fn write_ply_splats_budgeted(
+    path: &Path,
+    set: &SplatSet,
+    cancel: Option<&CancelToken>,
+    max_bytes: u64,
+) -> Result<(), spirula_core::DomainError> {
+    let bytes = splat_bytes(set, cancel, max_bytes)?;
+    let mut options = PublishOptions::default();
+    if let Some(token) = cancel {
+        options = options.with_cancel(token);
+    }
+    publish_bytes_validated(path, &bytes, options, |payload| {
+        let mut mem = ParseMem::with_cap(MAX_LOAD_MEMORY_BYTES);
+        parse_splat_bytes(payload, "published splat PLY", &mut mem, None).map(|_| ())
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
