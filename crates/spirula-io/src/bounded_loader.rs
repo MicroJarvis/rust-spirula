@@ -528,7 +528,13 @@ impl BoundedDatasetLoader {
             canceled(cancel)?;
             let mut state = lock_state(&self.inner.state);
             if state.queue_count == 0 && state.in_flight_bytes == 0 {
-                if let Some((_, error)) = state.failures.pop_front() {
+                while let Some((_, error)) = state.failures.pop_front() {
+                    // A loader-wide shutdown intentionally cancels queued and
+                    // in-flight work; draining that work is successful once
+                    // accounting reaches zero. Preserve real decode errors.
+                    if error.code() == ErrorCode::Canceled && self.inner.cancel.is_cancelled() {
+                        continue;
+                    }
                     return Err(error);
                 }
                 return Ok(());
