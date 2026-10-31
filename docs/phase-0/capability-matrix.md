@@ -8,8 +8,9 @@ implement the capability, not the crate that merely consumes it.
 States: `未开始` (no Rust implementation), `进行中`, `已完成`, `阻塞`. All
 rows began as `未开始` in Phase 0; subsequent implementations are recorded
 below. The target feature in the verification column is the completion gate.
-The 2026-10-25 prospective additions follow [development gates](../development-gates.md)
-and remain `未开始`.
+The 2026-10-25 prospective additions follow [development gates](../development-gates.md);
+P5-F08/C-TRN-09 is the first completed addition and the remaining prospective
+rows stay `未开始`.
 
 Reference citations are `path:line` in the reference checkout. Fixture names
 refer to [fixtures.md](fixtures.md).
@@ -83,7 +84,7 @@ refer to [fixtures.md](fixtures.md).
 | C-TRN-06 | progress events | `TrainerCore.h:178-186,219-227` | step | typed event | step/latency/splats/metrics, called outside engine lock | P5-F04/P6-F01 | `spirula-train` | 未开始 |
 | C-TRN-07 | stop/pause/save-on-stop | `TrainerCore.h:270-280`, `TrainerCore.cpp:1764-1893` | command | final checkpoint | cooperative stop at step boundary, 130 on SIGINT | P5-F06 cancellation tests | `spirula-train` | 未开始 |
 | C-TRN-08 | divergence detection | `TrainerCore.cpp:1644-1660` | loss/latency | warning event | non-finite or `rgb_loss > 1e3` logged once | P5-F06 | `spirula-train` | 未开始 |
-| C-TRN-09 | validated executable TrainPlan | (new; reference config compatibility retained) | legacy config + dataset/GPU capabilities | resolved plan + digest | unsupported options fail; config acceptance is not execution support | P5-F08 validation/digest tests | `spirula-train`/`spirula-application` | 未开始 |
+| C-TRN-09 | validated executable TrainPlan | (new; reference config compatibility retained) | legacy config + dataset/GPU capabilities | resolved plan + digest | unsupported options fail; config acceptance is not execution support | P5-F08 `spirula-train` plan tests; canonical JSON/digest round-trip and budget/capability rejection | `spirula-train`/`spirula-application` | 已完成 |
 
 ## UI
 

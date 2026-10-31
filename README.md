@@ -25,10 +25,13 @@ queue/context, buffer/texture/readback, shader/pipeline/affine compute, GPU
 errors / diagnostic events, headless compute smoke, minimal CLI package) are
 complete; early P6-F07 (Slint/wgpu display-path;
 [docs/phase-6/presentation-path.md](docs/phase-6/presentation-path.md)) is
-complete; P3-F01 (camera projection / coordinates;
-[docs/phase-3/camera.md](docs/phase-3/camera.md)) and P3-F08 host bounded data loading
-([docs/phase-3/bounded-data-loader.md](docs/phase-3/bounded-data-loader.md)) are complete; the current
-feature is **P5-F08**. Phase 2 exit is not closed
+complete; P3-F01 through P3-F08 (camera, image orientation/mask, COLMAP,
+Nerfstudio/Metashape, scene transform/region, splat PLY, checkpoint metadata,
+and bounded training data loading; see
+[docs/phase-3/README.md](docs/phase-3/README.md)) are complete; P5-F08
+validated executable TrainPlan and capability checks are complete (see
+[docs/phase-5/train-plan.md](docs/phase-5/train-plan.md)); the current feature
+is **P4-F01**. Phase 2 exit is not closed
 (surface present still unverified) — **P2-F08** owns that remaining condition
 and is the only unstarted Phase 2 ID
 ([docs/phase-2/gpu-surface-present.md](docs/phase-2/gpu-surface-present.md)).
@@ -74,7 +77,7 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Plan current work is **P5-F08** in
+real train/preview stay later features. Plan current work is **P4-F01** in
 [docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
 `--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
 not application/train/UI readiness; surface remains honest unsupported / not a
