@@ -914,6 +914,53 @@ impl GpuContext {
             .unwrap_or(0)
     }
 
+    /// Explicit owner recovery after a synchronous client returned while accepted
+    /// work remained in flight. Waits ALL retained submissions in this context,
+    /// without submitting/abandoning its pending queue. A timeout is a total
+    /// deadline for the call; unfinished submissions remain available to retry.
+    pub fn wait_retained_submissions(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<(), DomainError> {
+        self.require_live()?;
+        let started = std::time::Instant::now();
+        let mut ids: Vec<u64> = self
+            .resource_ledger
+            .lock()
+            .expect("ledger")
+            .submissions
+            .keys()
+            .copied()
+            .collect();
+        ids.sort_unstable();
+        let mut first_error = None;
+        for id in ids {
+            let remaining = timeout.map(|limit| limit.saturating_sub(started.elapsed()));
+            let handle = SubmissionHandle {
+                context_id: self.id(),
+                generation: self.generation(),
+                id,
+            };
+            if let Err(error) = self.wait(handle, remaining) {
+                let retained = self
+                    .resource_ledger
+                    .lock()
+                    .expect("ledger")
+                    .submissions
+                    .contains_key(&id);
+                if retained || self.status() != ContextStatus::Live {
+                    return Err(error);
+                }
+                // A latched post-submit failure is reported after reclamation.
+                // Reap the other accepted work, then return the original error.
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     fn device_max_buffer_size(&self) -> u64 {
         self.report()
             .map(|r| r.device_limits.max_buffer_size)

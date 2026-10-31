@@ -247,3 +247,10 @@ current work is **P3-F02** (**HOLD** on `codex/p3-f02` until independent
 review; [phase-3/image-orient-mask.md](phase-3/image-orient-mask.md) covers
 C-DATA-07..10 multi-format decode, EXIF bake, mask flip/offset EDT,
 depth/normal in `spirula-io` with admitted session commands).
+
+P4-F03's [projection/tile contract](phase-4/projection-tiles.md) places domain
+projection math and WGSL source in `spirula-render`; `spirula-gpu` owns the
+opaque v1 three-buffer pipeline dispatch and resource validation. No public
+wgpu boundary changes. CPU f64 reference, f32 GPU, capability rejection,
+checked count preflight, explicit readback and scoped byte accounting remain
+mandatory; source-major output is sorted only in P4-F04.

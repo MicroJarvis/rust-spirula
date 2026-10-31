@@ -115,43 +115,7 @@ impl RenderRequest {
         sh_degree: u8,
         thresholds: RenderThresholds,
     ) -> Result<Self, DomainError> {
-        if primitive != RenderPrimitive::Gaussian3d {
-            return Err(error(
-                ErrorCode::UnimplementedOption,
-                "primitive",
-                format!("{} is not implemented by P4-F01", primitive.as_str()),
-            ));
-        }
-        if color_space != ColorSpace::LinearRgb {
-            return Err(error(
-                ErrorCode::UnimplementedOption,
-                "color_space",
-                format!("{} is not implemented by P4-F01", color_space.as_str()),
-            ));
-        }
-        if sh_degree != SUPPORTED_SH_DEGREE {
-            return Err(error(
-                ErrorCode::UnimplementedOption,
-                "sh_degree",
-                "only degree-0 DC color is available in P4-F01",
-            ));
-        }
-        thresholds.validate()?;
-        if scene.is_empty() {
-            return Err(error(
-                ErrorCode::InvalidArgument,
-                "scene",
-                "scene must contain at least one splat",
-            ));
-        }
-        if camera.width() == 0 || camera.height() == 0 {
-            return Err(error(
-                ErrorCode::ValueOutOfRange,
-                "image_size",
-                "render dimensions must be positive",
-            ));
-        }
-        Ok(Self {
+        let request = Self {
             contract_version: RENDER_CONTRACT_VERSION,
             camera,
             scene,
@@ -159,7 +123,57 @@ impl RenderRequest {
             color_space,
             sh_degree,
             thresholds,
-        })
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    /// Revalidate public fields at every execution boundary.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if self.contract_version != RENDER_CONTRACT_VERSION {
+            return Err(error(
+                ErrorCode::UnsupportedVersion,
+                "contract_version",
+                "unsupported render contract version",
+            ));
+        }
+        if self.primitive != RenderPrimitive::Gaussian3d {
+            return Err(error(
+                ErrorCode::UnimplementedOption,
+                "primitive",
+                format!("{} is not implemented by P4-F01", self.primitive.as_str()),
+            ));
+        }
+        if self.color_space != ColorSpace::LinearRgb {
+            return Err(error(
+                ErrorCode::UnimplementedOption,
+                "color_space",
+                format!("{} is not implemented by P4-F01", self.color_space.as_str()),
+            ));
+        }
+        if self.sh_degree != SUPPORTED_SH_DEGREE {
+            return Err(error(
+                ErrorCode::UnimplementedOption,
+                "sh_degree",
+                "only degree-0 DC color is available in P4-F01",
+            ));
+        }
+        self.thresholds.validate()?;
+        if self.scene.is_empty() {
+            return Err(error(
+                ErrorCode::InvalidArgument,
+                "scene",
+                "scene must contain at least one splat",
+            ));
+        }
+        if self.camera.width() == 0 || self.camera.height() == 0 {
+            return Err(error(
+                ErrorCode::ValueOutOfRange,
+                "image_size",
+                "render dimensions must be positive",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -181,13 +195,7 @@ impl CpuReference {
     /// Project all splat means using the P3 camera convention. This function
     /// intentionally emits no pixels and performs no sorting or compositing.
     pub fn project(request: &RenderRequest) -> Result<Vec<ProjectedGaussian>, DomainError> {
-        if request.contract_version != RENDER_CONTRACT_VERSION {
-            return Err(error(
-                ErrorCode::UnsupportedVersion,
-                "contract_version",
-                "unsupported render contract version",
-            ));
-        }
+        request.validate()?;
         let pose = request.camera.pose();
         let rotation = pose.rotation().transpose();
         let translation = pose.translation();

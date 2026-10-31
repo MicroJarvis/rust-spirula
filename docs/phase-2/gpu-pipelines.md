@@ -19,7 +19,7 @@ Pinned: `9a24f09927944a795e7ba1bd8243a625bf419479`
 | Push-constant `params` ABI | Byte image of uniform struct as push constants | **Deviation**: explicit 16-byte **uniform buffer** binding (WebGPU has no push constants); same host-visible params layout |
 | `dispatch` / sticky error | Bind pipeline, push, dispatch, barrier | Encode bind+dispatch into pending commands; `submit`/`wait` from P2-F03 |
 | `pipelines_shutdown` | Destroy all cached objects | `close` / lost / `reopen` invalidate generation cache |
-| Embedded SPIR-V registry | Build-time Slang→SPIR-V blobs | WGSL under `crates/spirula-gpu/shaders/<name>.wgsl` with header contract |
+| Embedded SPIR-V registry | Build-time Slang→SPIR-V blobs | WGSL under owner crate `shaders/<name>.wgsl` with header contract |
 
 Rust continues session-owned `GpuContext` (no process-global pipeline maps).
 
@@ -28,7 +28,10 @@ Rust continues session-owned `GpuContext` (no process-global pipeline maps).
 ### Shader source contract
 
 - Path: `crates/spirula-gpu/shaders/<name>.wgsl` where `<name>` equals the
-  header name (affine proof: `shaders/affine-u32.wgsl`).
+  header name (affine proof: `shaders/affine-u32.wgsl`). P4-F03 algorithm
+  source is `crates/spirula-render/shaders/projection-tiles.wgsl`; its diagnostic
+  path is repository-relative to that file. GPU still owns compilation and
+  opaque dispatch; see [projection/tile contract](../phase-4/projection-tiles.md).
 - First line: `// spirula-shader: <name> version: <n>` (kebab name, integer version).
 - Entry + bind layout are declared by the Rust companion (`BindLayoutVersion` +
   typed bind slots), not discovered by scanning WGSL at runtime.
@@ -140,3 +143,13 @@ Representative host diagnose fields (one M5 Max / Metal run; timings vary):
 - No P9-F03 cache performance optimization claims beyond this slice’s cold/warm
   obtain timings.
 - Diagnose `--compute` does **not** claim application/train/UI readiness.
+
+## P4-F03 narrow extension
+
+`dispatch_projection_tiles` admits only projection-tiles v1 and its project,
+scan and emit entries, with explicit storage byte ranges and invocations.
+The binding ABI is unchanged (uniform16 + storage read + storage read-write,
+layout epoch1), while the algorithm's uniform words differ from affine.
+Alias, usage, context/generation, storage size and launch limits remain checked.
+Synthetic numerical execution is rejected; real headless parity is recorded
+in the P4-F03 contract. This is not a generic bind-layout/reflection API.

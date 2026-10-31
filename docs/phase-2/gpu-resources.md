@@ -172,3 +172,16 @@ accounting reaches zero after completion.
 - No claim of measured device-wide VRAM or OS process peak.
 - No application/CLI/UI GPU command beyond diagnose.
 - Phase 2 exit is **not** closed; P2-F06 is current (P2-F05 docs-closed).
+
+## P4-F03 explicit retained-work recovery
+
+A synchronous render client may return after an accepted submission's wait
+hits its deadline. The context retains in-flight resources; its owner can call
+`wait_retained_submissions(timeout)` explicitly. The timeout is one total
+call deadline, not reset per submission. This waits all accepted work in the
+context without submitting or abandoning unrelated pending commands. Timeouts
+retain unfinished submissions for retry. Latched post-submit failures are
+returned after reclaiming accepted work, with the original stable error code;
+device loss remains `SP-GPU-002`. Synthetic regression covers three accepted
+submissions with one latched OOM, an independent pending upload, timeout/retry
+and loss; render host regression covers timeout followed by reap to zero.
