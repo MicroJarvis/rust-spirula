@@ -3,8 +3,8 @@
 | 编号 | 功能点 | 契约 | 状态 |
 |---|---|---|---|
 | P4-F01 | 渲染场景与相机接口 | [render-scene-camera.md](render-scene-camera.md) | 已完成 |
-| P4-F02 | splat 上传与资源绑定 | (not started) | 当前 |
-| P4-F03 | 投影与 tile/bin 构建 | (not started) | 未开始 |
+| P4-F02 | splat 上传与资源绑定 | [splat-buffer.md](splat-buffer.md) | 已完成 |
+| P4-F03 | 投影与 tile/bin 构建 | (not started) | 当前 |
 | P4-F04 | 排序与光栅化 | (not started) | 未开始 |
 | P4-F05 | 合成与深度 | (not started) | 未开始 |
 | P4-F06 | readback 与预览输出 | (not started) | 未开始 |

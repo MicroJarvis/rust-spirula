@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 spirula-core = { path = "../spirula-core" }
+spirula-gpu = { path = "../spirula-gpu" }
 
 
 [lints]
