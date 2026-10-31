@@ -3963,6 +3963,12 @@ version = "0.1.0"
 [[package]]
 name = "spirula-train"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "spirula-core",
+ "spirula-gpu",
+]
 
 [[package]]
 name = "spirula-ui"
