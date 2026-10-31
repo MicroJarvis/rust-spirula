@@ -259,4 +259,10 @@ P4-F04's [sort/raster contract](phase-4/sort-raster.md) reuses that private
 three-buffer ABI for the `sort-raster` family (`keys` /
 `histogram`/`prefix`/`scatter` / `ranges` / `raster`). `TileBins` v2 carries
 `projection_alpha_cutoff`; raster cutoff below it is rejected. GPU performs
-sixteen 4-bit stable LSD rounds and conic coverage; compositing stays P4-F05.
+sixteen 4-bit stable LSD rounds and conic coverage.
+
+P4-F05's [compositing/depth contract](phase-4/compositing-depth.md) adds the
+`compositing` v1 family (`composite` entry) on the same three-buffer ABI via
+`dispatch_compositing`. Public entries consume `RenderRequest` and chain
+F03→F04→F05; prepared bins/colors stay private. `wgpu*` types remain inside
+`spirula-gpu`. CLI image packaging stays P4-F06.

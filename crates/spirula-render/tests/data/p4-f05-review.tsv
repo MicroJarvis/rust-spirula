@@ -1,0 +1,35 @@
+# Independent P4-F05 analytic golden, not CPU/GPU implementation output.
+# Pinned C++ 9a24f09927944a795e7ba1bd8243a625bf419479:
+# harmonics.slang/generated/harmonics.cuh SH0=max(0,C0*DC+.5), C0=.28209479177387814.
+# RasterizationEval3DFwd_kernel.cuh:247-332: nextT, strict early-out before
+# contribution, ray-depth expected value, strict half-T median crossing in ln(T).
+# Python math only evaluates closed-form expected constants; no renderer invoked.
+# All single-pixel cases put projected mean at (.5,.5), unless off_axis camera cx=0
+# with world mean (1,0,-2), still projected (.5,.5), axial 2 and ray sqrt(5).
+# single_half: alpha .5,z2,DC0,bg(.2,.4,.6).
+# red_green: alpha .5 each, z2 DC(2,-2,-2) then z4 DC(-2,2,-2), same bg.
+# same_depth: same colors/alpha, both z2, black bg, preserve input order.
+# single_three_quarter: alpha .75,z4,DC0,black; virtual median previous z=0,T=1.
+# median_before_earlyout: same but early_out=.5. First source terminates without
+# contribution, T remains1/alpha0/expected0, but median was already set to2.
+# early_out_clamp: 3 logit20→alpha .999 sources z1/red,z2/green,z3/blue,
+# black bg; second nextT=1e-6<=1e-4 is excluded, old T=.001 preserved.
+# quarter_equality: red_green without bg, early_out=.25; terminal green excluded.
+# rounding_weight_zero: alpha~1e-30,z2,DC0,black,cutoff1e-35. nextT rounds1
+# but vis>0; C++ depth_acc/max(1-T,1e-10)=2e-20, not a weight==0 clear shortcut.
+# image: 3x1 camera principal(1.5,.5), one splat world(0,0,-2), logscale(-30)^3,
+# logit0, DC(-2,0,2), alpha_cutoff=.1, bg(.1,.2,.3). Sigma~1/(2*.3)
+# at edge pixels gives alpha~.09444<cutoff; center alpha=.5. Depth clears to0.
+# Columns: name R G B T alpha expected_ray_depth median_ray_depth
+single_half 0.34999999999999998 0.45000000000000001 0.55000000000000004 0.5 0.5 2 0
+red_green 0.58209479177387813 0.36604739588693902 0.14999999999999999 0.25 0.75 2.6666666666666665 2
+same_depth 0.53209479177387808 0.26604739588693904 0 0.25 0.75 2 2
+single_three_quarter 0.375 0.375 0.375 0.25 0.75 4 2
+early_out_clamp 1.0631253939642085 0 0 0.001 0.999 1 0.10034333188799373
+quarter_equality 0.53209479177387808 0 0 0.5 0.5 2 2
+off_axis 0.25 0.25 0.25 0.5 0.5 2.2360679774997898 0
+image_left 0.10000000000000001 0.20000000000000001 0.29999999999999999 1 0 0 0
+image_center 0.050000000000000003 0.34999999999999998 0.68209479177387811 0.5 0.5 2 0
+image_right 0.10000000000000001 0.20000000000000001 0.29999999999999999 1 0 0 0
+rounding_weight_zero 5e-31 5e-31 5e-31 1 0 2e-20 0
+median_before_earlyout 0 0 0 1 0 0 2

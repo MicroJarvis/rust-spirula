@@ -883,6 +883,37 @@ impl GpuContext {
         )
     }
 
+    /// Encode the P4-F05 compositing family through the proven v1 three-buffer ABI.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_compositing(
+        &mut self,
+        pipeline: &ComputePipelineHandle,
+        params_buf: &BufferHandle,
+        input: &BufferHandle,
+        output: &BufferHandle,
+        input_bytes: u64,
+        output_bytes: u64,
+        invocations: u32,
+    ) -> Result<(), DomainError> {
+        self.require_live_for_pipeline()?;
+        if pipeline.key().shader_name != "compositing"
+            || pipeline.key().shader_version != 1
+            || pipeline.key().bind_layout_version != 1
+            || pipeline.key().entry_point.as_str() != "composite"
+        {
+            return Err(inp("not a compositing v1 pipeline", "pipeline"));
+        }
+        self.dispatch_render_three_buffer(
+            pipeline,
+            params_buf,
+            input,
+            output,
+            input_bytes,
+            output_bytes,
+            invocations,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn dispatch_render_three_buffer(
         &mut self,
@@ -1219,7 +1250,7 @@ fn enrich_shader_error(err: DomainError, name: &str) -> DomainError {
     shader_err(format!("shader '{name}' compile/pipeline failed: {msg}"))
         .with_context(
             ContextKey::Path,
-            if matches!(name, "projection-tiles" | "sort-raster") {
+            if matches!(name, "projection-tiles" | "sort-raster" | "compositing") {
                 format!("crates/spirula-render/shaders/{name}.wgsl")
             } else {
                 format!("shaders/{name}.wgsl")

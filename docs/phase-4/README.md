@@ -6,7 +6,7 @@
 | P4-F02 | splat 上传与资源绑定 | [splat-buffer.md](splat-buffer.md) | 已完成 |
 | P4-F03 | 投影与 tile/bin 构建 | [projection-tiles.md](projection-tiles.md) | 已完成 |
 | P4-F04 | 排序与光栅化 | [sort-raster.md](sort-raster.md) | 已完成 |
-| P4-F05 | 合成与深度 | (not started) | 当前 |
+| P4-F05 | 合成与深度 | [compositing-depth.md](compositing-depth.md) | 当前 |
 | P4-F06 | readback 与预览输出 | (not started) | 未开始 |
 | P4-F07 | 训练前向状态与索引契约 | (not started) | 未开始 |
 | P4-F08 | 光栅化与合成反向传播 | (not started) | 未开始 |
@@ -43,3 +43,17 @@ GPU 审核 4/4、排序/覆盖/失败路径 6/6。GPU F03→F04 的 800×600、6
 与 retained submissions 均为零。此为 buffers+staging 记账，非设备整体显存。
 完成状态与上述文档同步后，同一 GPU 必需 verify 复核 **8/8（22.0 s）**。
 当前功能为 P4-F05：合成与深度；预览接入仍属 P4-F06。
+
+P4-F05 实现中（**未合入 / 未推进计划状态**）。契约
+[compositing-depth.md](compositing-depth.md)：SH0=`max(C0·dc+0.5,0)`；
+median 在 early-out 前、strict `next_T<0.5`、virtual z0；expected=
+`depth_acc/max(1-T,1e-10)`（无 weight==0 清零）；公开 API 仅
+`RenderRequest` 串联；prepared 私有；`GpuCompositor::compose_empty` 真实
+WGSL 写清每个像素；颜色表 `with_capacity(N)` 精确容量。独立 review
+`tests/p4_f05_review.rs` **10/10**（含背景预检、compose_empty OOM/timeout
+retry、10000 culled P0、入口已知不可能 GPU 预算拒绝）；focused
+`tests/p4_f05_compositing.rs` 含 800×600/65/487500 F03→F05 压力（含 alpha）、
+`dispatch_compositing` 族准入，以及 `compose_empty` OOM/timeout
+retain→wait→release。Metal/Apple M5 Max 实测 ledger 峰值
+**46448480 B**（bound 46452544 B ≈ 44.30 MiB），返回后 current/retained/
+pending 为 0。待主线程审核与 GPU verify 证据后再关闭。
