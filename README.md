@@ -31,7 +31,7 @@ and bounded training data loading; see
 [docs/phase-3/README.md](docs/phase-3/README.md)) are complete; P5-F08
 validated executable TrainPlan and capability checks are complete (see
 [docs/phase-5/train-plan.md](docs/phase-5/train-plan.md)); the current feature
-is **P4-F03**. Phase 2 exit is not closed
+is **P4-F04**. Phase 2 exit is not closed
 (surface present still unverified) — **P2-F08** owns that remaining condition
 and is the only unstarted Phase 2 ID
 ([docs/phase-2/gpu-surface-present.md](docs/phase-2/gpu-surface-present.md)).
@@ -77,7 +77,7 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Plan current work is **P4-F03** in
+real train/preview stay later features. Plan current work is **P4-F04** in
 [docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
 `--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
 not application/train/UI readiness; surface remains honest unsupported / not a
@@ -95,6 +95,7 @@ is indexed in [development gates](docs/development-gates.md). These are pending
 features; the implementation status above remains authoritative. Brush is an
 offline reference and does not change the Rust/Slint/wgpu/WGSL runtime stack.
 
-P4-F03 development evidence is in [projection/tile contract](docs/phase-4/projection-tiles.md):
-real headless GPU projection, inclusive scan and preflighted pair emission are
-under review. This does not yet provide a preview image or sorted raster path.
+P4-F03 is complete: [projection/tile contract](docs/phase-4/projection-tiles.md)
+records real headless GPU projection, inclusive scan, preflighted pair emission,
+C++ fixture parity and resource evidence. P4-F04 now owns sorting and rasterization;
+a preview image follows P4-F05/P4-F06.

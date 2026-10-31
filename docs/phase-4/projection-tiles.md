@@ -167,5 +167,6 @@ clippy .9 s). This includes fixture/doc/policy/fmt/check/test/clippy/diff.
 Focused host render tests: 18/18 (7 unit, 3 real C++/GPU/axis, 8 tile/resource
 cases); retained-owner synthetic recovery: 2/2. An earlier first run failed
 only the Rust 1.99 `chunks_exact_to_as_chunks` lint; the parser now uses
-fixed-array chunks and the final full gate passes. Feature status remains
-current until independent review, completion documents and merge.
+fixed-array chunks and the final full gate passes. A subsequent document
+synchronization gate passed 8/8 in 20.6 s. Independent review is complete;
+P4-F04 owns the next sorting/rasterization slice.

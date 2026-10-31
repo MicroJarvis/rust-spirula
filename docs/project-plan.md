@@ -124,7 +124,7 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
 
-Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F03）：
+Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F04）：
 
 - **P3-F01 已完成（独立 READY 后落地）**：代码 tip
   `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立审查 READY
@@ -178,8 +178,8 @@ Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F03）
 |---|---|---|---|---|---|---|
 | P4-F01 | 渲染场景与相机接口 | `spirula-render` | P2-F06, P3-F01, P3-F06, P1-F04 | scene/camera/render request 和 CPU reference；固定参数化/坐标/色彩/SH/阈值；校验渲染能力与有效选项 | 版本化数值契约和 GPU f32 容差；不支持项显式拒绝；CPU f64 数学门禁单独保留 | 已完成 |
 | P4-F02 | splat 上传与资源绑定 | `spirula-render`/`spirula-gpu` | P4-F01, P2-F03, P2-F04 | 上传布局/对齐和 bind group；验证 render/train 共享资源的窄接口；空场景、重用、失效 handle 和释放 | 布局有中间 buffer 对照；共享资源无隐藏 host copy；资源生命周期和分配字节可诊断 | 已完成 |
-| P4-F03 | 投影与 tile/bin 构建 | `spirula-render` | P4-F01, P4-F02 | 投影/裁剪和 tile 覆盖；交点数溢出/预算预检；scan 与 CPU 中间 buffer 比较；大 footprint 压力样本 | 数值在容差内；空输入/边界/超预算有稳定结果；记录交点峰值、scratch 和同步耗时 | 当前 |
-| P4-F04 | 排序与光栅化 | `spirula-render` | P4-F03 | 深度键和稳定 radix 排序；非整块/重复键/空输入；光栅覆盖、scratch 和高重叠压力；能力回退 | 同深度顺序和边界明确；CPU/确定性样本对照通过；记录分阶段耗时和资源峰值 | 未开始 |
+| P4-F03 | 投影与 tile/bin 构建 | `spirula-render` | P4-F01, P4-F02 | 投影/裁剪和 tile 覆盖；交点数溢出/预算预检；scan 与 CPU 中间 buffer 比较；大 footprint 压力样本 | 数值在容差内；空输入/边界/超预算有稳定结果；记录交点峰值、scratch 和同步耗时 | 已完成 |
+| P4-F04 | 排序与光栅化 | `spirula-render` | P4-F03 | 深度键和稳定 radix 排序；非整块/重复键/空输入；光栅覆盖、scratch 和高重叠压力；能力回退 | 同深度顺序和边界明确；CPU/确定性样本对照通过；记录分阶段耗时和资源峰值 | 当前 |
 | P4-F05 | 合成与深度 | `spirula-render` | P4-F04 | 实现颜色/透明度合成；实现深度写入和清除；用 golden 图像与误差容限验收 | 颜色、透明度、深度和异常输入有 golden 图像或数值验收 | 未开始 |
 | P4-F06 | readback 与预览输出 | `spirula-render`/application/CLI | P4-F05, P2-F03, P1-F09 | readback/图像封装；经共享 application 接入 CLI 真实微型预览；取消/错误/资源回收；更新最小 CLI 包样本 | headless CLI 预览稳定；可取消且无资源泄漏；记录端到端时间和拷贝成本；隔离包可复现 | 未开始 |
 | P4-F07 | 训练前向状态与索引契约 | `spirula-render` | P4-F05, P4-F02 | 浮点训练输出；保存/重算前向状态；visible/full 参数映射；状态版本/生命周期和字节预算 | 训练与预览前向对照；空/裁剪场景索引一致；保存状态峰值和释放有证据 | 未开始 |
@@ -197,8 +197,9 @@ headless tests 覆盖 OpenGL 相机中心/深度、非有限阈值、不支持 p
 P4-F02 已完成：`SplatGpuLayout`/`PackedSplatData`/`GpuSplatBuffer` 固定 64-byte
 GPU record，接入 P2-F03 buffer/staging accounting、预算预检、submit/wait 和
 context generation 校验；契约见 [phase-4/splat-buffer.md](phase-4/splat-buffer.md)。
-P4-F03 负责 projection/tile/bin；[当前 worktree 契约](phase-4/projection-tiles.md)
-记录真实 CPU/GPU/C++ 中间结果、预算与压力证据；完整 verify 已通过 8/8，完成状态等待独立审核与合并。
+P4-F03 已完成（代码 tip `04e4ab4`，合并 `4bfe999`）；[契约](phase-4/projection-tiles.md)
+记录真实 CPU/GPU/C++ 中间结果、预算与 487500 交点压力证据；强制 GPU verify
+8/8 通过，独立审核通过。当前 P4-F04 负责排序与光栅化。
 
 预览里程碑：P4-F01 至 P4-F06 经早期 application/CLI 生成稳定预览，
 CPU/GPU 和图像容差通过。Phase 4 退出条件另需 P4-F07 至 P4-F10 的
@@ -291,7 +292,7 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
 P3-F01、P3-F02、P3-F03、P3-F04、P3-F05、P3-F06、P3-F07、P3-F08；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P4-F03**。计划编号总数 **75**（**P2-F08** 未开始）。
+出口通过）。**当前功能为 P4-F04**。计划编号总数 **75**（**P2-F08** 未开始）。
 后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
 不会把组内多个编号合并成一个已完成功能：
 
@@ -312,7 +313,7 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    CPU host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
    original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**（已交付）：
    P5-F08、P4-F01 以及几乎所有 P3 后续编号都直接或间接依赖它。
-5. **P5-F08：可执行训练计划（已完成）** → **P4-F01：渲染场景与相机接口（已完成）** → **P4-F02：splat 上传与资源绑定（已完成）** → **P4-F03：投影与 tile/bin 构建（当前）**；随后 P4-F04–P4-F06：经共享 CLI 输出真实预览。
+5. **P5-F08：可执行训练计划（已完成）** → **P4-F01：渲染场景与相机接口（已完成）** → **P4-F02：splat 上传与资源绑定（已完成）** → **P4-F03：投影与 tile/bin 构建（已完成）** → **P4-F04：排序与光栅化（当前）**；随后 P4-F05–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
 7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。
 8. P5-F05/P5-F06 → P5-F07：完整检查点、新进程恢复与微型训练包。
@@ -466,7 +467,7 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 第三方 `image` mid-decode Non-claim 不阻塞 READY）。**P3-F03 已完成（独立
 READY）**（代码 tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
 [phase-3/colmap.md](phase-3/colmap.md)；C-DATA-01..03 / C-DATA-06）。按原路线
-**当前功能为 P4-F03**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
+**当前功能为 P4-F04**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
 与 P6-F07 tip 全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未
 验证（**P2-F08 未开始**）；正式 UI / train/preview / P6-F03 导航未接入；不声称
 真实硬件 OOM；60 s watchdog 仍 deferred；dense `fit_model` 单次 LM 不可抢占；
