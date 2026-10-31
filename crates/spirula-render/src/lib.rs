@@ -26,3 +26,11 @@ pub use sort_raster::{
     CpuSortRaster, NO_SOURCE, PixelCoverage, SORT_RASTER_VERSION, SortRasterOptions, SortedRaster,
     SortedTilePair, TileRange, canonical_depth_key,
 };
+
+mod compositing;
+mod gpu_compositing;
+pub use compositing::{
+    BackgroundPolicy, COMPOSITE_CONTRACT_VERSION, CompositeImage, CompositeOptions, CompositePixel,
+    CpuCompositor, sh0_to_color,
+};
+pub use gpu_compositing::{CompositeMetrics, GpuCompositor};
