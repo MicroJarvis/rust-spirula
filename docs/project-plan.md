@@ -119,7 +119,7 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 | P3-F05 | 点云、场景变换与区域 | `spirula-core`/`spirula-io` | P1-F04, P3-F01 | 读取点云属性；应用场景平移/旋转/缩放；验证区域边界、序列化和非法输入不改原文件 | 变换、区域和不变量可序列化；非法输入不改变原文件 | 已完成 |
 | P3-F06 | splat 场景格式 | `spirula-core`/`spirula-io` | P0-F04, P1-F04 | 定义 splat 属性布局和精度；加入版本与校验；验证空场景、极值和兼容读取 | 定义 splat 属性、版本、校验和兼容读取；与最小 fixture 对照 | 已完成 |
 | P3-F07 | checkpoint 元数据读取 | `spirula-io` | P1-F02, P1-F05 | 读取 header/schema；校验块长度/hash及恢复前提；区分模型初始化、完整训练恢复与损坏；保留旧格式读取 | 旧版本及缺块错误稳定；模型 PLY 不误报为完整 resume；P5-F05 补齐新 bundle 读取 | 已完成 |
-| P3-F08 | 有界训练数据加载与缓存 | `spirula-io` | P3-F02, P3-F03, P1-F08 | 解码并发/在途字节/packed cache/预取预算；分辨率感知解码；定义采样顺序、取消和预取排空/重建 | 高分辨率与缓存满样本不越预算；失败不 panic；相同采样状态可重建顺序；记录吞吐和内存 | 当前 |
+| P3-F08 | 有界训练数据加载与缓存 | `spirula-io` | P3-F02, P3-F03, P1-F08 | 解码并发/在途字节/packed cache/预取预算；分辨率感知解码；定义采样顺序、取消和预取排空/重建 | 高分辨率与缓存满样本不越预算；失败不 panic；相同采样状态可重建顺序；记录吞吐和内存 | 已完成 |
 
 Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
@@ -152,7 +152,7 @@ Phase 3 执行要点（2026-10-27 评审；P3-F03 独立 READY，未合入 main�
   C-DATA-01 扩展 + C-DATA-04/05；Nerfstudio / PLY / Metashape XML；`.psx`
   typed unsupported；lens / 预算 / BOM+CDATA harness 与 focused 29/29、
   `dataset_load_e2e` 11/11、xtask verify 8/8。诚实 Non-claim：splat（P3-F06）、
-  训练 cache（P3-F08）、`.psx` zip 运行时。
+  训练 cache 的 application/session 接入、`.psx` zip 运行时。
 - **P3-F05 已完成**（独立审查通过并合入主线）：契约
   [phase-3/scene-transform-region.md](phase-3/scene-transform-region.md)。
   C-DATA-15/16 + Region/AABB；`spirula-scene-transform` JSON、六模式中心化、
@@ -166,7 +166,7 @@ Phase 3 执行要点（2026-10-27 评审；P3-F03 独立 READY，未合入 main�
   [phase-3/checkpoint-metadata.md](phase-3/checkpoint-metadata.md)。C-DATA-19/21；
   legacy ustar + NPY v1-v3 读取、state schema/version 检查、模型-only/full-resume
   分类、稳定缺失/损坏/不支持错误、路径/重复/长度/有限性/计数/取消/预算门禁。
-  新 bundle writer 与新进程恢复保留给 P5-F05/P5-F07。下一项为 P3-F08。
+  新 bundle writer 与新进程恢复保留给 P5-F05/P5-F07。P3-F08 已完成，下一项为 P5-F08。
 - **P3-F03 是数据侧关键路径**（已交付）：P3-F04（已交付）、P3-F08、P5-F08、
   P4-F01 以及 P5/P6 的大部分真实流程都经由它。
 - P3-F01 只交付 CPU `f64` 投影与相机数学；GPU/WGSL 投影和可微投影 Jacobian
@@ -202,7 +202,7 @@ CPU/GPU 和图像容差通过。Phase 4 退出条件另需 P4-F07 至 P4-F10 的
 | P5-F05 | checkpoint 保存与 resume | `spirula-train`/`spirula-io` | P1-F05, P3-F07, P5-F02, P5-F03 | 模型/Adam/step/schedule/RNG/sampler/refinement/数据及计划 digest；generation/manifest/marker/指针提交；版本与恢复模式 | 各发布边界故障注入；旧完整版本保留；新进程状态恢复；区分模型重启/容差恢复/位级恢复 | 未开始 |
 | P5-F06 | stop、cancel 与部分失败 | `spirula-train` | P5-F01, P5-F05 | 实现合作式 stop/cancel；区分用户取消、可重试和不可恢复错误；验证已保存结果和清理 | 合作式取消、重试、终止状态和已保存结果有测试 | 未开始 |
 | P5-F07 | 训练端到端验收 | application/CLI/`spirula-train` | P5-F01, P5-F02, P5-F03, P5-F04, P5-F05, P5-F06 | 真实微型数据集经 CLI 加载/预览/训练/保存；新进程 N→保存→M 对比连续 N+M；更新隔离 CLI 包 | 参数/Adam/采样/指标按声明容差比较；真实取消/损坏/资源失败；完整工作流与测量证据 | 未开始 |
-| P5-F08 | 可执行 TrainPlan 与能力校验 | `spirula-train`/application | P1-F02, P2-F01, P3-F03 | 兼容配置+数据摘要+GPU 能力→生效训练计划；数值/能力/组合/预算验证；规范化序列化和版本化 digest | 251 字段兼容读取不变；不支持项/非有限值/冲突显式拒绝；resolved plan 可保存并重算 digest | 未开始 |
+| P5-F08 | 可执行 TrainPlan 与能力校验 | `spirula-train`/application | P1-F02, P2-F01, P3-F03 | 兼容配置+数据摘要+GPU 能力→生效训练计划；数值/能力/组合/预算验证；规范化序列化和版本化 digest | 251 字段兼容读取不变；不支持项/非有限值/冲突显式拒绝；resolved plan 可保存并重算 digest | 当前 |
 
 Phase 5 退出条件：P5-F01 至 P5-F08 全部有 session 事件和 checkpoint 证据，
 训练复用渲染接口且可从失败或取消状态安全恢复。
@@ -269,9 +269,9 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 ## 4. 首批功能顺序
 
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
-P3-F01、P3-F02、P3-F03、P3-F04；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
+P3-F01、P3-F02、P3-F03、P3-F04、P3-F05、P3-F06、P3-F07、P3-F08；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P3-F08**。计划编号总数 **75**（**P2-F08** 未开始）。
+出口通过）。**当前功能为 P5-F08**。计划编号总数 **75**（**P2-F08** 未开始）。
 后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
 不会把组内多个编号合并成一个已完成功能：
 
@@ -287,12 +287,12 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    [phase-3/colmap.md](phase-3/colmap.md)）→ P3-F04（已完成，tip
    `4c7519ae717c6f501da7fa07650f2993b69d93bb`；契约
    [phase-3/nerfstudio-metashape.md](phase-3/nerfstudio-metashape.md)）→
-   **P3-F05（已完成）** → **P3-F06（已完成）** → **P3-F07（已完成）** → **P3-F08**：微型数据集、格式和有界加载继续各自前置。正交在
+   **P3-F05（已完成）** → **P3-F06（已完成）** → **P3-F07（已完成）** → **P3-F08（已完成）**：微型数据集、格式和有界加载继续各自前置。正交在
    参考中无 `CameraModelType` → AD-P3-F01-01 显式 unsupported（`SP-INP-004`）；
    CPU host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
    original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**（已交付）：
    P5-F08、P4-F01 以及几乎所有 P3 后续编号都直接或间接依赖它。
-5. P5-F08：可执行训练计划；P4-F01–P4-F06：经共享 CLI 输出真实预览。
+5. **P5-F08：可执行训练计划（当前）**；随后 P4-F01–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
 7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。
 8. P5-F05/P5-F06 → P5-F07：完整检查点、新进程恢复与微型训练包。
@@ -446,12 +446,11 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 第三方 `image` mid-decode Non-claim 不阻塞 READY）。**P3-F03 已完成（独立
 READY）**（代码 tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
 [phase-3/colmap.md](phase-3/colmap.md)；C-DATA-01..03 / C-DATA-06）。按原路线
-**当前功能为 P3-F08**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
+**当前功能为 P5-F08**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
 与 P6-F07 tip 全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未
 验证（**P2-F08 未开始**）；正式 UI / train/preview / P6-F03 导航未接入；不声称
 真实硬件 OOM；60 s watchdog 仍 deferred；dense `fit_model` 单次 LM 不可抢占；
-P3-F05 Non-claim：mesh/prism/label region、EXIF normalize leveling；P3-F08 cache
-仍未开始。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
+P3-F05 Non-claim：mesh/prism/label region、EXIF normalize leveling；P3-F08 已完成；训练 cache 的 application/session 接入仍未开始。2026-10-25 的 OOOSplat / Brush 审查已形成新增功能与依赖调整，见
 [审查记录](research/ooosplat-brush-review.md)。训练与正式 UI 实现状态没有因
 P6-F07 tip、P3-F01–P3-F05 已完成而提前完成。
 

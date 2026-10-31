@@ -9,7 +9,7 @@
 | P3-F05 scene transform / center / region | [scene-transform-region.md](scene-transform-region.md) | 已完成 |
 | P3-F06 splat scene format | [splat-format.md](splat-format.md) | 已完成 |
 | P3-F07 checkpoint metadata | [checkpoint-metadata.md](checkpoint-metadata.md) | 已完成 |
-| P3-F08 bounded cache | (not started) | 当前 |
+| P3-F08 bounded cache | [bounded-data-loader.md](bounded-data-loader.md) | 已完成 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
 `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`; landed on main). Orthographic
@@ -50,7 +50,7 @@ typed unsupported without zip. Independent harness: lens / Unicode / JSON
 capacity cliff / XML BOM+CDATA. Focused `nerfstudio_metashape` 29/29;
 `dataset_load_e2e` 11/11; xtask verify 8/8. See
 [nerfstudio-metashape.md](nerfstudio-metashape.md). Honest Non-claims: scene
-center/normalize (P3-F05), splat (P3-F06), cache (P3-F08), `.psx` zip load.
+center/normalize (P3-F05), splat (P3-F06), `.psx` zip load. Host cache (P3-F08) is complete; training integration remains later.
 
 **P3-F05 已完成** in worktree `codex/p3-f05` (baseline main merge `947108e`).
 C-DATA-15/16 + Region/AABB JSON, similarity application, and atomic writes; see
@@ -66,4 +66,10 @@ is P3-F07.
 [checkpoint-metadata.md](checkpoint-metadata.md). The reader validates the legacy
 ustar/NPY/state schema, classifies model-only versus full-resume metadata, and
 reports stable incomplete/corrupt/unsupported errors. New generation writers and
-new-process restore remain P5-F05/P5-F07. The next plan current is P3-F08.
+new-process restore remain P5-F05/P5-F07. The next plan current is P5-F08.
+
+**P3-F08 已完成**：`spirula-io` 提供 `BoundedDatasetLoader`、独立 owned decode workers、
+有界 prefetch queue、in-flight/cache byte budgets、LRU packed RGB8 cache、可 JSON 重建的
+`SamplerState`、合作式取消与 `LoaderMetrics`。focused `bounded_loader` 测试覆盖 tiny
+COLMAP decode、sampler 顺序/重建、取消和单帧超预算拒绝；完整门禁与 verify 结果见本次提交。
+训练接入、application/session、GPU staging 与完整训练恢复保留给 P5/P6。
