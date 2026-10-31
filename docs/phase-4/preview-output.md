@@ -1,7 +1,6 @@
 # P4-F06: readback and CLI preview output
 
-Status: **进行中** (worktree implementation; plan row stays `当前` until
-main-thread closure and independent review). Owner split:
+Status: **已完成** (independently reviewed and merged; code `b0b80452e0bac53ba252621050d71a148ca67ca1`). Owner split:
 
 | Layer | Owns |
 |---|---|
@@ -318,9 +317,9 @@ and physical commit tests live in the independent `p4_f06_review.rs` suites.
 
 Shipped tiny request + PLY under the package allowlist; isolated
 `spirula preview --request … --out …` with **no** source checkout / Cargo /
-C++ / Python. Manifest / hash / tamper / symlink rules follow P2-F07. Dirty-dev
-package alone is not clean-checkout proof; `--from-ref` after audit when a
-committed tip is required.
+C++ / Python. Manifest / hash / tamper / symlink rules follow P2-F07. Reviewed code `b0b80452e0bac53ba252621050d71a148ca67ca1` passed clean `--from-ref` archive
+build, package-check and source-free package-run (preview golden + Metal
+smoke `cpu_exact`, current=0). Dirty-dev assembly alone is not this proof.
 
 ## Acceptance (evidence required)
 

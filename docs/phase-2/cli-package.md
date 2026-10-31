@@ -4,7 +4,8 @@ Status: **已完成** (code tip `17c1202a6a2b70183192a1367d96ffbb0e992e67`).
 Owner: `spirula-xtask` (workspace tooling). Builds on [cli.md](../phase-1/cli.md)
 (P1-F09), [gpu-smoke.md](gpu-smoke.md) (P2-F06). Does **not** wire
 application/train/UI GPU ownership. Phase 2 exit remains open (surface present
-still unverified from F06). Next planned early spike: P6-F07 (**当前**).
+still unverified from F06). P6-F07 presentation spike is complete; the authoritative current feature is
+listed in [project-plan.md](../project-plan.md).
 
 ## Reference behavior (C++)
 
@@ -162,7 +163,7 @@ Complete staging → **one** no-replace directory rename (not child-by-child):
 4. Isolated help/capabilities/fake-probe + compute smoke pass or precise skip.
 5. macOS non-system dylibs rejected; system frameworks recorded honestly.
 6. Docs keep plan IDs unique and unrenumbered (P2-F08 owns surface present);
-   Phase 2 exit open; train/preview/UI not claimed.
+   Phase 2 exit open; train/UI not claimed. P4-F06 adds the admitted CLI preview.
 
 ## Commands
 
@@ -193,8 +194,20 @@ evidence (sample logs):
 - Not a signed / notarized / store-ready installer.
 - Not three-platform release evidence (macOS tested; Linux code path untested
   on host; Windows publish unsupported).
-- Not surface present verification; not train/preview/UI readiness.
+- Not surface present verification; not train/UI readiness. P4-F06 adds the
+  admitted headless CLI preview, without UI display or training claims.
 - Not bit-for-bit reproducible across machines (locked deps + recorded hashes
   only).
 - Completing all Phase 2 feature IDs does **not** close Phase 2 exit while
   surface present remains unverified.
+
+## P4-F06 preview extension evidence
+
+Reviewed code `b0b80452e0bac53ba252621050d71a148ca67ca1` passed a clean `git archive` build via
+`package --from-ref <sha> --profile dev --out <fresh-dir>`, package-check and
+source-free package-run on Apple M5 Max / Metal (2026-10-31). Schema2 ships
+request.json + scene.ply from the selected revision; preview exits0 and full
+3×2 RGB golden passes. Compute smoke is `pass` / `cpu_exact` / current=0.
+Schema1 read compatibility and malformed-format/tamper negatives pass.
+See [preview-output.md](../phase-4/preview-output.md) for format, copy and
+resource limits. No signed release or new platform claim is introduced.

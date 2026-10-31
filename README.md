@@ -31,7 +31,7 @@ and bounded training data loading; see
 [docs/phase-3/README.md](docs/phase-3/README.md)) are complete; P5-F08
 validated executable TrainPlan and capability checks are complete (see
 [docs/phase-5/train-plan.md](docs/phase-5/train-plan.md)); the current feature
-is **P4-F06**. Phase 2 exit is not closed
+is **P4-F07**. Phase 2 exit is not closed
 (surface present still unverified) — **P2-F08** owns that remaining condition
 and is the only unstarted Phase 2 ID
 ([docs/phase-2/gpu-surface-present.md](docs/phase-2/gpu-surface-present.md)).
@@ -73,11 +73,13 @@ harness, config filesystem save/migration) lives in `spirula-io`; see
 [docs/phase-1/atomic.md](docs/phase-1/atomic.md). Full lenses, scene files, and
 splat files stay in P3. Checkpoint bundle markers stay in P5-F05.
 `spirula-application` (P1-F07) owns the headless session, bounded commands,
-control history, and fake probe worker; it depends only on `spirula-core`.
+control history, and workers; preview uses the render-owned headless GPU
+facade and IO request/PNG adapters; presentation keeps its narrow GPU edge.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Plan current work is **P4-F06** in
+real headless GPU preview is available (P4-F06); training remains later.
+Plan current work is **P4-F07** in
 [docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
 `--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
 not application/train/UI readiness; surface remains honest unsupported / not a
@@ -102,5 +104,10 @@ C++ fixture parity and resource evidence. P4-F04 is complete:
 487500-pair GPU projection→sorting→coverage parity and resource evidence.
 P4-F05 is complete: [GPU compositing and ray depths](docs/phase-4/compositing-depth.md)
 adds front-to-back RGB/alpha, expected and median depth, explicit GPU clears,
-independent goldens and resource/failure proof. P4-F06 now connects readback,
-image packaging and real application/CLI preview output.
+independent goldens and resource/failure proof. P4-F06 is complete:
+[readback and CLI preview](docs/phase-4/preview-output.md) connects real GPU
+output to opaque RGB8 PNG through the shared session, with atomic publication,
+cancellation, resource recovery and a source-free runnable package sample.
+Required-GPU verify passed **8/8 (80.1 s)**; the reviewed commit also passed
+clean archive packaging and isolated preview/smoke. Development stops after
+this feature for the current request; P4-F07 has not been implemented.

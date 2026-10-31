@@ -7,8 +7,8 @@
 | P4-F03 | 投影与 tile/bin 构建 | [projection-tiles.md](projection-tiles.md) | 已完成 |
 | P4-F04 | 排序与光栅化 | [sort-raster.md](sort-raster.md) | 已完成 |
 | P4-F05 | 合成与深度 | [compositing-depth.md](compositing-depth.md) | 已完成 |
-| P4-F06 | readback 与预览输出 | [preview-output.md](preview-output.md) | 当前 |
-| P4-F07 | 训练前向状态与索引契约 | (not started) | 未开始 |
+| P4-F06 | readback 与预览输出 | [preview-output.md](preview-output.md) | 已完成 |
+| P4-F07 | 训练前向状态与索引契约 | (planned; implementation not started) | 当前 |
 | P4-F08 | 光栅化与合成反向传播 | (not started) | 未开始 |
 | P4-F09 | 投影与 SH 反向传播 | (not started) | 未开始 |
 | P4-F10 | 梯度聚合与可微渲染验收 | (not started) | 未开始 |
@@ -42,7 +42,7 @@ GPU 审核 4/4、排序/覆盖/失败路径 6/6。GPU F03→F04 的 800×600、6
 16575104 B，accounted 峰值 32373472 B（上界 32375968 B），返回后 current
 与 retained submissions 均为零。此为 buffers+staging 记账，非设备整体显存。
 完成状态与上述文档同步后，同一 GPU 必需 verify 复核 **8/8（22.0 s）**。
-当前功能为 P4-F06：readback 与预览输出。
+当前功能为 P4-F07：训练前向状态与索引契约（本轮未开始实现）。
 
 P4-F05 已完成并合入 main：代码 tip `74c537e5d97c150979cf681e480de58777cbea8d`，
 合并提交 `9ea81be6d95e28a0944964fcbc7c4bc65e814026`。契约
@@ -73,10 +73,29 @@ early-out 限制实际累积层数，F03/F04 仍处理全部交点。
 完成状态、capability matrix 与唯一当前功能同步后，同一 GPU 必需 verify
 复核 **8/8（24.5 s）**。
 
-P4-F06（**当前**，worktree `codex/p4-f06`）：契约 [preview-output.md](preview-output.md)。
-独立审核 CLI3/3、IO6/6、render3/3、app3/3、package2/2 均绿（含物理
-rename→SIGINT→exit0、BMP/IHDR 负例）。800×600 / 65-source CLI 压力证据复用
-`/tmp/spirula-p4-f06-review/pressure-cli/report.json`（非新框架）；render
-metrics 同 workload。Decode scratch 仅对 product PNG（无 ancillary）；
-image `ignore_text_chunk=false`，公开 decode 不承诺任意元数据预算。retained：
-inject wait-timeout → settle → retry。未合入、状态不推进。
+P4-F06 已完成并合入 main：代码 tip `b0b80452e0bac53ba252621050d71a148ca67ca1`，
+合并提交 `234031884eac65ebaaa29f63c3b993cd5c0e536b`。契约 [preview-output.md](preview-output.md)
+记录不透明 RGB8 PNG、request v1、真实 GPU facade、共享 Preview command、
+原子 rename 提交点与 CLI 退出码、host/GPU 上界和实际 buffer-copy 请求量。
+独立审核 render3/3、IO6/6、application3/3、CLI3/3、package2/2 通过；包括
+真实 rename 后 SIGINT 保持 exit0、临时文件写入后取消保留旧文件并可重试、
+已接受 GPU 提交 timeout→settle→current/pending/retained 归零→重试成功，
+以及 BMP/IHDR-only 负例、篡改/符号链接/额外文件拒绝和 schema1 兼容。
+
+2026-10-31 Apple M5 Max / Metal：GPU 必需 verify **8/8（80.1 s）**；Cursor
+最终门禁 **8/8（107.1 s）**。800×600、65 sources、487500 pairs：最终 facade
+open+compose+pack 574.543833 ms，RGB8 1440000 B、float+RGB8 reserve 28320000 B。
+按已执行 buffer ranges 审核的 D2H staging 请求总量 34804160 B，mapped
+host Vec 复制同量（非总线计数器）；实测 CLI 进程 wall1.084638958 s，PNG
+2166591 B，完整解码像素与独立解析预期一致。具体阶段和限制见契约。
+
+`cargo run -p spirula-xtask -- package --from-ref b0b80452e0bac53ba252621050d71a148ca67ca1 --profile dev
+--out <fresh-dir>` 的干净 git archive 构建通过；同包 package-check 与 source-free
+package-run 的 preview3×2/full RGB golden、Metal smoke `cpu_exact` 均通过，
+smoke current=0。包内不依赖源码、Cargo、C++ 或 Python。
+
+按用户要求，完成本功能后停止；计划唯一当前行移到 P4-F07，但不开展开发。
+工作树与分支保留，未经确认不删除。
+
+完成状态、capability matrix 与唯一当前行同步后，main 上同一 GPU 必需 verify
+复核 **8/8（118.7 s）**。
