@@ -84,7 +84,7 @@ readback→host→Slint `Image` 上传；已记录每帧复制字节、同步点
 software paint ≠ wgpu surface present；不能宣称零复制；Phase 2 出口仍 open。
 正式 UI / train/preview / P6-F03 未接入。契约
 [phase-6/presentation-path.md](phase-6/presentation-path.md)。计划当前为
-P3-F02（P3-F01 已落地 main）。
+P4-F07（P3-F01 至 P3-F08、P4-F01 至 P4-F06 已落地 main）。
 
 P2-F08（2026-10-27 评审新增）是 Phase 2 出口唯一剩余条件的负责人。
 P2-F06 交付的是 unsupported 门禁，不是 present 通过；不得因为 P2-F06

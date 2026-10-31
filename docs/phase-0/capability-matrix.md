@@ -19,12 +19,12 @@ refer to [fixtures.md](fixtures.md).
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
-| C-DATA-01 | dataset auto-detection | `src/data/parsers/ColmapParser.cpp:1019-1062` | directory | format id | `transforms.json` > COLMAP > Metashape; COLMAP wins with fallback | fixture dataset + P3-F03 | `spirula-io` | 进行中 |
-| C-DATA-02 | COLMAP cameras/images/points text | `ColmapParser.cpp:616-795` | `cameras.txt`, `images.txt`, `points3D.txt` | `ParsedDataset` | 18 model names, `.bin` preferred, points optional | `fixtures/dataset/tiny-colmap` + P3-F03 | `spirula-io` | 进行中 |
-| C-DATA-03 | COLMAP binary records | `ColmapParser.cpp:616-621` | `.bin` | same as text | byte layout identical to COLMAP; no rewrite | P3-F03 golden | `spirula-io` | 进行中 |
-| C-DATA-04 | Nerfstudio `transforms.json` | `NerfstudioParser.cpp:419-560` | JSON + images + optional PLY | `ParsedDataset` | `applied_transform` inversion; per-frame intrinsics | fixture transforms + P3-F04 | `spirula-io` | 未开始 |
-| C-DATA-05 | Metashape XML/PSX | `MetashapeParser.cpp:385-785` | XML/ZIP tree + PLY | `ParsedDataset` | converted through a Nerfstudio-shaped meta; component selection | P3-F04 | `spirula-io` | 未开始 |
-| C-DATA-06 | train/eval split | `DatasetCommon.cpp:196-260` | camera names + config | index lists | `all/fraction/interval/filename`; empty eval legal, empty train error | P3-F03 unit tests | `spirula-io` | 进行中 |
+| C-DATA-01 | dataset auto-detection | `src/data/parsers/ColmapParser.cpp:1019-1062` | directory | format id | `transforms.json` > COLMAP > Metashape; COLMAP wins with fallback | fixture dataset + P3-F03 | `spirula-io` | 已完成 |
+| C-DATA-02 | COLMAP cameras/images/points text | `ColmapParser.cpp:616-795` | `cameras.txt`, `images.txt`, `points3D.txt` | `ParsedDataset` | 18 model names, `.bin` preferred, points optional | `fixtures/dataset/tiny-colmap` + P3-F03 | `spirula-io` | 已完成 |
+| C-DATA-03 | COLMAP binary records | `ColmapParser.cpp:616-621` | `.bin` | same as text | byte layout identical to COLMAP; no rewrite | P3-F03 golden | `spirula-io` | 已完成 |
+| C-DATA-04 | Nerfstudio `transforms.json` | `NerfstudioParser.cpp:419-560` | JSON + images + optional PLY | `ParsedDataset` | `applied_transform` inversion; per-frame intrinsics | fixture transforms + P3-F04 | `spirula-io` | 已完成 |
+| C-DATA-05 | Metashape XML/PSX | `MetashapeParser.cpp:385-785` | XML/ZIP tree + PLY | `ParsedDataset` | converted through a Nerfstudio-shaped meta; component selection | P3-F04 | `spirula-io` | 已完成 |
+| C-DATA-06 | train/eval split | `DatasetCommon.cpp:196-260` | camera names + config | index lists | `all/fraction/interval/filename`; empty eval legal, empty train error | P3-F03 unit tests | `spirula-io` | 已完成 |
 | C-DATA-07 | image decode (PNG/JPEG/BMP/TGA/EXR/TIFF) | `DataManager.cpp:447-518`, `DataManager.h:14-22` | file | RGB array | 8/16-bit PNG (incl. LumaA16→U16), float EXR/TIFF preserved as F32; BMP CORE+INFO probe; budgets before alloc | fixture image + P3-F02 | `spirula-io` | 已完成 |
 | C-DATA-08 | masks and alpha | `DataManager.cpp:521-615`, `ImageProbe.cpp:60` | aux files / alpha | binary mask | white keeps, alpha >= 128 keeps, flip/offset optional; nonfinite offset rejected | P3-F02 fixtures | `spirula-io` | 已完成 |
 | C-DATA-09 | depth/normal aux maps | `DataManager.cpp:616-660` | PNG/float files | arrays | 16-bit PNG depth; normals: pixel turn → bilinear → `turn_normal_vectors` | P3-F02 | `spirula-io` | 已完成 |
@@ -166,12 +166,20 @@ refer to [fixtures.md](fixtures.md).
 - `C-DATA-07` / `C-DATA-08` / `C-DATA-09` / `C-DATA-10` are **已完成** under
   P3-F02 ([phase-3/image-orient-mask.md](../phase-3/image-orient-mask.md))
   after main land (`6f2b79c…` / merge `da0ea36…`).
-- `C-DATA-01` / `C-DATA-02` / `C-DATA-03` / `C-DATA-06` are **进行中** under
-  P3-F03 ([phase-3/colmap.md](../phase-3/colmap.md)): text+LE binary COLMAP
-  cameras/images/points3D (bin preferred; points optional); 18-model bake +
-  P3-F01 fit; OpenGL c2w; recon probe + explicit path; train/eval/validation
-  splits; Nerfstudio/Metashape typed unavailable; admitted `LoadDataset` /
-  CLI `load-dataset`. HOLD for independent review — not marked 已完成.
+- `C-DATA-01` / `C-DATA-02` / `C-DATA-03` / `C-DATA-06` are **已完成** under
+  P3-F03 ([phase-3/colmap.md](../phase-3/colmap.md); independent READY, merged
+  to main as `a35823f`): text+LE binary COLMAP cameras/images/points3D (bin
+  preferred; points optional); 18-model bake + P3-F01 fit; OpenGL c2w; recon
+  probe + explicit path; train/eval/validation splits; admitted `LoadDataset` /
+  CLI `load-dataset`. P3-F04 extended `C-DATA-01` detection.
+- `C-DATA-04` / `C-DATA-05` are **已完成** under P3-F04
+  ([phase-3/nerfstudio-metashape.md](../phase-3/nerfstudio-metashape.md);
+  independent READY, merged to main as `947108e`): Nerfstudio `transforms.json`
+  and Metashape XML. `.psx` zip loading stays typed unsupported.
+- `C-DATA-18` / `C-DATA-19` / `C-DATA-21` are **已完成** under P3-F06 / P3-F07
+  ([splat-format.md](../phase-3/splat-format.md),
+  [checkpoint-metadata.md](../phase-3/checkpoint-metadata.md)); both merged to
+  main. New-bundle reading and restore stay in P5-F05/P5-F07.
 - `C-DATA-15` / `C-DATA-16` are **已完成** in P3-F05 (`spirula-core` center /
   region; `spirula-io` scene-transform / region JSON + dataset apply). The
   shared similarity path covers translation, rotation, and scale; arbitrary

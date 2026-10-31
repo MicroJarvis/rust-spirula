@@ -5,7 +5,7 @@
 | P3-F01 camera projection / coordinates | [camera.md](camera.md) | 已完成 |
 | P3-F02 image orientation / mask | [image-orient-mask.md](image-orient-mask.md) | 已完成 |
 | P3-F03 COLMAP dataset read | [colmap.md](colmap.md) | 已完成 |
-| P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | READY |
+| P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | 已完成 |
 | P3-F05 scene transform / center / region | [scene-transform-region.md](scene-transform-region.md) | 已完成 |
 | P3-F06 splat scene format | [splat-format.md](splat-format.md) | 已完成 |
 | P3-F07 checkpoint metadata | [checkpoint-metadata.md](checkpoint-metadata.md) | 已完成 |
@@ -43,7 +43,7 @@ gap). Drop drain deadline ≠ proven hard worker join — see
 [colmap.md](colmap.md). Remaining honest gap: dense `fit_model` single LM call
 non-preemptible.
 
-**P3-F04 READY** (code tip `4c7519ae717c6f501da7fa07650f2993b69d93bb`;
+**P3-F04 已完成并落地 main** (merge `947108e`; independent READY, code tip `4c7519ae717c6f501da7fa07650f2993b69d93bb`;
 prior fixes `548ce6d…`, `442b695…`, `4c7519a…`). C-DATA-01 extend + C-DATA-04/05;
 Nerfstudio `transforms.json` + self-contained PLY + Metashape XML; `.psx`
 typed unsupported without zip. Independent harness: lens / Unicode / JSON
@@ -52,17 +52,17 @@ capacity cliff / XML BOM+CDATA. Focused `nerfstudio_metashape` 29/29;
 [nerfstudio-metashape.md](nerfstudio-metashape.md). Honest Non-claims: scene
 center/normalize (P3-F05), splat (P3-F06), `.psx` zip load. Host cache (P3-F08) is complete; training integration remains later.
 
-**P3-F05 已完成** in worktree `codex/p3-f05` (baseline main merge `947108e`).
+**P3-F05 已完成并落地 main** (merge `d8d519f`, branch `codex/p3-f05`).
 C-DATA-15/16 + Region/AABB JSON, similarity application, and atomic writes; see
 [scene-transform-region.md](scene-transform-region.md). The next plan current is
 P3-F06 (splat scene format).
 
-**P3-F06 已完成** in worktree `codex/p3-f06`; see
+**P3-F06 已完成并落地 main** (merge `6f77a4b`, branch `codex/p3-f06`); see
 [splat-format.md](splat-format.md). The implementation is intentionally limited
 to the reference degree-0 Gaussian PLY property identity. The next plan current
 is P3-F07.
 
-**P3-F07 已完成** in worktree `codex/p3-f07`; see
+**P3-F07 已完成并落地 main** (merge `fc7533c`, branch `codex/p3-f07`); see
 [checkpoint-metadata.md](checkpoint-metadata.md). The reader validates the legacy
 ustar/NPY/state schema, classifies model-only versus full-resume metadata, and
 reports stable incomplete/corrupt/unsupported errors. New generation writers and

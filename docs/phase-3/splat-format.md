@@ -1,6 +1,6 @@
 # P3-F06 — Gaussian splat PLY format
 
-**Status:** 已完成（workspace 门禁通过，待主线审核合并）。
+**Status:** 已完成（workspace 门禁通过；已合入 main，merge `6f77a4b`）。
 
 The reader and writer live in `spirula-io::ply` and reuse
 `spirula-core::{GaussianSplat, SplatSet}`. The PLY property set is the format
