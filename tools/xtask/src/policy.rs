@@ -63,7 +63,14 @@ fn allowed_workspace_deps(crate_name: &str) -> Option<&'static [&'static str]> {
             "spirula-gpu",
         ],
         // AD-P6-F07-01: narrow presentation edge to spirula-gpu (not wgpu*).
-        "spirula-application" => &["spirula-core", "spirula-io", "spirula-train", "spirula-gpu"],
+        // P4-F06: application → spirula-render for headless preview facade.
+        "spirula-application" => &[
+            "spirula-core",
+            "spirula-io",
+            "spirula-train",
+            "spirula-gpu",
+            "spirula-render",
+        ],
         "spirula-ui" => &["spirula-core", "spirula-application"],
         "spirula-cli" => &["spirula-core", "spirula-application"],
         // Tooling only; not a runtime layer.

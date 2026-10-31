@@ -152,6 +152,14 @@ pub(crate) enum WorkerRequest {
         cancel: CancelToken,
         stall: Arc<Mutex<bool>>,
     },
+    Preview {
+        run_id: RunId,
+        command_id: CommandId,
+        request_path: String,
+        output_path: String,
+        cancel: CancelToken,
+        stall: Arc<Mutex<bool>>,
+    },
     Shutdown,
 }
 
@@ -185,6 +193,15 @@ pub enum WorkerEvent {
         run_id: RunId,
         command_id: CommandId,
         result: Result<DatasetLoadOk, spirula_core::DomainError>,
+    },
+    /// Preview finished. `published` means atomic rename committed — owner must
+    /// not rewrite a published Preview terminal to Canceled on a late Stop.
+    PreviewDone {
+        run_id: RunId,
+        command_id: CommandId,
+        summary: crate::preview_ops::PreviewSummary,
+        error: Option<spirula_core::DomainError>,
+        published: bool,
     },
     RunTerminal {
         run_id: RunId,
@@ -317,6 +334,57 @@ fn worker_loop(
                             run_id,
                             command_id,
                             result: Err(err),
+                        },
+                    );
+                }
+            }
+            Ok(WorkerRequest::Preview {
+                run_id,
+                command_id,
+                request_path,
+                output_path,
+                cancel,
+                stall,
+            }) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_preview(
+                        &progress_tx,
+                        &result_tx,
+                        &limits,
+                        run_id,
+                        command_id,
+                        request_path,
+                        output_path,
+                        cancel,
+                        stall,
+                    );
+                }));
+                if result.is_err() {
+                    let err = spirula_core::DomainError::try_new(
+                        spirula_core::ErrorCode::Internal,
+                        "preview worker panicked",
+                    )
+                    .expect("message");
+                    forward_result(
+                        &result_tx,
+                        &limits,
+                        WorkerEvent::PreviewDone {
+                            run_id,
+                            command_id,
+                            summary: crate::preview_ops::PreviewSummary {
+                                path: String::new(),
+                                width: 0,
+                                height: 0,
+                                splat_count: 0,
+                                rgb8_bytes: 0,
+                                png_bytes: 0,
+                                wall_load_ns: 0,
+                                wall_render_ns: 0,
+                                wall_encode_ns: 0,
+                                wall_publish_ns: 0,
+                            },
+                            error: Some(err),
+                            published: false,
                         },
                     );
                 }
@@ -648,6 +716,67 @@ fn run_probe(
 
 fn note_panic_progress(slot: &Arc<Mutex<Option<ProgressSnapshot>>>, snapshot: ProgressSnapshot) {
     *lock(slot) = Some(snapshot);
+}
+
+/// Run admitted preview off the owner thread.
+#[allow(clippy::too_many_arguments)]
+fn run_preview(
+    progress_tx: &SyncSender<WorkerEvent>,
+    result_tx: &SyncSender<WorkerEvent>,
+    limits: &SessionLimits,
+    run_id: RunId,
+    command_id: CommandId,
+    request_path: String,
+    output_path: String,
+    cancel: CancelToken,
+    stall: Arc<Mutex<bool>>,
+) {
+    if wait_image_gate(progress_tx, limits, run_id, command_id, &cancel, &stall).is_err() {
+        hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+        finish_canceled(
+            result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+        );
+        return;
+    }
+
+    let outcome = crate::preview_ops::run_preview_cancelable(
+        std::path::Path::new(&request_path),
+        std::path::Path::new(&output_path),
+        Some(&cancel),
+    );
+
+    match outcome {
+        crate::preview_ops::PreviewWorkResult::Canceled => {
+            hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+            finish_canceled(
+                result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+            );
+        }
+        crate::preview_ops::PreviewWorkResult::Done {
+            summary,
+            error,
+            published,
+        } => {
+            if !published && cancel.is_cancelled() {
+                hold_after_cancel_for_test(progress_tx, limits, run_id, command_id);
+                finish_canceled(
+                    result_tx, limits, run_id, command_id, 0, &cancel, None, false, None,
+                );
+                return;
+            }
+            forward_result(
+                result_tx,
+                limits,
+                WorkerEvent::PreviewDone {
+                    run_id,
+                    command_id,
+                    summary,
+                    error,
+                    published,
+                },
+            );
+        }
+    }
 }
 
 /// Run admitted COLMAP load off the owner thread. Canceled work emits only

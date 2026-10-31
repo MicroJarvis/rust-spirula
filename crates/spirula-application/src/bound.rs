@@ -306,6 +306,25 @@ pub(crate) fn bound_command_payload(
             alpha,
             boundary_offset_milli,
         },
+        CommandPayload::Preview {
+            request_path,
+            output_path,
+        } => {
+            let request_path = if request_path.len() > limits.label_max_bytes {
+                omit_label(request_path.len())
+            } else {
+                request_path
+            };
+            let output_path = if output_path.len() > limits.label_max_bytes {
+                omit_label(output_path.len())
+            } else {
+                output_path
+            };
+            CommandPayload::Preview {
+                request_path,
+                output_path,
+            }
+        }
         other => other,
     }
 }
@@ -442,6 +461,22 @@ pub(crate) fn sanitize_worker_event(
                 run_id,
                 command_id,
                 result,
+            })
+        }
+        WorkerEvent::PreviewDone {
+            run_id,
+            command_id,
+            mut summary,
+            error,
+            published,
+        } => {
+            summary.path = bound_image_path(summary.path);
+            Some(WorkerEvent::PreviewDone {
+                run_id,
+                command_id,
+                summary,
+                error: error.map(|e| bound_error(&e, limits)),
+                published,
             })
         }
         WorkerEvent::RunTerminal {

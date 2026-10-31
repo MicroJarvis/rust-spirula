@@ -508,6 +508,7 @@ impl ApplicationService {
             WorkerEvent::LoadDone { .. }
                 | WorkerEvent::ImagePrepareDone { .. }
                 | WorkerEvent::DatasetLoadDone { .. }
+                | WorkerEvent::PreviewDone { .. }
                 | WorkerEvent::RunTerminal { .. }
         );
         let tx = if is_result {
@@ -776,7 +777,8 @@ fn validate_in_state(phase: SessionState, payload: &CommandPayload) -> Result<()
         }
         CommandPayload::ProbeRun { .. } => phase == SessionState::Ready,
         CommandPayload::PrepareOrientedImage { .. }
-        | CommandPayload::PrepareNormalizedMask { .. } => {
+        | CommandPayload::PrepareNormalizedMask { .. }
+        | CommandPayload::Preview { .. } => {
             matches!(phase, SessionState::Idle | SessionState::Ready)
         }
         CommandPayload::Pause => {
@@ -1055,6 +1057,21 @@ fn start_work(shared: &Shared, id: CommandId, payload: CommandPayload) {
                 stall,
             });
         }
+        CommandPayload::Preview {
+            request_path,
+            output_path,
+        } => {
+            let stall = shared.stall.clone_arc();
+            drop(st);
+            lock(&shared.worker).send(WorkerRequest::Preview {
+                run_id,
+                command_id: id,
+                request_path,
+                output_path,
+                cancel,
+                stall,
+            });
+        }
         other => {
             finish_active(
                 &mut st,
@@ -1089,6 +1106,9 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             run_id, command_id, ..
         }
         | WorkerEvent::DatasetLoadDone {
+            run_id, command_id, ..
+        }
+        | WorkerEvent::PreviewDone {
             run_id, command_id, ..
         }
         | WorkerEvent::RunTerminal {
@@ -1395,6 +1415,86 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
             }
             complete_pending_stop(&mut st, &shared.notifier);
         }
+        WorkerEvent::PreviewDone {
+            summary,
+            error,
+            published,
+            ..
+        } => {
+            let is_preview = matches!(st.active_payload, Some(CommandPayload::Preview { .. }));
+            if !is_preview {
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+                return;
+            }
+            // Commit-point wins: after atomic rename, Preview terminal is never
+            // rewritten to Canceled by a late Stop (Stop still gets its own id).
+            if !published
+                && (st.cancel.is_cancelled()
+                    || st.pending_stop.is_some()
+                    || st.pending_shutdown.is_some())
+            {
+                let reason = st.cancel.reason().unwrap_or_else(|| {
+                    if st.pending_shutdown.is_some() {
+                        CancelReason::Shutdown
+                    } else {
+                        CancelReason::User
+                    }
+                });
+                finish_active(
+                    &mut st,
+                    &shared.notifier,
+                    command_id,
+                    RunOutcome::Canceled {
+                        step: 0,
+                        reason,
+                        saved_checkpoint: None,
+                    },
+                    Some(run_id),
+                );
+                complete_pending_stop(&mut st, &shared.notifier);
+                return;
+            }
+            if published {
+                // File observable. Ok → Completed; post-rename durability Err → Failed.
+                let failed = error.as_ref().map(|e| bound_error(e, &st.limits));
+                publish_control(
+                    &mut st,
+                    &shared.notifier,
+                    Some(command_id),
+                    Some(run_id),
+                    Event::PreviewPublished {
+                        path: summary.path,
+                        width: summary.width,
+                        height: summary.height,
+                        splat_count: summary.splat_count,
+                        rgb8_bytes: summary.rgb8_bytes,
+                        png_bytes: summary.png_bytes,
+                        wall_load_ns: summary.wall_load_ns,
+                        wall_render_ns: summary.wall_render_ns,
+                        wall_encode_ns: summary.wall_encode_ns,
+                        wall_publish_ns: summary.wall_publish_ns,
+                    },
+                );
+                let outcome = match failed {
+                    None => RunOutcome::Completed { step: 0 },
+                    Some(error) => RunOutcome::Failed { error },
+                };
+                finish_active(&mut st, &shared.notifier, command_id, outcome, Some(run_id));
+            } else if let Some(error) = error {
+                let error = bound_error(&error, &st.limits);
+                finish_active(
+                    &mut st,
+                    &shared.notifier,
+                    command_id,
+                    RunOutcome::Failed { error },
+                    Some(run_id),
+                );
+            } else {
+                // Success without publish must not close the command.
+                st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
+            }
+            complete_pending_stop(&mut st, &shared.notifier);
+        }
         WorkerEvent::RunTerminal {
             outcome,
             checkpoint_label,
@@ -1415,7 +1515,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                 st.drops.stale_worker = st.drops.stale_worker.saturating_add(1);
                 return;
             }
-            // Image/dataset cancel arrives as RunTerminal only (never Prepared/Loaded).
+            // Image/dataset/preview cancel arrives as RunTerminal only.
             // Keep Idle|Ready phase; do not run probe checkpoint/save machine.
             let is_image_or_dataset = matches!(
                 st.active_payload,
@@ -1423,6 +1523,7 @@ fn apply_worker_event(shared: &Shared, event: WorkerEvent) {
                     CommandPayload::PrepareOrientedImage { .. }
                         | CommandPayload::PrepareNormalizedMask { .. }
                         | CommandPayload::LoadDataset { .. }
+                        | CommandPayload::Preview { .. }
                 )
             );
             if is_image_or_dataset {

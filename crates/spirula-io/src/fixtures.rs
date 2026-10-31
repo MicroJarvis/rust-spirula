@@ -80,6 +80,8 @@ const REQUIRED_FILES: &[&str] = &[
     "render/tiny_render.json",
     "render/golden.ppm",
     "render/golden.png",
+    "preview/request.json",
+    "preview/scene.ply",
     "golden/camera.json",
     "golden/dataset.json",
     "golden/scene.json",
@@ -143,6 +145,7 @@ pub fn check_fixtures(root: &Path) -> Result<FixtureReport> {
         check_splats(root)?,
         check_checkpoint(root)?,
         check_render(root)?,
+        check_preview(root)?,
     ];
 
     Ok(FixtureReport {
@@ -1129,6 +1132,35 @@ fn check_checkpoint(root: &Path) -> Result<String> {
     }
 
     Ok("checkpoint: ustar entries, state.json, NPY payloads and run config".to_owned())
+}
+
+// ---------------------------------------------------------------------------
+// Preview request sample (P4-F06; load-only, no GPU)
+// ---------------------------------------------------------------------------
+
+fn check_preview(root: &Path) -> Result<String> {
+    let request_path = root.join("preview/request.json");
+    let parsed = crate::preview::load_preview_request(&request_path, None)
+        .map_err(|e| FixtureError::new(format!("preview request load failed: {e}")))?;
+    if parsed.camera.width() != 3 || parsed.camera.height() != 2 {
+        return fail(format!(
+            "preview fixture camera is {}x{}, expected 3x2",
+            parsed.camera.width(),
+            parsed.camera.height()
+        ));
+    }
+    if parsed.splat_ply != root.join("preview/scene.ply") {
+        return fail(format!(
+            "preview splat_ply resolved to {}, expected preview/scene.ply",
+            parsed.splat_ply.display()
+        ));
+    }
+    let ply = fs::read(&parsed.splat_ply)
+        .map_err(|e| FixtureError::new(format!("reading preview scene.ply: {e}")))?;
+    if ply.len() < 4 || &ply[..4] != b"ply\n" {
+        return fail("preview/scene.ply missing PLY magic".to_owned());
+    }
+    Ok("preview: request schema/version, relative splat path, 3x2 camera".to_owned())
 }
 
 // ---------------------------------------------------------------------------

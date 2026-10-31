@@ -47,11 +47,11 @@ pub fn help_text() -> String {
         "  spirula probe --label <name> [--steps <n>] [--log-dir <path>] [--step-delay-ms <n>]\n",
     );
     out.push_str(
-        "  spirula load-dataset --path <dir> [--recon-dir <rel>] [--eval-mode all|fraction|interval|filename] [--split train|eval|all] [--log-dir <path>]\n\n",
+        "  spirula load-dataset --path <dir> [--recon-dir <rel>] [--eval-mode all|fraction|interval|filename] [--split train|eval|all] [--log-dir <path>]\n",
     );
+    out.push_str("  spirula preview --request <json> --out <png> [--log-dir <path>]\n\n");
     out.push_str("Unavailable in this build:\n");
-    out.push_str("  train     (P5-F07)\n");
-    out.push_str("  preview   (P4-F06)\n\n");
+    out.push_str("  train     (P5-F07)\n\n");
     out.push_str(
         "Exit codes: 0 success, 1 failure, 2 usage (before session), 130 cancel/SIGINT.\n",
     );
@@ -63,9 +63,11 @@ pub fn help_text() -> String {
 pub fn capabilities_text() -> String {
     let mut out = String::new();
     out.push_str("capabilities:\n");
-    out.push_str("  available: help, capabilities, probe-load, probe-run, probe, load-dataset\n");
-    out.push_str("  unavailable: train, preview\n");
-    out.push_str("  session: shared spirula-application (probes + COLMAP load)\n");
+    out.push_str(
+        "  available: help, capabilities, probe-load, probe-run, probe, load-dataset, preview\n",
+    );
+    out.push_str("  unavailable: train\n");
+    out.push_str("  session: shared spirula-application (probes + COLMAP load + preview)\n");
     out.push_str("  disk_log: optional --log-dir (application-owned rotated sink)\n");
     out.push_str("  errors: DomainError codes; SPIRULA_ERROR_CODES=1 appends (code: …)\n");
     out
@@ -310,6 +312,20 @@ fn format_event_line(envelope: &EventEnvelope) -> String {
             kept,
             alpha,
         } => format!("mask-prepared path={path} {width}x{height} kept={kept} alpha={alpha}\n"),
+        Event::PreviewPublished {
+            path,
+            width,
+            height,
+            splat_count,
+            rgb8_bytes,
+            png_bytes,
+            wall_load_ns,
+            wall_render_ns,
+            wall_encode_ns,
+            wall_publish_ns,
+        } => format!(
+            "preview-published path={path} {width}x{height} splats={splat_count} rgb8={rgb8_bytes} png={png_bytes} load_ns={wall_load_ns} render_ns={wall_render_ns} encode_ns={wall_encode_ns} publish_ns={wall_publish_ns}\n"
+        ),
         Event::CheckpointSaved { step, label } => {
             format!("checkpoint step={step} label={label}\n")
         }

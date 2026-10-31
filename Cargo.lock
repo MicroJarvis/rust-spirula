@@ -3919,6 +3919,7 @@ dependencies = [
  "spirula-core",
  "spirula-gpu",
  "spirula-io",
+ "spirula-render",
 ]
 
 [[package]]
@@ -3951,6 +3952,7 @@ name = "spirula-io"
 version = "0.1.0"
 dependencies = [
  "image",
+ "png",
  "serde_json",
  "sha2",
  "spirula-core",

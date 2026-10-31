@@ -19,7 +19,8 @@ use crate::colmap::budget::{
 };
 use crate::colmap::{ColmapPoint3D, ColmapPoints3D};
 
-const READ_CHUNK: usize = 256 * 1024;
+/// Chunk size for cancel-responsive PLY reads (same order as COLMAP text/binary).
+const PLY_READ_CHUNK: usize = 256 * 1024;
 
 const SPLAT_PROPERTIES: [&str; 17] = [
     "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1",
@@ -130,42 +131,98 @@ fn read_capped(
     mem: &mut ParseMem,
     cancel: Option<&CancelToken>,
 ) -> Result<Vec<u8>, spirula_core::DomainError> {
+    read_capped_with_file_cap(path, mem, cancel, MAX_COLMAP_FILE_BYTES)
+}
+
+/// Charge a **planned** capacity floor to `mem` before any allocator call.
+/// Returns the new charged floor (may still be below actual `Vec::capacity`
+/// after reserve — call [`charge_actual_capacity`] to catch round-up).
+fn charge_planned_capacity(
+    mem: &mut ParseMem,
+    charged_cap: u64,
+    planned_cap: u64,
+) -> Result<u64, spirula_core::DomainError> {
+    if planned_cap > charged_cap {
+        mem.charge(planned_cap - charged_cap, "ply_file")?;
+        Ok(planned_cap)
+    } else {
+        Ok(charged_cap)
+    }
+}
+
+/// Charge any allocator round-up above the planned floor already charged.
+fn charge_actual_capacity(
+    data: &Vec<u8>,
+    mem: &mut ParseMem,
+    charged_cap: u64,
+) -> Result<u64, spirula_core::DomainError> {
+    let cap = data.capacity() as u64;
+    if cap > charged_cap {
+        mem.charge(cap - charged_cap, "ply_file")?;
+        Ok(cap)
+    } else {
+        Ok(charged_cap)
+    }
+}
+
+/// Bounded PLY file read: `file_cap` enforced with a hardcap+1 sentinel (growth
+/// after stat cannot bypass). Bytes are streamed in [`PLY_READ_CHUNK`] slices
+/// with cancel polls; planned capacity is charged **before** each reserve.
+fn read_capped_with_file_cap(
+    path: &Path,
+    mem: &mut ParseMem,
+    cancel: Option<&CancelToken>,
+    file_cap: u64,
+) -> Result<Vec<u8>, spirula_core::DomainError> {
     let meta = std::fs::metadata(path).map_err(|e| open_err(path, e))?;
     let len = meta.len();
-    if len > MAX_COLMAP_FILE_BYTES {
+    // Soft hint only; growth after stat is caught by file_cap+1 below.
+    if len > file_cap {
         return Err(err(
             ErrorCode::ValueOutOfRange,
             "file_size",
             format!(
-                "PLY file {} exceeds budget {MAX_COLMAP_FILE_BYTES} bytes",
+                "PLY file {} exceeds file cap {file_cap} bytes",
                 path.display()
             ),
         ));
     }
-    mem.charge(len, "ply_file")?;
-    let mut charged = len;
 
     let mut file = File::open(path).map_err(|e| open_err(path, e))?;
+    let mut cp = ParseCancel::new(cancel);
+    // Observe cancel before the first capacity reservation.
+    cp.poll_now()?;
+
     let mut data = Vec::new();
-    if len > 0 {
-        data.try_reserve(len as usize).map_err(|_| {
+    // Exact reserve for the soft size (plus one for the growth sentinel byte).
+    let reserve = (len as usize).saturating_add(1);
+    let mut charged_cap = 0u64;
+    if reserve > 0 {
+        charged_cap = charge_planned_capacity(mem, charged_cap, reserve as u64)?;
+        data.try_reserve_exact(reserve).map_err(|_| {
             err(
                 ErrorCode::ValueOutOfRange,
                 "ply_file",
                 format!(
-                    "PLY file {} reservation of {len} bytes failed",
+                    "PLY file {} reservation of {reserve} bytes failed",
                     path.display()
                 ),
             )
         })?;
+        charged_cap = charge_actual_capacity(&data, mem, charged_cap)?;
     }
 
-    let mut cp = ParseCancel::new(cancel);
-    cp.poll_now()?;
-    let mut buf = [0u8; READ_CHUNK];
+    let mut buf = [0u8; PLY_READ_CHUNK];
     let mut read_total = 0u64;
+    // hardcap+1 sentinel: one extra byte proves growth past file_cap.
+    let take_limit = file_cap.saturating_add(1);
     loop {
-        let n = file.read(&mut buf).map_err(|e| {
+        let remaining = take_limit.saturating_sub(read_total);
+        if remaining == 0 {
+            break;
+        }
+        let want = (PLY_READ_CHUNK as u64).min(remaining) as usize;
+        let n = file.read(&mut buf[..want]).map_err(|e| {
             err_path(
                 ErrorCode::ReadFailed,
                 &path.display().to_string(),
@@ -176,23 +233,53 @@ fn read_capped(
             break;
         }
         read_total = read_total.saturating_add(n as u64);
-        if read_total > MAX_COLMAP_FILE_BYTES {
+        if read_total > file_cap {
             return Err(err(
                 ErrorCode::ValueOutOfRange,
                 "file_size",
                 format!(
-                    "PLY file {} grew past budget {MAX_COLMAP_FILE_BYTES} bytes during read",
+                    "PLY file {} exceeds file cap {file_cap} bytes",
                     path.display()
                 ),
             ));
         }
-        if read_total > charged {
-            mem.charge(read_total - charged, "ply_file")?;
-            charged = read_total;
+        // Charge planned capacity, then reserve, then catch allocator round-up —
+        // all before appending.
+        let need = data.len().checked_add(n).ok_or_else(|| {
+            err(
+                ErrorCode::ValueOutOfRange,
+                "ply_file",
+                "PLY read size overflow",
+            )
+        })?;
+        if data.capacity() < need {
+            charged_cap = charge_planned_capacity(mem, charged_cap, need as u64)?;
+            data.try_reserve_exact(n).map_err(|_| {
+                err(
+                    ErrorCode::ValueOutOfRange,
+                    "ply_file",
+                    format!(
+                        "PLY file {} growth reservation of {n} bytes failed",
+                        path.display()
+                    ),
+                )
+            })?;
+            charged_cap = charge_actual_capacity(&data, mem, charged_cap)?;
         }
         data.extend_from_slice(&buf[..n]);
         cp.tick(n)?;
     }
+    if read_total > file_cap || data.len() as u64 > file_cap {
+        return Err(err(
+            ErrorCode::ValueOutOfRange,
+            "file_size",
+            format!(
+                "PLY file {} exceeds file cap {file_cap} bytes",
+                path.display()
+            ),
+        ));
+    }
+    let _ = charged_cap;
     Ok(data)
 }
 
@@ -784,8 +871,22 @@ pub fn read_ply_splats_budgeted(
     cancel: Option<&CancelToken>,
     memory_budget_bytes: u64,
 ) -> Result<SplatSet, spirula_core::DomainError> {
+    read_ply_splats_budgeted_with_file_cap(path, cancel, memory_budget_bytes, MAX_COLMAP_FILE_BYTES)
+}
+
+/// Like [`read_ply_splats_budgeted`], with an explicit on-disk file cap
+/// separate from the host parse memory budget (growth after stat included).
+///
+/// Caller `file_cap_bytes` cannot raise the read above [`MAX_COLMAP_FILE_BYTES`].
+pub fn read_ply_splats_budgeted_with_file_cap(
+    path: &Path,
+    cancel: Option<&CancelToken>,
+    memory_budget_bytes: u64,
+    file_cap_bytes: u64,
+) -> Result<SplatSet, spirula_core::DomainError> {
+    let file_cap = file_cap_bytes.min(MAX_COLMAP_FILE_BYTES);
     let mut mem = ParseMem::with_cap(memory_budget_bytes);
-    let bytes = read_capped(path, &mut mem, cancel)?;
+    let bytes = read_capped_with_file_cap(path, &mut mem, cancel, file_cap)?;
     parse_splat_bytes(&bytes, &path.display().to_string(), &mut mem, cancel)
 }
 

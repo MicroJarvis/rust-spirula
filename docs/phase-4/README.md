@@ -7,7 +7,7 @@
 | P4-F03 | 投影与 tile/bin 构建 | [projection-tiles.md](projection-tiles.md) | 已完成 |
 | P4-F04 | 排序与光栅化 | [sort-raster.md](sort-raster.md) | 已完成 |
 | P4-F05 | 合成与深度 | [compositing-depth.md](compositing-depth.md) | 已完成 |
-| P4-F06 | readback 与预览输出 | (not started) | 当前 |
+| P4-F06 | readback 与预览输出 | [preview-output.md](preview-output.md) | 当前 |
 | P4-F07 | 训练前向状态与索引契约 | (not started) | 未开始 |
 | P4-F08 | 光栅化与合成反向传播 | (not started) | 未开始 |
 | P4-F09 | 投影与 SH 反向传播 | (not started) | 未开始 |
@@ -71,4 +71,12 @@ encode 84.343500 ms、submit/wait/map 2.943166 ms。Metal / Apple M5 Max，
 early-out 限制实际累积层数，F03/F04 仍处理全部交点。
 
 完成状态、capability matrix 与唯一当前功能同步后，同一 GPU 必需 verify
-复核 **8/8（24.5 s）**。P4-F06 接下来实现 readback 图像封装与共享 CLI 预览。
+复核 **8/8（24.5 s）**。
+
+P4-F06（**当前**，worktree `codex/p4-f06`）：契约 [preview-output.md](preview-output.md)。
+独立审核 CLI3/3、IO6/6、render3/3、app3/3、package2/2 均绿（含物理
+rename→SIGINT→exit0、BMP/IHDR 负例）。800×600 / 65-source CLI 压力证据复用
+`/tmp/spirula-p4-f06-review/pressure-cli/report.json`（非新框架）；render
+metrics 同 workload。Decode scratch 仅对 product PNG（无 ancillary）；
+image `ignore_text_chunk=false`，公开 decode 不承诺任意元数据预算。retained：
+inject wait-timeout → settle → retry。未合入、状态不推进。

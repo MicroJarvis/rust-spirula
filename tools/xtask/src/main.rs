@@ -167,8 +167,19 @@ fn run_package_run() -> ExitCode {
     let isolate_parent = std::env::temp_dir().join("spirula-pkg-isolate");
     match run_package_isolated(&package, &isolate_parent) {
         Ok(report) => {
+            let preview = match &report.preview {
+                spirula_xtask::IsolatedPreviewOutcome::Unavailable { reason } => {
+                    format!("unavailable({reason})")
+                }
+                spirula_xtask::IsolatedPreviewOutcome::Ran {
+                    exit,
+                    width,
+                    height,
+                    rgb8_len,
+                } => format!("ran exit={exit} {width}x{height} rgb8={rgb8_len}"),
+            };
             println!(
-                "package-run: ok smoke_status={} counted_as_pass={} match={:?} current={:?} isolate={}",
+                "package-run: ok preview={preview} smoke_status={} counted_as_pass={} match={:?} current={:?} isolate={}",
                 report.smoke_status,
                 report.smoke_counted_as_pass,
                 report.smoke_match,

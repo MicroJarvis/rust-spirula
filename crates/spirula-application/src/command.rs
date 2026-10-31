@@ -57,6 +57,12 @@ pub enum CommandPayload {
         /// `mask_boundary_offset` as milli-fraction (`frac = milli / 1000`).
         boundary_offset_milli: i32,
     },
+    /// Real headless GPU preview via render facade + atomic PNG (P4-F06).
+    /// Idle|Ready only. Paths are bounded strings — no image payload in history.
+    Preview {
+        request_path: String,
+        output_path: String,
+    },
     Pause,
     Resume,
     Stop {
@@ -75,6 +81,7 @@ impl CommandPayload {
             Self::LoadDataset { .. } => "load_dataset",
             Self::PrepareOrientedImage { .. } => "prepare_oriented_image",
             Self::PrepareNormalizedMask { .. } => "prepare_normalized_mask",
+            Self::Preview { .. } => "preview",
             Self::Pause => "pause",
             Self::Resume => "resume",
             Self::Stop { .. } => "stop",
@@ -99,6 +106,7 @@ impl CommandPayload {
                 | Self::LoadDataset { .. }
                 | Self::PrepareOrientedImage { .. }
                 | Self::PrepareNormalizedMask { .. }
+                | Self::Preview { .. }
         )
     }
 
@@ -179,6 +187,14 @@ impl CommandPayload {
                 spirula_io::ensure_pixel_budget(*dst_w, *dst_h)?;
                 Ok(())
             }
+            Self::Preview {
+                request_path,
+                output_path,
+            } => {
+                crate::bound::check_image_path(request_path)?;
+                crate::bound::check_image_path(output_path)?;
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -196,6 +212,10 @@ impl CommandPayload {
             } => 32 + path.len() + recon_dir.len() + eval_mode.len() + split.len(),
             Self::PrepareOrientedImage { path, .. } => 24 + path.len(),
             Self::PrepareNormalizedMask { path, .. } => 40 + path.len(),
+            Self::Preview {
+                request_path,
+                output_path,
+            } => 32 + request_path.len() + output_path.len(),
             Self::Stop { .. } => 12,
             Self::Pause | Self::Resume | Self::Shutdown | Self::Reset => 8,
         }

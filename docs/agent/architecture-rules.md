@@ -6,16 +6,20 @@
 spirula-ui ───────┐
 spirula-cli ──────┼──> application/session
                   │        ├──> spirula-gpu     (P6-F07 AD-P6-F07-01：呈现帧生产)
+                  │        ├──> spirula-render  (P4-F06：headless preview facade)
+                  │        ├──> spirula-io      (数据集 + preview request/PNG)
                   │        ├──> spirula-train ──> spirula-render ──> spirula-gpu
-                  │        ├──> spirula-io ──────> spirula-core
                   │        └──> spirula-core
 ```
 
 P1-F07 提前新增 `spirula-application`，集中维护唯一应用 session、命令准入、
 取消、快照和事件；P1-F09 提供最小 CLI，P6-F01 完善集成。P6-F07 允许
 application → `spirula-gpu` 窄边（仅 presentation），禁止 application/UI 直接
-依赖 `wgpu*`，禁止 UI → `spirula-gpu`。训练 worker 只维护 step 调度，UI 与
-CLI 只负责适配入口。不得让 UI 直接编排训练、读写检查点或创建 GPU 管线。
+依赖 `wgpu*`，禁止 UI → `spirula-gpu`。P4-F06 允许 application →
+`spirula-render`（headless preview facade 拥有私有 GpuContext；非 presentation
+边）与 application → `spirula-io`（preview request / PNG）。训练 worker 只维护
+step 调度，UI 与 CLI 只负责适配入口。不得让 UI 直接编排训练、读写检查点或
+创建 GPU 管线。
 
 ## crate 职责
 

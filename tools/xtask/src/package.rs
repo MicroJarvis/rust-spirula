@@ -20,9 +20,38 @@ pub const PACKAGE_BINARIES: &[&str] = &["spirula", "spirula-gpu-diagnose", "spir
 const MANIFEST_NAME: &str = "MANIFEST.json";
 const NOTICE_NAME: &str = "NOTICE";
 const BIN_DIR: &str = "bin";
-const SCHEMA_VERSION: u32 = 1;
+const SAMPLE_DIR: &str = "sample";
+const SAMPLE_PREVIEW_DIR: &str = "sample/preview";
+const SAMPLE_PREVIEW_REQUEST: &str = "sample/preview/request.json";
+const SAMPLE_PREVIEW_PLY: &str = "sample/preview/scene.ply";
+/// P2-F07 original package contract (binaries only; no `sample/`).
+const SCHEMA_VERSION_V1: u32 = 1;
+/// P4-F06 extension: required `samples[]` + `sample/preview/` payload.
+const SCHEMA_VERSION_V2: u32 = 2;
 const STAGING_PREFIX: &str = ".spirula-pkg-tmp.";
 static PATH_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Embedded dirty-dev fallback (this xtask tree). Clean `--from-ref` builds must
+/// copy from the selected `build_root` instead — see [`SampleOrigin`].
+const PREVIEW_REQUEST_BYTES: &[u8] = include_bytes!("../../../fixtures/preview/request.json");
+const PREVIEW_SCENE_PLY_BYTES: &[u8] = include_bytes!("../../../fixtures/preview/scene.ply");
+
+/// Independent scalar golden for the shipped 3×2 preview sample (not renderer output).
+/// Covariance=.3+exp(2s)/4; alpha=sigmoid(opacity)*exp(-(x²+y²)/(2*cov)); SH0=.5+C0*dc.
+const PREVIEW_SAMPLE_WIDTH: u32 = 3;
+const PREVIEW_SAMPLE_HEIGHT: u32 = 2;
+const PREVIEW_SAMPLE_GOLDEN_RGB8: [u8; 18] = [
+    253, 1, 1, 71, 41, 61, 26, 51, 77, 71, 41, 61, 26, 51, 77, 26, 51, 77,
+];
+
+/// Where package sample bytes come from.
+#[derive(Clone, Debug)]
+pub enum SampleOrigin {
+    /// Dirty-dev host assembly: embed fixtures compiled into this xtask.
+    EmbeddedDirtyDev,
+    /// Same-revision tree as the built binaries (`build_root/fixtures/preview`).
+    FromBuildRoot(PathBuf),
+}
 
 /// Options for [`build_package`].
 #[derive(Clone, Debug)]
@@ -52,15 +81,57 @@ pub struct PackageOutcome {
 /// required contract fields and NOTICE must be present; package contents are
 /// restricted to an explicit allowlist with no symlinks.
 pub fn check_package(package_dir: &Path) -> Result<Value, String> {
-    verify_package_root_layout(package_dir)?;
+    require_regular_dir(package_dir, "package root")?;
+    require_regular_file(&package_dir.join(MANIFEST_NAME), MANIFEST_NAME)?;
+    require_regular_file(&package_dir.join(NOTICE_NAME), NOTICE_NAME)?;
+    require_regular_dir(&package_dir.join(BIN_DIR), BIN_DIR)?;
     let manifest = read_manifest(package_dir)?;
-    verify_manifest_contract(&manifest)?;
+    let schema = manifest_schema_version(&manifest)?;
+    verify_manifest_contract(&manifest, schema)?;
     verify_manifest_binaries(package_dir, &manifest)?;
-    verify_package_allowlist(package_dir)?;
+    match schema {
+        SCHEMA_VERSION_V1 => {
+            if manifest.get("samples").is_some() {
+                return Err(
+                    "manifest: schema_version 1 must not declare samples[] (use schema 2)"
+                        .to_owned(),
+                );
+            }
+            if package_dir.join(SAMPLE_DIR).exists() {
+                return Err(
+                    "layout: schema_version 1 must not contain sample/ (use schema 2)".to_owned(),
+                );
+            }
+            verify_package_root_layout_v1(package_dir)?;
+            verify_package_allowlist(package_dir, schema)?;
+        }
+        SCHEMA_VERSION_V2 => {
+            verify_package_root_layout_v2(package_dir)?;
+            verify_manifest_samples(package_dir, &manifest)?;
+            verify_package_allowlist(package_dir, schema)?;
+        }
+        other => {
+            return Err(format!(
+                "manifest: unsupported schema_version {other} (want {SCHEMA_VERSION_V1}|{SCHEMA_VERSION_V2})"
+            ));
+        }
+    }
     Ok(manifest)
 }
 
+fn manifest_schema_version(manifest: &Value) -> Result<u32, String> {
+    let schema = manifest
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "manifest: missing schema_version".to_owned())?;
+    u32::try_from(schema).map_err(|_| format!("manifest: schema_version {schema} out of u32 range"))
+}
+
 /// Metadata recorded into `MANIFEST.json` when assembling from built binaries.
+///
+/// Host-test / parent-review struct literals stay `{ revision, version, profile }`.
+/// Sample bytes default to [`SampleOrigin::EmbeddedDirtyDev`]; clean `--from-ref`
+/// builds pass [`SampleOrigin::FromBuildRoot`] via the internal assemble path.
 #[derive(Clone, Debug)]
 pub struct AssembleMeta {
     pub revision: String,
@@ -79,7 +150,7 @@ pub fn build_package(opts: &PackageOptions) -> Result<PackageOutcome, String> {
         cargo_build_bins(&build_root, &opts.profile)?;
         let target_bin = cargo_target_bin_dir(&build_root, &opts.profile)?;
         let version = workspace_version(&build_root)?;
-        assemble_package_from_bin_dir(
+        assemble_package_from_bin_dir_with_samples(
             &target_bin,
             &opts.out,
             &AssembleMeta {
@@ -87,6 +158,9 @@ pub fn build_package(opts: &PackageOptions) -> Result<PackageOutcome, String> {
                 version,
                 profile: opts.profile.clone(),
             },
+            // Samples must come from the same archived/clean tree as the bins.
+            SampleOrigin::FromBuildRoot(build_root.clone()),
+            |_| Ok(()),
         )
     })();
     if cleanup_build {
@@ -107,7 +181,14 @@ pub fn assemble_package_from_bin_dir(
     out: &Path,
     meta: &AssembleMeta,
 ) -> Result<PackageOutcome, String> {
-    assemble_package_from_bin_dir_with_before_publish(bin_dir, out, meta, |_| Ok(()))
+    // Dirty-dev / host tests: embedded fixtures (not clean-ref proof).
+    assemble_package_from_bin_dir_with_samples(
+        bin_dir,
+        out,
+        meta,
+        SampleOrigin::EmbeddedDirtyDev,
+        |_| Ok(()),
+    )
 }
 
 /// Like [`assemble_package_from_bin_dir`], but runs `before_publish(out)` after
@@ -118,6 +199,22 @@ pub fn assemble_package_from_bin_dir_with_before_publish(
     bin_dir: &Path,
     out: &Path,
     meta: &AssembleMeta,
+    before_publish: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<PackageOutcome, String> {
+    assemble_package_from_bin_dir_with_samples(
+        bin_dir,
+        out,
+        meta,
+        SampleOrigin::EmbeddedDirtyDev,
+        before_publish,
+    )
+}
+
+fn assemble_package_from_bin_dir_with_samples(
+    bin_dir: &Path,
+    out: &Path,
+    meta: &AssembleMeta,
+    sample_origin: SampleOrigin,
     before_publish: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<PackageOutcome, String> {
     if destination_entry_present(out)? {
@@ -135,7 +232,7 @@ pub fn assemble_package_from_bin_dir_with_before_publish(
     fs::create_dir_all(parent).map_err(|e| format!("creating parent {}: {e}", parent.display()))?;
 
     let staging = unique_staging(parent)?;
-    let assembled = fill_staging(&staging, bin_dir, meta);
+    let assembled = fill_staging(&staging, bin_dir, meta, &sample_origin);
     match assembled {
         Ok(()) => {
             // Deterministic injection point for concurrency / pre-rename probes.
@@ -159,8 +256,68 @@ pub fn assemble_package_from_bin_dir_with_before_publish(
     }
 }
 
-fn fill_staging(staging: &Path, bin_dir: &Path, meta: &AssembleMeta) -> Result<(), String> {
+type PreviewSampleBytes = (Vec<u8>, Vec<u8>);
+
+/// Load sample bytes for a schema-2 package. Returns `None` when the selected
+/// build tree predates `fixtures/preview` (emit honest schema-1 instead).
+fn load_preview_sample_bytes(origin: &SampleOrigin) -> Result<Option<PreviewSampleBytes>, String> {
+    match origin {
+        SampleOrigin::EmbeddedDirtyDev => Ok(Some((
+            PREVIEW_REQUEST_BYTES.to_vec(),
+            PREVIEW_SCENE_PLY_BYTES.to_vec(),
+        ))),
+        SampleOrigin::FromBuildRoot(root) => {
+            let req = root.join("fixtures/preview/request.json");
+            let ply = root.join("fixtures/preview/scene.ply");
+            if !req.is_file() || !ply.is_file() {
+                return Ok(None);
+            }
+            let req_bytes = fs::read(&req).map_err(|e| format!("read {}: {e}", req.display()))?;
+            let ply_bytes = fs::read(&ply).map_err(|e| format!("read {}: {e}", ply.display()))?;
+            Ok(Some((req_bytes, ply_bytes)))
+        }
+    }
+}
+
+fn install_preview_sample(
+    staging: &Path,
+    request: &[u8],
+    scene: &[u8],
+) -> Result<Vec<Value>, String> {
+    let dir = staging.join(SAMPLE_PREVIEW_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("creating {SAMPLE_PREVIEW_DIR}: {e}"))?;
+    let mut samples = Vec::new();
+    for (rel, bytes) in [
+        (SAMPLE_PREVIEW_REQUEST, request),
+        (SAMPLE_PREVIEW_PLY, scene),
+    ] {
+        let dest = staging.join(rel);
+        fs::write(&dest, bytes).map_err(|e| format!("write {rel}: {e}"))?;
+        let sha = sha256_file(&dest)?;
+        samples.push(json!({
+            "path": rel,
+            "sha256": sha,
+            "size_bytes": bytes.len() as u64,
+        }));
+    }
+    Ok(samples)
+}
+
+fn fill_staging(
+    staging: &Path,
+    bin_dir: &Path,
+    meta: &AssembleMeta,
+    sample_origin: &SampleOrigin,
+) -> Result<(), String> {
     fs::create_dir_all(staging.join(BIN_DIR)).map_err(|e| format!("creating staging bin: {e}"))?;
+    let sample_bytes = load_preview_sample_bytes(sample_origin)?;
+    let (schema_version, samples_json) = match sample_bytes {
+        Some((req, ply)) => {
+            let samples = install_preview_sample(staging, &req, &ply)?;
+            (SCHEMA_VERSION_V2, Some(samples))
+        }
+        None => (SCHEMA_VERSION_V1, None),
+    };
     let mut binaries = Vec::new();
     for name in PACKAGE_BINARIES {
         let src = bin_dir.join(name);
@@ -194,11 +351,11 @@ fn fill_staging(staging: &Path, bin_dir: &Path, meta: &AssembleMeta) -> Result<(
             "runtime_dependencies": deps,
         }));
     }
-    write_notice(staging)?;
+    write_notice(staging, schema_version)?;
     let host = rustc_host()?;
     let toolchain = rustc_toolchain()?;
-    let manifest = json!({
-        "schema_version": SCHEMA_VERSION,
+    let mut manifest = json!({
+        "schema_version": schema_version,
         "feature": "P2-F07",
         "package_kind": "minimal-cli",
         "revision": meta.revision,
@@ -218,14 +375,18 @@ fn fill_staging(staging: &Path, bin_dir: &Path, meta: &AssembleMeta) -> Result<(
             "bit_for_bit_reproducible": false
         }
     });
+    if let Some(samples) = samples_json {
+        manifest
+            .as_object_mut()
+            .expect("manifest object")
+            .insert("samples".to_owned(), json!(samples));
+    }
     let body = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("serialize manifest: {e}"))?
         + "\n";
     fs::write(staging.join(MANIFEST_NAME), body).map_err(|e| format!("write manifest: {e}"))?;
-    verify_package_root_layout(staging)?;
-    verify_manifest_contract(&manifest)?;
-    verify_manifest_binaries(staging, &manifest)?;
-    verify_package_allowlist(staging)?;
+    // Full check (schema-aware) before publish.
+    check_package(staging).map_err(|e| format!("staging check failed: {e}"))?;
     Ok(())
 }
 
@@ -336,9 +497,9 @@ pub fn run_package_isolated(
     let isolate = unique_isolate(isolate_parent)?;
     let copy_result = (|| {
         copy_dir_recursive(package_dir, &isolate)?;
-        // Re-check after copy so isolate cannot diverge (symlink drop, extras).
-        verify_package_root_layout(&isolate)?;
-        verify_package_allowlist(&isolate)?;
+        // Full integrity re-check after copy (bins + samples hashes, no symlink drift).
+        let isolate_manifest = check_package(&isolate)?;
+        let schema = manifest_schema_version(&isolate_manifest)?;
         // cwd with spaces, unrelated to the package tree.
         let cwd = isolate_parent.join("run cwd with spaces");
         fs::create_dir_all(&cwd).map_err(|e| format!("creating cwd: {e}"))?;
@@ -352,10 +513,11 @@ pub fn run_package_isolated(
             help_exit: 0,
             capabilities_exit: 0,
             probe_exit: 0,
+            preview: IsolatedPreviewOutcome::Unavailable { reason: "pending" },
             smoke_exit: 0,
             smoke_status: String::new(),
-            smoke_match: None,
-            smoke_current: None,
+            smoke_match: Option::None,
+            smoke_current: Option::None,
             smoke_counted_as_pass: false,
         };
 
@@ -380,6 +542,64 @@ pub fn run_package_isolated(
         if report.probe_exit != 0 {
             return Err(format!("spirula probe exit {}", report.probe_exit));
         }
+
+        report.preview = match schema {
+            SCHEMA_VERSION_V1 => IsolatedPreviewOutcome::Unavailable {
+                reason: "schema_version 1 has no sample/preview (legacy P2-F07)",
+            },
+            SCHEMA_VERSION_V2 => {
+                // Request-relative splat path: cwd = sample/preview inside isolate.
+                let preview_cwd = isolate.join(SAMPLE_PREVIEW_DIR);
+                let preview_out = cwd.join("preview-out.png");
+                let preview = run_scrubbed(
+                    &spirula,
+                    &[
+                        "preview",
+                        "--request",
+                        "request.json",
+                        "--out",
+                        preview_out
+                            .to_str()
+                            .ok_or_else(|| "preview out path is not UTF-8".to_owned())?,
+                    ],
+                    &preview_cwd,
+                    &bin,
+                )?;
+                if preview.exit != 0 {
+                    return Err(format!(
+                        "spirula preview exit {} stdout:\n{}stderr:\n{}",
+                        preview.exit, preview.stdout, preview.stderr
+                    ));
+                }
+                let png_bytes =
+                    fs::read(&preview_out).map_err(|e| format!("read preview-out.png: {e}"))?;
+                // Signature + IHDR 8-bit RGB, then complete PNG-only decode +
+                // golden (rejects BMP / truncated IHDR / JPEG stubs).
+                let (width, height, rgb) = spirula_io::decode_preview_png_rgb8(&png_bytes)
+                    .map_err(|e| {
+                        format!("isolated preview PNG signature/IHDR/decode rejected: {e}")
+                    })?;
+                if width != PREVIEW_SAMPLE_WIDTH || height != PREVIEW_SAMPLE_HEIGHT {
+                    return Err(format!(
+                        "isolated preview size {width}x{height}, expected {PREVIEW_SAMPLE_WIDTH}x{PREVIEW_SAMPLE_HEIGHT}"
+                    ));
+                }
+                if rgb.as_slice() != PREVIEW_SAMPLE_GOLDEN_RGB8.as_slice() {
+                    return Err(format!(
+                        "isolated preview RGB golden mismatch (got {rgb:?})"
+                    ));
+                }
+                IsolatedPreviewOutcome::Ran {
+                    exit: preview.exit,
+                    width,
+                    height,
+                    rgb8_len: rgb.len(),
+                }
+            }
+            other => {
+                return Err(format!("isolated run: unsupported schema_version {other}"));
+            }
+        };
 
         let smoke = run_scrubbed(&smoke_bin, &["--compute"], &cwd, &bin)?;
         report.smoke_exit = smoke.exit;
@@ -440,6 +660,20 @@ pub fn run_package_isolated(
     }
 }
 
+/// Preview stage of an isolated package run.
+#[derive(Clone, Debug)]
+pub enum IsolatedPreviewOutcome {
+    /// Schema 1 / no sample: preview was not claimed or executed.
+    Unavailable { reason: &'static str },
+    /// Schema 2: preview ran, fully decoded, and matched the fixed golden.
+    Ran {
+        exit: i32,
+        width: u32,
+        height: u32,
+        rgb8_len: usize,
+    },
+}
+
 /// Summary of an isolated package run.
 #[derive(Clone, Debug)]
 pub struct IsolatedRunReport {
@@ -448,6 +682,7 @@ pub struct IsolatedRunReport {
     pub help_exit: i32,
     pub capabilities_exit: i32,
     pub probe_exit: i32,
+    pub preview: IsolatedPreviewOutcome,
     pub smoke_exit: i32,
     pub smoke_status: String,
     pub smoke_match: Option<String>,
@@ -638,17 +873,29 @@ fn require_regular_dir(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_package_root_layout(package_dir: &Path) -> Result<(), String> {
-    require_regular_dir(package_dir, "package root")?;
-    require_regular_file(&package_dir.join(MANIFEST_NAME), MANIFEST_NAME)?;
-    require_regular_file(&package_dir.join(NOTICE_NAME), NOTICE_NAME)?;
-    require_regular_dir(&package_dir.join(BIN_DIR), BIN_DIR)?;
+fn verify_package_bins_layout(package_dir: &Path) -> Result<(), String> {
     for name in PACKAGE_BINARIES {
         require_regular_file(
             &package_dir.join(BIN_DIR).join(name),
             &canonical_rel_path(name),
         )?;
     }
+    Ok(())
+}
+
+fn verify_package_root_layout_v1(package_dir: &Path) -> Result<(), String> {
+    verify_package_bins_layout(package_dir)
+}
+
+fn verify_package_root_layout_v2(package_dir: &Path) -> Result<(), String> {
+    require_regular_dir(&package_dir.join(SAMPLE_DIR), SAMPLE_DIR)?;
+    require_regular_dir(&package_dir.join(SAMPLE_PREVIEW_DIR), SAMPLE_PREVIEW_DIR)?;
+    verify_package_bins_layout(package_dir)?;
+    require_regular_file(
+        &package_dir.join(SAMPLE_PREVIEW_REQUEST),
+        SAMPLE_PREVIEW_REQUEST,
+    )?;
+    require_regular_file(&package_dir.join(SAMPLE_PREVIEW_PLY), SAMPLE_PREVIEW_PLY)?;
     Ok(())
 }
 
@@ -662,14 +909,10 @@ fn require_nonempty_str(manifest: &Value, key: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn verify_manifest_contract(manifest: &Value) -> Result<(), String> {
-    let schema = manifest
-        .get("schema_version")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| "manifest: missing schema_version".to_owned())?;
-    if schema != u64::from(SCHEMA_VERSION) {
+fn verify_manifest_contract(manifest: &Value, schema: u32) -> Result<(), String> {
+    if schema != SCHEMA_VERSION_V1 && schema != SCHEMA_VERSION_V2 {
         return Err(format!(
-            "manifest: unsupported schema_version {schema} (want {SCHEMA_VERSION})"
+            "manifest: unsupported schema_version {schema} (want {SCHEMA_VERSION_V1}|{SCHEMA_VERSION_V2})"
         ));
     }
     if manifest.get("locked").and_then(|v| v.as_bool()) != Some(true) {
@@ -861,19 +1104,23 @@ fn validate_canonical_rel_path(name: &str, rel: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Exact allowlist: MANIFEST.json, NOTICE, bin/, and the three canonical bins.
-fn verify_package_allowlist(package_dir: &Path) -> Result<(), String> {
+/// Exact allowlist. Schema 1: MANIFEST/NOTICE/bin only. Schema 2 adds sample/.
+fn verify_package_allowlist(package_dir: &Path, schema: u32) -> Result<(), String> {
     let mut allowed_files: BTreeMap<PathBuf, ()> = BTreeMap::new();
     allowed_files.insert(package_dir.join(MANIFEST_NAME), ());
     allowed_files.insert(package_dir.join(NOTICE_NAME), ());
     for name in PACKAGE_BINARIES {
         allowed_files.insert(package_dir.join(BIN_DIR).join(name), ());
     }
-
     let mut allowed_dirs: BTreeMap<PathBuf, ()> = BTreeMap::new();
     allowed_dirs.insert(package_dir.to_path_buf(), ());
     allowed_dirs.insert(package_dir.join(BIN_DIR), ());
-
+    if schema == SCHEMA_VERSION_V2 {
+        allowed_files.insert(package_dir.join(SAMPLE_PREVIEW_REQUEST), ());
+        allowed_files.insert(package_dir.join(SAMPLE_PREVIEW_PLY), ());
+        allowed_dirs.insert(package_dir.join(SAMPLE_DIR), ());
+        allowed_dirs.insert(package_dir.join(SAMPLE_PREVIEW_DIR), ());
+    }
     walk_package_entries(package_dir, package_dir, &allowed_files, &allowed_dirs)
 }
 
@@ -922,12 +1169,85 @@ fn walk_package_entries(
     Ok(())
 }
 
-fn write_notice(package_dir: &Path) -> Result<(), String> {
-    let body = "Spirula Studio minimal CLI package (P2-F07)\n\
+fn write_notice(package_dir: &Path, schema: u32) -> Result<(), String> {
+    let body = if schema >= SCHEMA_VERSION_V2 {
+        "Spirula Studio minimal CLI package (schema 2: P2-F07 + P4-F06 sample)\n\
+License: GPL-3.0-or-later (see workspace [workspace.package] license).\n\
+Ships process entry binaries plus sample/preview for `spirula preview`.\n\
+It is not a signed installer, does not claim a three-platform matrix, and\n\
+does not wire train/UI.\n"
+    } else {
+        "Spirula Studio minimal CLI package (schema 1: P2-F07)\n\
 License: GPL-3.0-or-later (see workspace [workspace.package] license).\n\
 This package ships process entry binaries only. It is not a signed installer,\n\
-does not claim a three-platform matrix, and does not wire train/preview/UI.\n";
+does not claim a three-platform matrix, and does not wire train/preview/UI.\n"
+    };
     fs::write(package_dir.join(NOTICE_NAME), body).map_err(|e| format!("write NOTICE: {e}"))
+}
+
+fn verify_manifest_samples(package_dir: &Path, manifest: &Value) -> Result<(), String> {
+    let samples = manifest
+        .get("samples")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "manifest: missing samples[]".to_owned())?;
+    let expected = [SAMPLE_PREVIEW_REQUEST, SAMPLE_PREVIEW_PLY];
+    if samples.len() != expected.len() {
+        return Err(format!(
+            "manifest: samples[] must have exactly {} entries (got {})",
+            expected.len(),
+            samples.len()
+        ));
+    }
+    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+    for entry in samples {
+        let rel = entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "manifest: sample entry missing path".to_owned())?;
+        if !expected.contains(&rel) {
+            return Err(format!("manifest: unexpected sample path `{rel}`"));
+        }
+        if seen.insert(rel.to_owned(), ()).is_some() {
+            return Err(format!("manifest: duplicate sample path `{rel}`"));
+        }
+        if rel.contains("..") || Path::new(rel).is_absolute() {
+            return Err(format!("manifest: sample path must be relative (`{rel}`)"));
+        }
+        let expected_sha = entry
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("manifest: sample `{rel}` missing sha256"))?;
+        let expected_size = entry
+            .get("size_bytes")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| format!("manifest: sample `{rel}` missing size_bytes"))?;
+        let path = package_dir.join(rel);
+        let meta = fs::symlink_metadata(&path).map_err(|e| format!("sample lstat {rel}: {e}"))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!("sample symlink not allowed: {rel}"));
+        }
+        if !meta.is_file() {
+            return Err(format!("sample missing regular file: {rel}"));
+        }
+        if meta.len() != expected_size {
+            return Err(format!(
+                "sample `{rel}` size {} != manifest {expected_size}",
+                meta.len()
+            ));
+        }
+        let actual = sha256_file(&path)?;
+        if actual != expected_sha {
+            return Err(format!(
+                "sample `{rel}` sha256 mismatch (manifest {expected_sha}, file {actual})"
+            ));
+        }
+    }
+    for rel in expected {
+        if !seen.contains_key(rel) {
+            return Err(format!("manifest: samples[] missing `{rel}`"));
+        }
+    }
+    Ok(())
 }
 
 fn runtime_dependencies(binary: &Path) -> Result<Vec<String>, String> {
@@ -1284,9 +1604,11 @@ mod tests {
                 "runtime_dependencies": ["/usr/lib/libSystem.B.dylib"]
             }));
         }
-        write_notice(dir).unwrap();
+        write_notice(dir, SCHEMA_VERSION_V2).unwrap();
+        let samples =
+            install_preview_sample(dir, PREVIEW_REQUEST_BYTES, PREVIEW_SCENE_PLY_BYTES).unwrap();
         let manifest = json!({
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION_V2,
             "feature": "P2-F07",
             "package_kind": "minimal-cli",
             "revision": "deadbeef",
@@ -1300,6 +1622,7 @@ mod tests {
             "profile": "dev",
             "locked": true,
             "binaries": binaries,
+            "samples": samples,
             "licenses": ["GPL-3.0-or-later"],
             "claims": {
                 "signed_release": false,
@@ -1480,7 +1803,7 @@ mod tests {
         rewrite_manifest(&dir, |m| {
             let binaries = m["binaries"].clone();
             *m = json!({
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": SCHEMA_VERSION_V2,
                 "locked": true,
                 "binaries": binaries,
             });

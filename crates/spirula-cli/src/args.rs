@@ -38,6 +38,12 @@ pub enum CliAction {
         split: String,
         log_dir: Option<PathBuf>,
     },
+    /// Real headless GPU preview (P4-F06).
+    Preview {
+        request: PathBuf,
+        output: PathBuf,
+        log_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug)]
@@ -65,12 +71,13 @@ pub fn parse_args(args: &[&str]) -> Result<CliAction, ParseError> {
         "probe-run" => parse_probe_run(&mut iter),
         "probe" => parse_probe(&mut iter),
         "load-dataset" => parse_load_dataset(&mut iter),
-        "train" | "preview" => Err(ParseError::Usage(
+        "preview" => parse_preview(&mut iter),
+        "train" => Err(ParseError::Usage(
             usage_error(
                 ErrorCode::UnimplementedOption,
-                &format!("{cmd} is not available in this build (wired later)"),
+                "train is not available in this build (wired later)",
             )
-            .with_context(spirula_core::ContextKey::Command, cmd)
+            .with_context(spirula_core::ContextKey::Command, "train")
             .expect("command"),
         )),
         other if other.starts_with('-') => Err(ParseError::Usage(usage_error(
@@ -273,6 +280,52 @@ where
         recon_dir,
         eval_mode,
         split,
+        log_dir,
+    })
+}
+
+fn parse_preview<'a, I>(iter: &mut std::iter::Peekable<I>) -> Result<CliAction, ParseError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut request: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut log_dir: Option<PathBuf> = None;
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--request" => {
+                request = Some(PathBuf::from(require_value(iter, "--request")?));
+            }
+            "--out" => {
+                output = Some(PathBuf::from(require_value(iter, "--out")?));
+            }
+            "--log-dir" => {
+                log_dir = Some(PathBuf::from(require_value(iter, "--log-dir")?));
+            }
+            "--help" | "-h" => return Err(ParseError::Help),
+            other => {
+                return Err(ParseError::Usage(usage_error(
+                    ErrorCode::UnknownCommand,
+                    &format!("unknown preview flag '{other}'"),
+                )));
+            }
+        }
+    }
+    let request = request.ok_or_else(|| {
+        ParseError::Usage(usage_error(
+            ErrorCode::InvalidArgument,
+            "preview requires --request",
+        ))
+    })?;
+    let output = output.ok_or_else(|| {
+        ParseError::Usage(usage_error(
+            ErrorCode::InvalidArgument,
+            "preview requires --out",
+        ))
+    })?;
+    Ok(CliAction::Preview {
+        request,
+        output,
         log_dir,
     })
 }
