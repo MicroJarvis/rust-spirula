@@ -453,3 +453,95 @@ fn synthetic_dispatch_oom_keeps_sp_gpu_004() {
     assert_eq!(events[0].code.as_deref(), Some("SP-GPU-004"));
     assert_eq!(events[0].operation, GpuOperation::Dispatch);
 }
+
+#[test]
+fn retained_owner_recovery_reaps_all_accepted_and_preserves_pending() {
+    let mut ctx = open_ctx();
+    for index in 0..3 {
+        let buf = ctx
+            .create_buffer(BufferDesc {
+                label: ResourceLabel::parse("spirula:gpu:buffer:retained-recovery").unwrap(),
+                size: 64,
+                usage: BufferUsage::COPY_SRC_DST,
+            })
+            .unwrap();
+        ctx.upload_buffer(&buf, 0, &[index; 64]).unwrap();
+        if index == 1 {
+            ctx.inject_next_post_submit_scope_error(ScopeErrorInject::OutOfMemory {
+                requested_bytes: Some(64),
+                current_bytes: Some(64),
+                budget_bytes: Some(1024),
+            });
+        }
+        ctx.submit().unwrap();
+        drop(buf);
+    }
+    let pending = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:pending-owner").unwrap(),
+            size: 16,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&pending, 0, &[9; 16]).unwrap();
+    let before = ctx.pending_resource_counts();
+    assert_eq!(ctx.retained_submission_count(), 3);
+    let error = ctx
+        .wait_retained_submissions(Some(std::time::Duration::from_secs(1)))
+        .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::AllocationFailed);
+    assert_eq!(error.context_value(ContextKey::Actual), Some("64"));
+    assert_eq!(ctx.retained_submission_count(), 0);
+    let after = ctx.pending_resource_counts();
+    assert_eq!(
+        (
+            before.commands,
+            before.stagings,
+            before.buffers,
+            before.textures
+        ),
+        (
+            after.commands,
+            after.stagings,
+            after.buffers,
+            after.textures
+        )
+    );
+    assert_eq!(ctx.resource_accounting().current_bytes, 32);
+    let submission = ctx.submit().unwrap();
+    ctx.wait(submission, None).unwrap();
+    drop(pending);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+}
+
+#[test]
+fn retained_owner_recovery_timeout_retry_and_loss_are_typed() {
+    let mut ctx = open_ctx();
+    let buf = ctx
+        .create_buffer(BufferDesc {
+            label: ResourceLabel::parse("spirula:gpu:buffer:recovery-timeout").unwrap(),
+            size: 16,
+            usage: BufferUsage::COPY_SRC_DST,
+        })
+        .unwrap();
+    ctx.upload_buffer(&buf, 0, &[1; 16]).unwrap();
+    ctx.submit().unwrap();
+    drop(buf);
+    ctx.inject_next_wait_timeout();
+    assert_eq!(
+        ctx.wait_retained_submissions(Some(std::time::Duration::from_secs(1)))
+            .unwrap_err()
+            .code(),
+        ErrorCode::SubmitFailed
+    );
+    assert_eq!(ctx.retained_submission_count(), 1);
+    ctx.wait_retained_submissions(Some(std::time::Duration::from_secs(1)))
+        .unwrap();
+    assert_eq!(ctx.retained_submission_count(), 0);
+    assert_eq!(ctx.resource_accounting().current_bytes, 0);
+    ctx.inject_lost("recovery lost probe");
+    assert_eq!(
+        ctx.wait_retained_submissions(None).unwrap_err().code(),
+        ErrorCode::DeviceLost
+    );
+}

@@ -1,7 +1,10 @@
 //! Gaussian scene representation, render graph, and preview rendering.
 
+mod gpu_tiles;
 mod scene;
 mod splat_buffer;
+mod tiles;
+pub use gpu_tiles::{GpuTileBuilder, TileBuildMetrics};
 
 pub use scene::{
     ColorSpace, CpuReference, ProjectedGaussian, RENDER_CONTRACT_VERSION, RenderPrimitive,
@@ -10,4 +13,8 @@ pub use scene::{
 pub use splat_buffer::{
     GpuSplatBuffer, PackedSplatData, SPLAT_GPU_LAYOUT_VERSION, SPLAT_GPU_STRIDE_BYTES,
     SplatGpuLayout,
+};
+pub use tiles::{
+    CpuTileBuilder, ProjectedTileSplat, TILE_CONTRACT_VERSION, TileBins, TileBuildOptions,
+    TileCoverage, TilePair,
 };

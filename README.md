@@ -94,3 +94,7 @@ validated execution plans, full-state resume and packaging. Detailed acceptance
 is indexed in [development gates](docs/development-gates.md). These are pending
 features; the implementation status above remains authoritative. Brush is an
 offline reference and does not change the Rust/Slint/wgpu/WGSL runtime stack.
+
+P4-F03 development evidence is in [projection/tile contract](docs/phase-4/projection-tiles.md):
+real headless GPU projection, inclusive scan and preflighted pair emission are
+under review. This does not yet provide a preview image or sorted raster path.

@@ -812,6 +812,198 @@ impl GpuContext {
         Ok(())
     }
 
+    /// Encode one P4-F03 projection/count/scan/emission stage. Uses the existing
+    /// 16-byte uniform + read/write storage ABI, with explicit checked ranges.
+    /// Only the versioned projection-tiles shader family is admitted; synthetic
+    /// contexts must not masquerade as GPU numerical evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_projection_tiles(
+        &mut self,
+        pipeline: &ComputePipelineHandle,
+        params_buf: &BufferHandle,
+        input: &BufferHandle,
+        output: &BufferHandle,
+        input_bytes: u64,
+        output_bytes: u64,
+        invocations: u32,
+    ) -> Result<(), DomainError> {
+        self.require_live_for_pipeline()?;
+        if pipeline.key().shader_name != "projection-tiles"
+            || pipeline.key().shader_version != 1
+            || pipeline.key().bind_layout_version != 1
+            || !matches!(
+                pipeline.key().entry_point.as_str(),
+                "project" | "scan" | "emit"
+            )
+        {
+            return Err(inp("not a projection-tiles v1 pipeline", "pipeline"));
+        }
+        validate_affine_aliases(params_buf, input, output)?;
+        let limits = self
+            .report()
+            .ok_or_else(|| gpu_lost("device report missing"))?
+            .device_limits;
+        if input_bytes == 0
+            || output_bytes == 0
+            || !input_bytes.is_multiple_of(4)
+            || !output_bytes.is_multiple_of(4)
+            || input_bytes > limits.max_storage_buffer_binding_size
+            || output_bytes > limits.max_storage_buffer_binding_size
+        {
+            return Err(range_err(
+                "projection-tiles storage range exceeds device limit",
+            ));
+        }
+        let groups = invocations.div_ceil(64);
+        if groups == 0 || groups > limits.max_compute_workgroups_per_dimension {
+            return Err(range_err("projection-tiles dispatch exceeds device limit"));
+        }
+        let scope_inject = self.take_scope_inject();
+        if let Some(inj) = scope_inject {
+            let (req, cur, bud) = inj.oom_meta();
+            // Deterministic probe on both host and synthetic — preserve typed code + bytes.
+            return Err(self.fail_gpu(
+                inj.into_domain_error(crate::diagnostics::ScopeClass::Resource),
+                crate::diagnostics::GpuOperation::Dispatch,
+                None,
+                req,
+                cur,
+                bud,
+            ));
+        }
+        let is_synthetic = self.backend_device_queue().is_none();
+        if is_synthetic {
+            return Err(inp(
+                "projection tiles require a real GPU context",
+                "context",
+            ));
+        }
+
+        let (device, _) = self
+            .backend_device_queue()
+            .ok_or_else(|| gpu_lost("device missing during dispatch"))?;
+
+        let cache = self.pipeline_cache.lock().expect("pipeline cache");
+        let (gpu_pipe, bind_layout) = match cache.lookup_by_handle(pipeline)? {
+            CachedPipeline::Wgpu {
+                pipeline: p,
+                bind_layout,
+                ..
+            } => (p.clone(), bind_layout.clone()),
+            CachedPipeline::Synthetic { .. } => {
+                return Err(inp("pipeline not in wgpu cache", "pipeline"));
+            }
+        };
+        drop(cache);
+
+        let mut led = self.resource_ledger.lock().expect("ledger");
+        led.ensure_live(pipeline.context_id(), pipeline.generation())?;
+        led.ensure_live(params_buf.context_id(), params_buf.generation())?;
+        led.ensure_live(input.context_id(), input.generation())?;
+        led.ensure_live(output.context_id(), output.generation())?;
+
+        validate_affine_buffers(&led, params_buf, input, output, 4)?;
+        if led.buffers[&input.id()].size < input_bytes
+            || led.buffers[&output.id()].size < output_bytes
+        {
+            return Err(range_err("projection-tile storage range exceeds buffer"));
+        }
+
+        let params_b = led
+            .wgpu_buffer(&params_buf.id())
+            .ok_or_else(|| gpu_lost("params gpu missing"))?;
+        let in_b = led
+            .wgpu_buffer(&input.id())
+            .ok_or_else(|| gpu_lost("input gpu missing"))?;
+        let out_b = led
+            .wgpu_buffer(&output.id())
+            .ok_or_else(|| gpu_lost("output gpu missing"))?;
+
+        let params_size = std::num::NonZeroU64::new(AFFINE_U32_PARAMS_BYTES).expect("16");
+        let input_size = std::num::NonZeroU64::new(input_bytes).expect("validated input bytes");
+        let output_size = std::num::NonZeroU64::new(output_bytes).expect("validated output bytes");
+
+        // Narrow ranges: bind Params as 16B and storage as count*4 so a larger
+        // buffer allocation cannot exceed enabled max_*_buffer_binding_size.
+        // Error-scope bind/encode/finish so validation cannot panic exit 101.
+        let finished = match wgpu_scoped(
+            &device,
+            crate::diagnostics::ScopeClass::Resource,
+            None,
+            || {
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("spirula:gpu:bg:projection-tiles"),
+                    layout: &bind_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &params_b,
+                                offset: 0,
+                                size: Some(params_size),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &in_b,
+                                offset: 0,
+                                size: Some(input_size),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &out_b,
+                                offset: 0,
+                                size: Some(output_size),
+                            }),
+                        },
+                    ],
+                });
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("spirula:gpu:encoder:projection-tiles"),
+                });
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("spirula:gpu:compute:projection-tiles"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&gpu_pipe);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.dispatch_workgroups(groups, 1, 1);
+                }
+                encoder.finish()
+            },
+        ) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                // No pending_commands / note_pending on failure.
+                // Keep typed GPU identity (SP-GPU-004 OOM, SP-GPU-003 submit-class,
+                // SP-INP-003 resource validation) — do not remap all scopes to input.
+                drop(led);
+                return Err(self.fail_gpu(
+                    e,
+                    crate::diagnostics::GpuOperation::Dispatch,
+                    None,
+                    None,
+                    None,
+                    None,
+                ));
+            }
+        };
+
+        led.pending_commands
+            .push(crate::resource::PendingGpuCommand {
+                command: finished,
+                staging_id: None,
+            });
+        led.note_pending_buffer(params_buf.id());
+        led.note_pending_buffer(input.id());
+        led.note_pending_buffer(output.id());
+        Ok(())
+    }
+
     fn dispatch_affine_synthetic(
         &mut self,
         pipeline: &ComputePipelineHandle,
@@ -970,7 +1162,14 @@ fn enrich_shader_error(err: DomainError, name: &str) -> DomainError {
     let msg = err.message().to_owned();
     let line = parse_wgsl_error_line(&msg).unwrap_or(1);
     shader_err(format!("shader '{name}' compile/pipeline failed: {msg}"))
-        .with_context(ContextKey::Path, format!("shaders/{name}.wgsl"))
+        .with_context(
+            ContextKey::Path,
+            if name == "projection-tiles" {
+                "crates/spirula-render/shaders/projection-tiles.wgsl".to_owned()
+            } else {
+                format!("shaders/{name}.wgsl")
+            },
+        )
         .expect("path once")
         .with_context(ContextKey::Line, line.to_string())
         .expect("line once")

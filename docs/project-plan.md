@@ -197,7 +197,8 @@ headless tests 覆盖 OpenGL 相机中心/深度、非有限阈值、不支持 p
 P4-F02 已完成：`SplatGpuLayout`/`PackedSplatData`/`GpuSplatBuffer` 固定 64-byte
 GPU record，接入 P2-F03 buffer/staging accounting、预算预检、submit/wait 和
 context generation 校验；契约见 [phase-4/splat-buffer.md](phase-4/splat-buffer.md)。
-P4-F03 负责下一步 projection/tile/bin。
+P4-F03 负责 projection/tile/bin；[当前 worktree 契约](phase-4/projection-tiles.md)
+记录真实 CPU/GPU/C++ 中间结果、预算与压力证据；完整 verify 已通过 8/8，完成状态等待独立审核与合并。
 
 预览里程碑：P4-F01 至 P4-F06 经早期 application/CLI 生成稳定预览，
 CPU/GPU 和图像容差通过。Phase 4 退出条件另需 P4-F07 至 P4-F10 的

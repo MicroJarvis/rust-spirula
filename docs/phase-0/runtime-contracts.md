@@ -379,7 +379,12 @@ are in [../phase-1/cancellation.md](../phase-1/cancellation.md).
 - a session owns one GPU context; no global device singleton (reference
   deviation). Context creation happens in the session worker, never on the UI
   thread;
-- GPU work is submitted through the context; readback and sync are explicit;
+- GPU work is submitted through the context; readback and sync are explicit.
+  Synchronous projection requires an empty unsubmitted queue, preserving other
+  pending owners. After a wait timeout the context owner can explicitly call
+  `wait_retained_submissions(total_timeout)` to reap all accepted work without
+  submitting or clearing pending commands; deadlines retain unfinished work,
+  and lost/post-submit scope failures keep their typed error identity;
 - the UI never creates, uploads, or reads GPU resources. P6-F07 (已完成)
   validates Slint presentation via application-owned `PresentedFrame` host
   values (AD-P6-F07-01: application may call `spirula-gpu` to produce frames;
@@ -437,7 +442,10 @@ errors include the label and operation (`create`, `upload`, `dispatch`,
 
 ### 6.4 Shader and pipeline contract
 
-- shaders are WGSL under `crates/spirula-gpu/shaders/<name>.wgsl`;
+- GPU boundary proofs are WGSL under `crates/spirula-gpu/shaders/<name>.wgsl`;
+  P4-F03 render algorithms live under `crates/spirula-render/shaders/<name>.wgsl`
+  ([projection/tile contract](../phase-4/projection-tiles.md)); compilation,
+  pipeline cache, opaque bindings and dispatch remain in `spirula-gpu`;
 - each file starts with `// spirula-shader: <name> version: <n>`;
 - entry points and bind group layout are declared in a companion contract (the
   render interface), not discovered by string convention at runtime;

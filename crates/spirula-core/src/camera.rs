@@ -135,6 +135,11 @@ impl PinholeCamera {
         [self.fx, self.fy, self.cx, self.cy]
     }
 
+    /// Distortion coefficients for execution capability validation.
+    pub const fn distortion(self) -> OpenCvDistortion {
+        self.distortion
+    }
+
     pub const fn pose(self) -> CameraPose {
         self.pose
     }
