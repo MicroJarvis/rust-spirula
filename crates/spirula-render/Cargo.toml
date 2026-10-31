@@ -7,6 +7,9 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+spirula-core = { path = "../spirula-core" }
+
 
 [lints]
 workspace = true

@@ -176,8 +176,8 @@ Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F01）
 
 | 编号 | 功能点 | 归属 | 前置 | 细分范围 | 交付与验收 | 状态 |
 |---|---|---|---|---|---|---|
-| P4-F01 | 渲染场景与相机接口 | `spirula-render` | P2-F06, P3-F01, P3-F06, P1-F04 | scene/camera/render request 和 CPU reference；固定参数化/坐标/色彩/SH/阈值；校验渲染能力与有效选项 | 版本化数值契约和 GPU f32 容差；不支持项显式拒绝；CPU f64 数学门禁单独保留 | 当前 |
-| P4-F02 | splat 上传与资源绑定 | `spirula-render`/`spirula-gpu` | P4-F01, P2-F03, P2-F04 | 上传布局/对齐和 bind group；验证 render/train 共享资源的窄接口；空场景、重用、失效 handle 和释放 | 布局有中间 buffer 对照；共享资源无隐藏 host copy；资源生命周期和分配字节可诊断 | 未开始 |
+| P4-F01 | 渲染场景与相机接口 | `spirula-render` | P2-F06, P3-F01, P3-F06, P1-F04 | scene/camera/render request 和 CPU reference；固定参数化/坐标/色彩/SH/阈值；校验渲染能力与有效选项 | 版本化数值契约和 GPU f32 容差；不支持项显式拒绝；CPU f64 数学门禁单独保留 | 已完成 |
+| P4-F02 | splat 上传与资源绑定 | `spirula-render`/`spirula-gpu` | P4-F01, P2-F03, P2-F04 | 上传布局/对齐和 bind group；验证 render/train 共享资源的窄接口；空场景、重用、失效 handle 和释放 | 布局有中间 buffer 对照；共享资源无隐藏 host copy；资源生命周期和分配字节可诊断 | 当前 |
 | P4-F03 | 投影与 tile/bin 构建 | `spirula-render` | P4-F01, P4-F02 | 投影/裁剪和 tile 覆盖；交点数溢出/预算预检；scan 与 CPU 中间 buffer 比较；大 footprint 压力样本 | 数值在容差内；空输入/边界/超预算有稳定结果；记录交点峰值、scratch 和同步耗时 | 未开始 |
 | P4-F04 | 排序与光栅化 | `spirula-render` | P4-F03 | 深度键和稳定 radix 排序；非整块/重复键/空输入；光栅覆盖、scratch 和高重叠压力；能力回退 | 同深度顺序和边界明确；CPU/确定性样本对照通过；记录分阶段耗时和资源峰值 | 未开始 |
 | P4-F05 | 合成与深度 | `spirula-render` | P4-F04 | 实现颜色/透明度合成；实现深度写入和清除；用 golden 图像与误差容限验收 | 颜色、透明度、深度和异常输入有 golden 图像或数值验收 | 未开始 |
@@ -186,6 +186,13 @@ Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F01）
 | P4-F08 | 光栅化与合成反向传播 | `spirula-render` | P4-F07 | 像素到投影参数 VJP；透明度/遮挡/early-out/cutoff 导数；CPU 微型梯度参考 | 平滑区域有限差分通过；生产硬阈值单独测试；记录 eps/容差和失败样本 | 未开始 |
 | P4-F09 | 投影与 SH 反向传播 | `spirula-render` | P4-F07 | 协方差/投影 Jacobian；quat normalize/log-scale/opacity 链；SH viewdir→mean；当前支持相机模型 | 每类可训练参数有数值梯度对照；极值/非有限输入有定义；未支持模型不得进入训练 | 未开始 |
 | P4-F10 | 梯度聚合与可微渲染验收 | `spirula-render`/`spirula-gpu` | P4-F08, P4-F09, P2-F01 | 跨 tile 梯度聚合及 visible→full gather；WGSL CAS/分阶段归约能力策略；refinement 统计；高重叠压力 | 完整前后向有限差分通过；梯度有限；记录非确定性/原子竞争/峰值；作为 P5-F02 前置 | 未开始 |
+
+P4-F01 已完成：`spirula-render` 提供版本化 `RenderRequest`、固定 degree-0
+Gaussian/linear-RGB 参数化、共享阈值契约和 `CpuReference::project`。focused
+headless tests 覆盖 OpenGL 相机中心/深度、非有限阈值、不支持 primitive/SH、
+相机背面输入和 contract version。完整契约见
+[docs/phase-4/render-scene-camera.md](phase-4/render-scene-camera.md)。上传、GPU
+投影/排序、光栅化、合成、readback、训练前向和 UI 仍属于后续功能。
 
 预览里程碑：P4-F01 至 P4-F06 经早期 application/CLI 生成稳定预览，
 CPU/GPU 和图像容差通过。Phase 4 退出条件另需 P4-F07 至 P4-F10 的
@@ -278,7 +285,7 @@ Phase 9 退出条件：P9-F01 至 P9-F05 的发布清单可复现，性能结果
 已完成 P0-F01–P0-F06、P1-F01–P1-F09、P2-F01–P2-F07、提前执行的 P6-F07、
 P3-F01、P3-F02、P3-F03、P3-F04、P3-F05、P3-F06、P3-F07、P3-F08；Phase 1 退出条件已满足，Phase 2 退出条件尚未满足（surface
 present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成而推断 Phase 2
-出口通过）。**当前功能为 P4-F01**。计划编号总数 **75**（**P2-F08** 未开始）。
+出口通过）。**当前功能为 P4-F02**。计划编号总数 **75**（**P2-F08** 未开始）。
 后续按依赖推进，每个编号独立 worktree、实现和验收；下列分组只是执行顺序，
 不会把组内多个编号合并成一个已完成功能：
 
@@ -299,7 +306,7 @@ present 仍未验证，不得因 P2 功能点全部完成或 P6-F07 tip 完成�
    CPU host golden 与后续 GPU 容差分离；exact-fit active source `-1` 保留
    original metadata。其中 **P3-F03（COLMAP 读取）是数据侧关键路径**（已交付）：
    P5-F08、P4-F01 以及几乎所有 P3 后续编号都直接或间接依赖它。
-5. **P5-F08：可执行训练计划（已完成）** → **P4-F01：渲染场景与相机接口（当前）**；随后 P4-F02–P4-F06：经共享 CLI 输出真实预览。
+5. **P5-F08：可执行训练计划（已完成）** → **P4-F01：渲染场景与相机接口（已完成）** → **P4-F02：splat 上传与资源绑定（当前）**；随后 P4-F03–P4-F06：经共享 CLI 输出真实预览。
 6. P4-F07–P4-F10：训练前向状态、两段 VJP、梯度聚合与数值验收。
 7. P5-F01–P5-F04：训练调度、一步优化、增长/剪枝和评估。
 8. P5-F05/P5-F06 → P5-F07：完整检查点、新进程恢复与微型训练包。
@@ -453,7 +460,7 @@ source `-1` vs original metadata；golden 已在 `fixtures/manifest.json`
 第三方 `image` mid-decode Non-claim 不阻塞 READY）。**P3-F03 已完成（独立
 READY）**（代码 tip `813729f8238f6730ad0235416371197fc4bd985a`；契约
 [phase-3/colmap.md](phase-3/colmap.md)；C-DATA-01..03 / C-DATA-06）。按原路线
-**当前功能为 P4-F01**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
+**当前功能为 P4-F02**。计划编号总数仍为 **75**。**诚实边界**：P2-F01–P2-F07
 与 P6-F07 tip 全部完成 **不** 等于 Phase 2 出口通过——surface present 仍未
 验证（**P2-F08 未开始**）；正式 UI / train/preview / P6-F03 导航未接入；不声称
 真实硬件 OOM；60 s watchdog 仍 deferred；dense `fit_model` 单次 LM 不可抢占；
