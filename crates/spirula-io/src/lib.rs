@@ -14,6 +14,7 @@
 pub mod atomic;
 pub mod camera_catalog;
 pub mod cancel_checkpoint;
+pub mod checkpoint;
 pub mod colmap;
 pub mod config_fs;
 pub mod fixtures;
@@ -36,6 +37,10 @@ pub mod temp_harness;
 
 pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entry};
 pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CANCEL_WORK_CHUNK, CancelCheckpoint};
+pub use checkpoint::{
+    CheckpointClass, CheckpointMetadata, CheckpointStateMetadata, NpyBlockMetadata,
+    read_checkpoint_metadata, require_full_resume,
+};
 pub use colmap::{
     ColmapLoadConfig, DatasetFormat, DatasetLoadSummary, DatasetProbe, ParsedDataset,
     load_colmap_dataset, load_colmap_dataset_budgeted, load_dataset, load_dataset_budgeted,
