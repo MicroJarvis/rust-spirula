@@ -1,7 +1,9 @@
 # P4-F04: stable depth sorting and raster coverage
 
-Status: **当前**, implementation under independent review; no completion or
-merge claim. Owner: `spirula-render`; opaque compute binding/dispatch is
+Status: **已完成**, independently reviewed and merged. Code tip
+`de76f79b502d8f4f8905f95f73051dcad7d3a6ab`, merge
+`e415f9e521674abb1203c27fb4568496ff7b939c`.
+Owner: `spirula-render`; opaque compute binding/dispatch is
 `spirula-gpu`. Color/transmittance/depth compositing stays P4-F05; CLI preview
 stays P4-F06.
 
@@ -165,8 +167,8 @@ raster_sync=1.9055ms
 current_bytes=0 retained_submissions=0 after return
 ```
 
-Final local gates before this feature commit (code review passed; completion /
-merge still owned by the main thread): GPU
+Final implementation gates, followed by independent review and merge: GPU
 `SPIRULA_REQUIRE_RENDER_GPU=1 cargo run -p spirula-xtask -- verify` **8/8 in
 23.2 s**; `spirula-render` tests **30/30**; independent
-`p4_f04_review` **4/4**. Status remains **当前**.
+`p4_f04_review` **4/4**, including full-normal-f32-exponent depth ordering.
+Completion records and subsequent gate results are in [README.md](README.md).
