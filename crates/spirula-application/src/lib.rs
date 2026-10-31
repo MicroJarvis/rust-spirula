@@ -18,6 +18,7 @@ mod image_ops;
 mod limits;
 mod notify;
 mod presentation;
+mod preview_ops;
 mod session;
 mod state;
 mod worker;
@@ -38,6 +39,7 @@ pub use presentation::{
     DeliveredFrame, PresentationOwner, PresentationStats, PresentationStatus,
     produce_presentation_frame_once,
 };
+pub use preview_ops::PreviewSummary;
 pub use session::{ApplicationService, SubscribeHandoffError};
 pub use state::SessionState;
 pub use worker::{DatasetLoadOk, FakeWorkerBehavior, ImagePrepareOk, StallGate, WorkerEvent};

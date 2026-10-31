@@ -15,8 +15,9 @@ spirula-ui ───────┐
 spirula-cli ──────┼──> spirula-application
                   │          │
                   │          ├──> spirula-gpu     (P6-F07: presentation produce only)
+                  │          ├──> spirula-render  (P4-F06: headless preview facade)
+                  │          ├──> spirula-io      (dataset + preview request/PNG)
                   │          ├──> spirula-train ──> spirula-render ──> spirula-gpu  (later)
-                  │          ├──> spirula-io ──────> spirula-core                 (later)
                   │          └──> spirula-core
                   └──> spirula-core
 ```
@@ -26,6 +27,10 @@ cancellation, recoverable control history, snapshots/cursors, and a fake probe
 worker. **AD-P6-F07-01** adds a narrow `spirula-application` → `spirula-gpu`
 edge for presentation frame production only (no direct `wgpu*` in application
 or UI; UI still consumes host `PresentedFrame` / Slint `Image` only).
+**P4-F06** adds `spirula-application` → `spirula-render` for the headless
+preview facade only (render owns `GpuContext` open/compose/pack/cleanup; not
+the presentation edge) and uses `spirula-io` for the versioned preview request
+plus opaque RGB8 PNG encode/publish.
 P1-F09 supplies the early CLI; P6-F01 integrates full business services.
 `spirula-train` owns step scheduling, not a second application state machine.
 
@@ -76,15 +81,18 @@ Slint widgets.
 
 Unique logical session owner: command admission, Stop/Shutdown control, cancel
 token, recoverable control history, snapshots/cursors, bounded notify fanout,
-a fake probe worker (P1-F07), optional rotated disk diagnostics (P1-F09), and
+a fake probe worker (P1-F07), optional rotated disk diagnostics (P1-F09),
 (P6-F07) an application-owned presentation owner that opens `GpuContext` and
-publishes host `PresentedFrame` values through a capacity-1 latest-frame slot.
-State mutations are serialized through one owner mutex (callers and the
-mailbox loop); UI/CLI must not duplicate the business state machine. Public
-deps: `spirula-core` plus narrow `spirula-gpu` for presentation (AD-P6-F07-01);
-train/io edges remain for later. Bindings:
+publishes host `PresentedFrame` values through a capacity-1 latest-frame slot,
+and (P4-F06) one `Preview` command that loads via `spirula-io` and renders via
+the render-owned headless facade. State mutations are serialized through one
+owner mutex (callers and the mailbox loop); UI/CLI must not duplicate the
+business state machine. Public deps: `spirula-core`, narrow `spirula-gpu` for
+presentation (AD-P6-F07-01), `spirula-io`, and `spirula-render` for preview;
+train edges remain for later. Bindings:
 [phase-1/application.md](phase-1/application.md),
 [phase-1/cli.md](phase-1/cli.md),
+[phase-4/preview-output.md](phase-4/preview-output.md),
 [phase-6/presentation-path.md](phase-6/presentation-path.md).
 
 ### `spirula-ui`
@@ -238,7 +246,8 @@ owner of that remaining condition** (未开始; unsupported host records and
 software paint must not be read as present completion or as an automatic
 lowering of the Phase 2 exit; see
 [phase-2/gpu-surface-present.md](phase-2/gpu-surface-present.md)).
-Train/preview and P6-F03 navigation remain unwired. P3-F01 is **已完成**
+Train and P6-F03 navigation remain unwired; P4-F06 wires CLI `preview` through
+the shared application session (UI viewport still later). P3-F01 is **已完成**
 (landed on main; code tip `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`; see
 [phase-3/camera.md](phase-3/camera.md): four models / three tiers / CameraMath
 goldens / SourceCamera + DistortionFit LM/Lawson/ladder; orthographic

@@ -162,7 +162,9 @@ fn capabilities_lists_available_and_unavailable() {
     let out = run_output(&["capabilities"], &[], Duration::from_secs(5));
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("unavailable: train, preview"));
+    assert!(stdout.contains("unavailable: train"));
+    assert!(stdout.contains("preview"));
+    assert!(!stdout.contains("unavailable: train, preview"));
 }
 
 #[test]

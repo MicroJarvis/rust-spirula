@@ -43,6 +43,7 @@ fn fixtures_pass_all_checks() {
             "splats: PLY headers, raw values, bounds and checkpoint copy",
             "checkpoint: ustar entries, state.json, NPY payloads and run config",
             "render: golden PPM/PNG, projected center and analytic alpha",
+            "preview: request schema/version, relative splat path, 3x2 camera",
         ]
     );
 }

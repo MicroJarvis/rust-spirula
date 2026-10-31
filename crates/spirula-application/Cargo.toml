@@ -14,6 +14,8 @@ spirula-core = { path = "../spirula-core" }
 spirula-gpu = { path = "../spirula-gpu" }
 # P3-F02: real image orient/mask entry (architecture application → io).
 spirula-io = { path = "../spirula-io" }
+# P4-F06: headless preview via render-owned GPU facade (not presentation GpuContext).
+spirula-render = { path = "../spirula-render" }
 
 [dev-dependencies]
 libc = "0.2"

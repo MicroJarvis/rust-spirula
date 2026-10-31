@@ -1,0 +1,17 @@
+# Independent P4-F06 byte packing reference: finite linear clamp[0,1],
+# nearest positive integer (C++ lround) after *255. No sRGB transfer.
+# Pinned C++ TrainerCore.cpp:1977 to_png_bytes. Not renderer output.
+# rgb cases: name linear_R linear_G linear_B expected_R expected_G expected_B
+black 0 0 0 0 0 0
+white 1 1 1 255 255 255
+half 0.5 0.5 0.5 128 128 128
+background 0.1 0.2 0.3 26 51 77
+clamp -2 2 0.25 0 255 64
+subhalf 0.0019607745 0.00392156862745098 0.75 0 1 191
+analytic_splat 0.05 0.35 0.6820947917738781 13 89 174
+# analytic_splat is alpha.5, DC(-2,0,2), z2, bg(.1,.2,.3):
+# color=max(C0*DC+.5,0), C0=.28209479177387814.
+# 3x2 pinhole fx=fy=1,cx=cy=.5, mean(0,0,-2), logscale=-30,
+# logit0, cutoff.1. min covariance.3 => adjacent alpha<cutoff.
+# Full expected top-left-origin RGB8 image is analytic_splat at (0,0)
+# and background at all remaining five pixels. Opaque PNG has no splat alpha.

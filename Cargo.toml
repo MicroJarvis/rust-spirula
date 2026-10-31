@@ -16,6 +16,8 @@ resolver = "3"
 sha2 = "0.10.9"
 serde_json = "1.0.154"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg", "bmp", "tga", "tiff", "exr"] }
+# Pinned for P4-F06 streaming PNG encode (same major as image 0.25.x).
+png = "0.18"
 
 [workspace.package]
 version = "0.1.0"

@@ -232,6 +232,11 @@ impl SplatSet {
         &self.splats
     }
 
+    /// Accounted host bytes for the live splat `Vec` capacity (not RSS).
+    pub fn host_capacity_bytes(&self) -> u64 {
+        (self.splats.capacity() as u64).saturating_mul(std::mem::size_of::<GaussianSplat>() as u64)
+    }
+
     pub fn bounds(&self) -> (Vec3, Vec3) {
         let mut min = self.splats[0].mean().to_array();
         let mut max = min;

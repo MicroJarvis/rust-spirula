@@ -64,8 +64,20 @@ in the manifest values beyond recorded host triple/toolchain strings.
 
 ### Manifest fields
 
-`MANIFEST.json` schema version 1 records (all required; missing/empty/wrong-type
-→ typed `manifest:` failure):
+`MANIFEST.json` supports two schema versions (compatible read):
+
+| schema_version | Layout | Notes |
+|---|---|---|
+| **1** (legacy P2-F07) | `MANIFEST.json`, `NOTICE`, `bin/` + three bins | Must **not** declare `samples[]` or contain `sample/` |
+| **2** (P4-F06) | schema 1 + `sample/preview/{request.json,scene.ply}` | Requires `samples[]` with path/sha256/size_bytes for both files |
+
+New packages that include the preview sample emit **schema 2**. Clean
+`--from-ref` builds copy sample bytes from the selected `build_root` (same
+revision as binaries); dirty-dev host assembly may embed fixtures compiled into
+xtask (not clean-ref proof). A build tree that predates `fixtures/preview`
+emits honest schema 1 without samples.
+
+Common required fields (missing/empty/wrong-type → typed `manifest:` failure):
 
 - `feature` = `P2-F07`, `package_kind` = `minimal-cli`
 - `revision` (git SHA), `version` (workspace package version)
@@ -79,10 +91,9 @@ in the manifest values beyond recorded host triple/toolchain strings.
 - `claims` object with the six honesty bools
 - `NOTICE` must exist as a regular (non-symlink) file
 
-Package layout allowlist only: `MANIFEST.json`, `NOTICE`, `bin/`, and the three
-canonical binaries. Symlinks (including under `bin/` or parents), extra files,
-or dangling links fail with `layout:`. This is execution/integrity consistency,
-**not** cryptographic signing of rewritten manifests.
+Symlinks (including under `bin/`/`sample/` or parents), extra files, or dangling
+links fail with `layout:`. This is execution/integrity consistency, **not**
+cryptographic signing of rewritten manifests.
 
 ### Atomic publish
 
@@ -110,11 +121,16 @@ Complete staging → **one** no-replace directory rename (not child-by-child):
   package root itself has no repo markers).
 - Runs with an arbitrary cwd (including paths with spaces) and a scrubbed env
   (no `CARGO_*` / `RUSTUP_*` / workspace `SPIRULA_*` that imply a checkout).
+- After copy, re-run full `check_package` on the isolate (bin + sample hashes).
 - Required checks:
   1. `spirula help` → exit 0
   2. `spirula capabilities` → exit 0
   3. `spirula probe --label pkg --steps 1` → exit 0 (fake probe)
-  4. `spirula-gpu-smoke --compute` → exit 0 with either:
+  4. Preview:
+     - schema 2 → `spirula preview` → exit 0; full RGB8 decode of 3×2 with the
+       fixed independent golden pixels (not a signature-only check)
+     - schema 1 → preview reported **unavailable** (not pretended as success)
+  5. `spirula-gpu-smoke --compute` → exit 0 with either:
      - `status=pass` **and** `match=cpu_exact` **and** `after_drop current=0`, or
      - `status=skip` with an explicit open/adapter reason (**not** counted as pass)
 
@@ -129,7 +145,8 @@ Complete staging → **one** no-replace directory rename (not child-by-child):
 ### Non-goals (this slice)
 
 - No P9-F04 full installer / three-platform matrix / code signing / notarization.
-- No train / preview / UI / application GPU session wiring.
+- No train / UI / application GPU session wiring. Schema-2 packages include a
+  tiny `spirula preview` sample; schema-1 remains readable without preview.
 - No claim that surface present smoke is verified (F06 surface remains
   unsupported).
 - Phase 2 exit **not** closed by completing P2-F01–P2-F07 alone (surface

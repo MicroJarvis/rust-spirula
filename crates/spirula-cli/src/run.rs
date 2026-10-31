@@ -109,6 +109,7 @@ pub fn run_action(action: CliAction) -> CliExit {
         CliAction::ProbeLoad { label, log_dir } => run_session(SessionPlan {
             load_label: Some(label),
             dataset: None,
+            preview: None,
             steps: None,
             log_dir,
             step_delay_ms: None,
@@ -123,6 +124,7 @@ pub fn run_action(action: CliAction) -> CliExit {
         } => run_session(SessionPlan {
             load_label,
             dataset: None,
+            preview: None,
             steps: Some(steps),
             log_dir,
             step_delay_ms,
@@ -137,6 +139,7 @@ pub fn run_action(action: CliAction) -> CliExit {
         } => run_session(SessionPlan {
             load_label: Some(label),
             dataset: None,
+            preview: None,
             steps,
             log_dir,
             step_delay_ms,
@@ -156,6 +159,20 @@ pub fn run_action(action: CliAction) -> CliExit {
                 eval_mode,
                 split,
             }),
+            preview: None,
+            steps: None,
+            log_dir,
+            step_delay_ms: None,
+            save_on_stop: true,
+        }),
+        CliAction::Preview {
+            request,
+            output,
+            log_dir,
+        } => run_session(SessionPlan {
+            load_label: None,
+            dataset: None,
+            preview: Some(PreviewPlan { request, output }),
             steps: None,
             log_dir,
             step_delay_ms: None,
@@ -171,9 +188,15 @@ struct DatasetPlan {
     split: String,
 }
 
+struct PreviewPlan {
+    request: PathBuf,
+    output: PathBuf,
+}
+
 struct SessionPlan {
     load_label: Option<String>,
     dataset: Option<DatasetPlan>,
+    preview: Option<PreviewPlan>,
     steps: Option<u64>,
     log_dir: Option<PathBuf>,
     step_delay_ms: Option<u64>,
@@ -337,6 +360,52 @@ fn run_session(plan: SessionPlan) -> CliExit {
         }
     }
 
+    if let Some(pv) = &plan.preview {
+        cancel.try_admit_stop(&app, &out);
+        if cancel.intent {
+            return abort_canceled(&app, &sub, &out, &mut cancel, &mut present, saw_cancel_exit);
+        }
+        let id = match app.submit(Command::new(CommandPayload::Preview {
+            request_path: pv.request.display().to_string(),
+            output_path: pv.output.display().to_string(),
+        })) {
+            SubmitOutcome::Accepted { id } => id,
+            SubmitOutcome::Rejected { error } => {
+                let _ = out.shutdown(Duration::from_millis(200));
+                return CliExit::Error {
+                    error,
+                    stage: ProcessStage::InSession,
+                };
+            }
+        };
+        cancel.try_admit_stop(&app, &out);
+        match wait_for_command(
+            &app,
+            &sub,
+            &out,
+            id,
+            &mut cancel,
+            &mut present,
+            &mut saw_cancel_exit,
+        ) {
+            WaitEnd::Exit(exit) => {
+                // Failure (1) / durability Error / pre-commit cancel (130).
+                return finalize_wait(&app, &out, WaitEnd::Exit(exit), saw_cancel_exit);
+            }
+            WaitEnd::Success => {
+                // Authoritative Preview Completed (rename committed): late
+                // SIGINT must not rewrite exit 0 → 130.
+                return finish_preview_committed_success(
+                    &app,
+                    &sub,
+                    &out,
+                    &mut cancel,
+                    &mut present,
+                );
+            }
+        }
+    }
+
     if let Some(label) = &plan.load_label {
         cancel.try_admit_stop(&app, &out);
         if cancel.intent {
@@ -459,6 +528,35 @@ fn finish_idle_success(
     let _ = app.submit(Command::new(CommandPayload::Shutdown));
     drain_until_shutdown(app, sub, out, cancel, present);
     finalize_code(app, out, EXIT_SUCCESS, saw_cancel_exit || cancel.intent)
+}
+
+/// Preview-only: after the session already emitted authoritative `Completed`
+/// for a published Preview, drain/shutdown as usual but **keep exit 0** even
+/// if a late Stop/SIGINT arrives. Probe / dataset idle success still uses
+/// [`finish_idle_success`] (cancel may override 0→130).
+fn finish_preview_committed_success(
+    app: &ApplicationService,
+    sub: &spirula_application::Subscription,
+    out: &OutputSink,
+    cancel: &mut CancelGate,
+    present: &mut PresentTracker,
+) -> CliExit {
+    // Observe for drain Stop admission only — do not abort_canceled.
+    cancel.observe_signals();
+    let _ = app.submit(Command::new(CommandPayload::Shutdown));
+    drain_until_shutdown(app, sub, out, cancel, present);
+    let _ = app.flush_disk_log(Duration::from_millis(200));
+    let _ = out.flush(Duration::from_millis(200));
+    let _ = out.shutdown(Duration::from_millis(200));
+    // Late signal after rename must not change the product exit.
+    finalize_preview_committed_success_code(cancel.intent || signals::stop_requested())
+}
+
+/// Pure finalizer for committed Preview success. `late_cancel` is recorded for
+/// determinism in tests but **ignored** for the exit code.
+fn finalize_preview_committed_success_code(late_cancel: bool) -> CliExit {
+    let _ = late_cancel;
+    CliExit::Code(EXIT_SUCCESS)
 }
 
 fn abort_canceled(
@@ -672,4 +770,39 @@ fn finalize_code_bare(code: u8, saw_cancel: bool) -> CliExit {
         return CliExit::Code(EXIT_CANCELED);
     }
     CliExit::Code(code)
+}
+
+#[cfg(test)]
+mod preview_committed_finalizer_tests {
+    use super::{CliExit, finalize_code_bare, finalize_preview_committed_success_code};
+    use spirula_core::{EXIT_CANCELED, EXIT_SUCCESS};
+
+    #[test]
+    fn committed_preview_success_ignores_late_cancel_signal() {
+        match finalize_preview_committed_success_code(true) {
+            CliExit::Code(code) => assert_eq!(code, EXIT_SUCCESS),
+            CliExit::Error { .. } => panic!("committed Preview success must be Code(0)"),
+        }
+        match finalize_preview_committed_success_code(false) {
+            CliExit::Code(code) => assert_eq!(code, EXIT_SUCCESS),
+            CliExit::Error { .. } => panic!("committed Preview success must be Code(0)"),
+        }
+    }
+
+    #[test]
+    fn generic_idle_finalizer_still_overrides_success_on_cancel() {
+        // Probe/dataset semantics unchanged: late cancel rewrites 0 → 130.
+        match finalize_code_bare(EXIT_SUCCESS, true) {
+            CliExit::Code(code) => assert_eq!(code, EXIT_CANCELED),
+            CliExit::Error { .. } => panic!("expected Code"),
+        }
+        match finalize_code_bare(EXIT_CANCELED, true) {
+            CliExit::Code(code) => assert_eq!(code, EXIT_CANCELED),
+            CliExit::Error { .. } => panic!("expected Code"),
+        }
+        match finalize_code_bare(EXIT_SUCCESS, false) {
+            CliExit::Code(code) => assert_eq!(code, EXIT_SUCCESS),
+            CliExit::Error { .. } => panic!("expected Code"),
+        }
+    }
 }

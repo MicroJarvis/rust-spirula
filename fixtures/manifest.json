@@ -239,6 +239,16 @@
       "sha256": "9ce9330e6053cb4dd60f87f76ce513ae34a53fc12bc0c9d9eff4840e72371867"
     },
     {
+      "path": "preview/request.json",
+      "bytes": 448,
+      "sha256": "0fd816db14d920780729fc0b39a38c39d4ae78c47acca3e7446f46732d87122f"
+    },
+    {
+      "path": "preview/scene.ply",
+      "bytes": 546,
+      "sha256": "f3f3f46fd91a0bfb8021694c5373f7ea4d78b1412a5f9b001f821fe8c5301ba1"
+    },
+    {
       "path": "render/golden.png",
       "bytes": 857,
       "sha256": "7123e7c8199f8966d13208d3ef2fa438a876e0c5f1daf3aa0bf0e642bd63675e"

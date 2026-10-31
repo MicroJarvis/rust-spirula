@@ -20,6 +20,7 @@ fixtures/
   splats/render_splat.ply             # one splat for the micro render
   checkpoints/tiny-run/               # config.json + step-000000001.ckpt/
   render/                             # render request, golden PPM and PNG
+  preview/                            # P4-F06 preview request + scene.ply
   golden/                             # parsed expectations for each fixture
   images/                             # P3-F02 formats/orient/mask/depth/normal + C++ golden
 ```

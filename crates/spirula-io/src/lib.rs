@@ -30,6 +30,7 @@ pub mod metashape;
 pub mod nerfstudio;
 pub mod perf;
 pub mod ply;
+pub mod preview;
 pub mod region_io;
 pub mod sample_workload;
 pub mod scene_apply;
@@ -55,6 +56,12 @@ pub use nerfstudio::{load_nerfstudio_dataset, load_nerfstudio_dataset_budgeted};
 pub use ply::{
     read_ply_points, read_ply_points_budgeted, read_ply_splats, read_ply_splats_budgeted,
     write_ply_splats, write_ply_splats_budgeted,
+};
+pub use preview::{
+    LoadedPreviewScene, PREVIEW_REQUEST_HARDCAP_BYTES, PREVIEW_REQUEST_SCHEMA,
+    PREVIEW_REQUEST_VERSION, PreviewBudgets, PreviewRequestV1, decode_preview_png_rgb8,
+    encode_preview_png_rgb8, load_preview_request, load_preview_scene, parse_png_ihdr_rgb8,
+    preview_encode_host_need, preview_png_decode_scratch_bytes, publish_preview_png,
 };
 pub use region_io::{
     parse_region_bytes, read_region_json, region_from_value, region_to_json, region_to_value,

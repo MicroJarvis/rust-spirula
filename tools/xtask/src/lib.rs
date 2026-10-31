@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 
 pub use gate::{GateStep, diff_gate_step, ensure_compile_steps_pin_host, workspace_gate_steps};
 pub use package::{
-    AssembleMeta, IsolatedRunReport, PACKAGE_BINARIES, PackageOptions, PackageOutcome,
-    assemble_package_from_bin_dir, assemble_package_from_bin_dir_with_before_publish,
-    build_package, check_package, run_package_isolated,
+    AssembleMeta, IsolatedPreviewOutcome, IsolatedRunReport, PACKAGE_BINARIES, PackageOptions,
+    PackageOutcome, SampleOrigin, assemble_package_from_bin_dir,
+    assemble_package_from_bin_dir_with_before_publish, build_package, check_package,
+    run_package_isolated,
 };
 pub use policy::{PolicyReport, check_workspace_policy, rustc_host_triple};
 

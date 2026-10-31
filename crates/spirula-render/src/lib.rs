@@ -29,8 +29,15 @@ pub use sort_raster::{
 
 mod compositing;
 mod gpu_compositing;
+mod preview;
 pub use compositing::{
     BackgroundPolicy, COMPOSITE_CONTRACT_VERSION, CompositeImage, CompositeOptions, CompositePixel,
     CpuCompositor, sh0_to_color,
 };
 pub use gpu_compositing::{CompositeMetrics, GpuCompositor};
+pub use preview::{
+    HeadlessPreviewMetrics, HeadlessPreviewResult, PREVIEW_FLOAT_BYTES_PER_PIXEL,
+    PREVIEW_PACK_CONTRACT_VERSION, PREVIEW_RGB8_BYTES_PER_PIXEL, PreviewRgb8,
+    pack_composite_to_preview_rgb8, preview_host_float_plus_rgb8_bytes, quantize_linear_channel_u8,
+    run_headless_gpu_preview,
+};

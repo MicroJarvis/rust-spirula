@@ -107,6 +107,21 @@ pub enum Event {
         kept: u64,
         alpha: bool,
     },
+    /// Real P4-F06 preview PNG published (bounded summary only; no image bytes).
+    /// Stage walls are host wall-clock; `rgb8_bytes`/`png_bytes` are payload
+    /// sizes (not bus-moved counters).
+    PreviewPublished {
+        path: String,
+        width: u32,
+        height: u32,
+        splat_count: u64,
+        rgb8_bytes: u64,
+        png_bytes: u64,
+        wall_load_ns: u128,
+        wall_render_ns: u128,
+        wall_encode_ns: u128,
+        wall_publish_ns: u128,
+    },
     CheckpointSaved {
         step: u64,
         label: String,
@@ -187,6 +202,29 @@ impl Clone for Event {
                 kept: *kept,
                 alpha: *alpha,
             },
+            Self::PreviewPublished {
+                path,
+                width,
+                height,
+                splat_count,
+                rgb8_bytes,
+                png_bytes,
+                wall_load_ns,
+                wall_render_ns,
+                wall_encode_ns,
+                wall_publish_ns,
+            } => Self::PreviewPublished {
+                path: path.clone(),
+                width: *width,
+                height: *height,
+                splat_count: *splat_count,
+                rgb8_bytes: *rgb8_bytes,
+                png_bytes: *png_bytes,
+                wall_load_ns: *wall_load_ns,
+                wall_render_ns: *wall_render_ns,
+                wall_encode_ns: *wall_encode_ns,
+                wall_publish_ns: *wall_publish_ns,
+            },
             Self::CheckpointSaved { step, label } => Self::CheckpointSaved {
                 step: *step,
                 label: label.clone(),
@@ -227,6 +265,8 @@ impl Event {
             Self::DatasetLoaded { path, format, .. } => 64 + path.len() + format.len(),
             Self::ImagePrepared { path, .. } => 48 + path.len(),
             Self::MaskPrepared { path, .. } => 48 + path.len(),
+            // 4×u128 stage walls (64) + splat/rgb8/png counters + dims ≈ 128 + path.
+            Self::PreviewPublished { path, .. } => 128 + path.len(),
             Self::CheckpointSaved { label, .. } => 48 + label.len(),
             Self::ShutdownComplete => 24,
         }
