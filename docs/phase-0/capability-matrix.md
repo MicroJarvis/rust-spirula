@@ -50,8 +50,8 @@ refer to [fixtures.md](fixtures.md).
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
-| C-REN-01 | scene/primitive representation | `primitives/Primitive.cuh`, `engine/Engine.h` | splats | device arrays | means/quats wxyz/log scales/logit opacity/DC/SH | P4-F01 fixtures | `spirula-render` | 进行中 |
-| C-REN-02 | camera parameter binding | `engine/Engine.h:75-84` | camera + view matrices | GPU uniforms | intrinsics fx/fy/cx/cy; value-parameterized model/tier | P4-F01/P4-F02 | `spirula-render` | 未开始 |
+| C-REN-01 | scene/primitive representation | `primitives/Primitive.cuh`, `engine/Engine.h` | splats | device arrays | means/quats wxyz/log scales/logit opacity/DC/SH | P4-F01 `RenderRequest` and CPU projection tests; GPU arrays remain P4-F02 | `spirula-render` | 已完成 |
+| C-REN-02 | camera parameter binding | `engine/Engine.h:75-84` | camera + view matrices | GPU-independent camera request | intrinsics fx/fy/cx/cy; value-parameterized model/tier | P4-F01 `PinholeCamera` request/coordinate tests; GPU uniforms remain P4-F02 | `spirula-render` | 已完成 |
 | C-REN-03 | projection forward | `kernels/projection/*`, `EngineForward.cpp:160-330` | camera + splats | screen splats | 3dgs/mip/3dgut; packed/unpacked | P4-F03 CPU/GPU parity | `spirula-render` | 未开始 |
 | C-REN-04 | tile intersection and binning | `kernels/tile/IntersectTile.cu:420-580` | screen splats | (tile, splat) counts | 8x8 tiles, macro tile 8-128, int32 coarsening | P4-F03 tolerance fixture | `spirula-render` | 未开始 |
 | C-REN-05 | depth-key sort | `IntersectTile.cu:517-548` | tile/splat pairs | sorted pairs + offsets | `(tile_id << 32) \| depth`, deterministic ordering | P4-F04 determinism test | `spirula-render` | 未开始 |
@@ -59,7 +59,7 @@ refer to [fixtures.md](fixtures.md).
 | C-REN-07 | depth and median depth | `RasterizationEval3DFwd_kernel.cuh:262-322` | sorted pairs | depth buffers | expected ray depth; median via log-space 1/2 crossing | P4-F05 tolerance | `spirula-render` | 未开始 |
 | C-REN-08 | appearance chain | `EngineForward.cpp:478-489` | rendered RGB | final RGB | background, PPISP, color space, bilateral grid in fixed order | P4-F05 golden | `spirula-render` | 未开始 |
 | C-REN-09 | readback and preview | `EngineQuery.cpp:50-118`, `Engine.h:620-657` | GPU buffers | host image | f16 expanded on host; viewer blit to uint8 | P4-F06 application/CLI preview | `spirula-render`/`spirula-gpu` | 未开始 |
-| C-REN-10 | CPU reference renderer | (new; reference parity tools) | scene + camera | image + tolerance | each GPU stage has CPU reference or deterministic fixture | P4-F01/P4-F03 | `spirula-render` | 未开始 |
+| C-REN-10 | CPU reference renderer | (new; reference parity tools) | scene + camera | projected scene records | P4-F01 owns scene/camera projection; image/tile/raster reference remains later | P4-F01 headless projection tests; P4-F03 intermediate buffers | `spirula-render` | 进行中 |
 | C-REN-11 | training forward saved state | `engine/EngineForward.cpp`, `kernels/raster/*` | scene/camera | float image + indexed intermediates | explicit saved/recomputed layout, lifetime and budget | P4-F07 forward parity | `spirula-render` | 未开始 |
 | C-REN-12 | raster/compositing VJP | `kernels/raster/*`, `engine/EngineLoss.cpp` | image gradient + forward state | projected gradients | production thresholds recorded; smooth numerical probes separate | P4-F08 finite differences | `spirula-render` | 未开始 |
 | C-REN-13 | projection/covariance/SH VJP | `kernels/projection/*`, `engine/EngineForward.cpp` | projected gradients + parameters | 3D/quat/scale/SH/opacity gradients | parameterization and viewdir-to-mean chain explicit | P4-F09 parameter-wise checks | `spirula-render` | 未开始 |
