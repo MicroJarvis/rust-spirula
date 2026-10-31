@@ -124,7 +124,7 @@ shader 错误和 device lost 均有稳定错误；**surface present 由 P2-F08 �
 Phase 3 退出条件：P3-F01 至 P3-F08 的参考 fixtures 可加载，兼容格式有明确
 版本策略，非法输入和旧 checkpoint 行为稳定。
 
-Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F02）：
+Phase 3 执行要点（P3-F01 至 P3-F08 均已合入 main；当前为 P4-F03）：
 
 - **P3-F01 已完成（独立 READY 后落地）**：代码 tip
   `37b7a734fe0f7126a51fa86bd9ec5d2ece6dd758`；独立审查 READY
