@@ -405,6 +405,7 @@ fn execute(
         projected,
         offsets,
         pairs,
+        request.thresholds.alpha_cutoff,
     )?;
     Ok((
         bins,

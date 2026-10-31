@@ -5,7 +5,7 @@
 | P4-F01 | 渲染场景与相机接口 | [render-scene-camera.md](render-scene-camera.md) | 已完成 |
 | P4-F02 | splat 上传与资源绑定 | [splat-buffer.md](splat-buffer.md) | 已完成 |
 | P4-F03 | 投影与 tile/bin 构建 | [projection-tiles.md](projection-tiles.md) | 已完成 |
-| P4-F04 | 排序与光栅化 | (not started) | 当前 |
+| P4-F04 | 排序与光栅化 | [sort-raster.md](sort-raster.md) | 当前 |
 | P4-F05 | 合成与深度 | (not started) | 未开始 |
 | P4-F06 | readback 与预览输出 | (not started) | 未开始 |
 | P4-F07 | 训练前向状态与索引契约 | (not started) | 未开始 |
@@ -28,4 +28,8 @@ P4-F03 已完成并合入 main：代码 tip `04e4ab42af78fd91191e2b883885c94e526
 spirula-xtask -- verify` 在 Apple M5 Max / Metal 上 **8/8 通过（22.5 s）**；
 文档同步后复核 **8/8（20.6 s）**。render 测试 18/18，GPU retained-owner
 生命周期回归 2/2。487500 交点样本的 accounted 峰值为 7804192 B，返回后
-current bytes 与 retained submissions 为零。下一功能为 P4-F04。
+current bytes 与 retained submissions 为零。
+
+**当前功能 P4-F04**（[sort-raster.md](sort-raster.md)）：在独立 worktree
+实现稳定 LSD radix、tile ranges 与 conic/alpha 像素覆盖；合成与预览仍属
+P4-F05/P4-F06。实现尚未合入，状态保持 `当前`。

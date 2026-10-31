@@ -838,6 +838,62 @@ impl GpuContext {
         {
             return Err(inp("not a projection-tiles v1 pipeline", "pipeline"));
         }
+        self.dispatch_render_three_buffer(
+            pipeline,
+            params_buf,
+            input,
+            output,
+            input_bytes,
+            output_bytes,
+            invocations,
+        )
+    }
+
+    /// Encode the P4-F04 stable-radix/raster family through the proven v1 ABI.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_sort_raster(
+        &mut self,
+        pipeline: &ComputePipelineHandle,
+        params_buf: &BufferHandle,
+        input: &BufferHandle,
+        output: &BufferHandle,
+        input_bytes: u64,
+        output_bytes: u64,
+        invocations: u32,
+    ) -> Result<(), DomainError> {
+        self.require_live_for_pipeline()?;
+        if pipeline.key().shader_name != "sort-raster"
+            || pipeline.key().shader_version != 1
+            || pipeline.key().bind_layout_version != 1
+            || !matches!(
+                pipeline.key().entry_point.as_str(),
+                "keys" | "histogram" | "prefix" | "scatter" | "ranges" | "raster"
+            )
+        {
+            return Err(inp("not a sort-raster v1 pipeline", "pipeline"));
+        }
+        self.dispatch_render_three_buffer(
+            pipeline,
+            params_buf,
+            input,
+            output,
+            input_bytes,
+            output_bytes,
+            invocations,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_render_three_buffer(
+        &mut self,
+        pipeline: &ComputePipelineHandle,
+        params_buf: &BufferHandle,
+        input: &BufferHandle,
+        output: &BufferHandle,
+        input_bytes: u64,
+        output_bytes: u64,
+        invocations: u32,
+    ) -> Result<(), DomainError> {
         validate_affine_aliases(params_buf, input, output)?;
         let limits = self
             .report()
@@ -851,12 +907,14 @@ impl GpuContext {
             || output_bytes > limits.max_storage_buffer_binding_size
         {
             return Err(range_err(
-                "projection-tiles storage range exceeds device limit",
+                "render-three-buffer storage range exceeds device limit",
             ));
         }
         let groups = invocations.div_ceil(64);
         if groups == 0 || groups > limits.max_compute_workgroups_per_dimension {
-            return Err(range_err("projection-tiles dispatch exceeds device limit"));
+            return Err(range_err(
+                "render-three-buffer dispatch exceeds device limit",
+            ));
         }
         let scope_inject = self.take_scope_inject();
         if let Some(inj) = scope_inject {
@@ -873,10 +931,7 @@ impl GpuContext {
         }
         let is_synthetic = self.backend_device_queue().is_none();
         if is_synthetic {
-            return Err(inp(
-                "projection tiles require a real GPU context",
-                "context",
-            ));
+            return Err(inp("render compute requires a real GPU context", "context"));
         }
 
         let (device, _) = self
@@ -932,7 +987,7 @@ impl GpuContext {
             None,
             || {
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("spirula:gpu:bg:projection-tiles"),
+                    label: Some("spirula:gpu:bg:render-three-buffer"),
                     layout: &bind_layout,
                     entries: &[
                         wgpu::BindGroupEntry {
@@ -962,11 +1017,11 @@ impl GpuContext {
                     ],
                 });
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("spirula:gpu:encoder:projection-tiles"),
+                    label: Some("spirula:gpu:encoder:render-three-buffer"),
                 });
                 {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("spirula:gpu:compute:projection-tiles"),
+                        label: Some("spirula:gpu:compute:render-three-buffer"),
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(&gpu_pipe);
@@ -1164,8 +1219,8 @@ fn enrich_shader_error(err: DomainError, name: &str) -> DomainError {
     shader_err(format!("shader '{name}' compile/pipeline failed: {msg}"))
         .with_context(
             ContextKey::Path,
-            if name == "projection-tiles" {
-                "crates/spirula-render/shaders/projection-tiles.wgsl".to_owned()
+            if matches!(name, "projection-tiles" | "sort-raster") {
+                format!("crates/spirula-render/shaders/{name}.wgsl")
             } else {
                 format!("shaders/{name}.wgsl")
             },

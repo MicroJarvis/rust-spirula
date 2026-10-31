@@ -2,7 +2,7 @@
 use crate::RenderRequest;
 use spirula_core::{ContextKey, DomainError, ErrorCode};
 
-pub const TILE_CONTRACT_VERSION: u32 = 1;
+pub const TILE_CONTRACT_VERSION: u32 = 2;
 pub(crate) const RECORD_WORDS: usize = 16;
 
 pub(crate) fn error(code: ErrorCode, field: &str, message: impl Into<String>) -> DomainError {
@@ -119,6 +119,8 @@ pub struct TileBins {
     pub contract_version: u32,
     pub width: u32,
     pub height: u32,
+    /// Cutoff used to cull/project this candidate set; zero only for empty input.
+    pub projection_alpha_cutoff: f64,
     pub tile_size: u32,
     pub tiles_x: u32,
     pub tiles_y: u32,
@@ -131,7 +133,7 @@ pub struct TileBins {
 }
 impl TileBins {
     pub fn empty(width: u32, height: u32, options: TileBuildOptions) -> Result<Self, DomainError> {
-        finish(width, height, options, vec![], vec![], vec![])
+        finish(width, height, options, vec![], vec![], vec![], 0.0)
     }
     pub fn tile_count(&self) -> usize {
         self.tiles_x as usize * self.tiles_y as usize
@@ -143,6 +145,13 @@ impl TileBins {
                 "contract_version",
                 "unsupported tile contract",
             ));
+        }
+        if !self.projection_alpha_cutoff.is_finite()
+            || self.projection_alpha_cutoff < 0.0
+            || self.projection_alpha_cutoff > 1.0
+            || (!self.projected.is_empty() && self.projection_alpha_cutoff == 0.0)
+        {
+            return Err(range("projection_alpha_cutoff"));
         }
         let options = TileBuildOptions {
             tile_size: self.tile_size,
@@ -265,6 +274,7 @@ impl CpuTileBuilder {
             projected,
             offsets,
             pairs,
+            request.thresholds.alpha_cutoff,
         )
     }
     pub fn build_empty(
@@ -397,6 +407,7 @@ pub(crate) fn finish(
     projected: Vec<Option<ProjectedTileSplat>>,
     inclusive_offsets: Vec<u32>,
     pairs: Vec<TilePair>,
+    projection_alpha_cutoff: f64,
 ) -> Result<TileBins, DomainError> {
     let (tx, ty) = options.dimensions(width, height, projected.len())?;
     options.pair_preflight(pairs.len() as u64, projected.len())?;
@@ -417,6 +428,7 @@ pub(crate) fn finish(
         .collect();
     let bins = TileBins {
         contract_version: TILE_CONTRACT_VERSION,
+        projection_alpha_cutoff,
         width,
         height,
         tile_size: options.tile_size,

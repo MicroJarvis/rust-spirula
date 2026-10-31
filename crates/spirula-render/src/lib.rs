@@ -18,3 +18,11 @@ pub use tiles::{
     CpuTileBuilder, ProjectedTileSplat, TILE_CONTRACT_VERSION, TileBins, TileBuildOptions,
     TileCoverage, TilePair,
 };
+
+mod gpu_sort_raster;
+mod sort_raster;
+pub use gpu_sort_raster::{GpuSortRaster, SortRasterMetrics};
+pub use sort_raster::{
+    CpuSortRaster, NO_SOURCE, PixelCoverage, SORT_RASTER_VERSION, SortRasterOptions, SortedRaster,
+    SortedTilePair, TileRange, canonical_depth_key,
+};
