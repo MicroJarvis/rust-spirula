@@ -737,6 +737,15 @@ fn validate_loaded_plan(plan: &TrainPlan) -> Result<(), DomainError> {
     let loaded = LoadedTrainConfig::parse(&plan.config)?;
     loaded.config.validate()?;
     validate_nonfinite_config(&loaded.config)?;
+    validate_numeric_and_combinations(&loaded.config)?;
+    let expected_resolved = resolve_options(&loaded.config)?;
+    if expected_resolved != plan.resolved {
+        return Err(error(
+            ErrorCode::IntegrityMismatch,
+            "resolved",
+            "resolved options do not match the compatibility config",
+        ));
+    }
     Ok(())
 }
 
@@ -1206,6 +1215,21 @@ mod tests {
 
         let mut value: Value = serde_json::from_str(&plan.to_json().unwrap()).unwrap();
         value["required_device_bytes"] = Value::from(1_u64);
+        let err = TrainPlan::from_json(&serde_json::to_string(&value).unwrap()).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::IntegrityMismatch);
+
+        let mut value: Value = serde_json::from_str(&plan.to_json().unwrap()).unwrap();
+        value["resolved"]["iterations"] = Value::from(1_u64);
+        let payload = Value::Object(
+            value
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.as_str() != "digest")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        value["digest"] = Value::String(hex_digest(&serde_json::to_vec(&payload).unwrap()));
         let err = TrainPlan::from_json(&serde_json::to_string(&value).unwrap()).unwrap_err();
         assert_eq!(err.code(), ErrorCode::IntegrityMismatch);
     }
