@@ -36,9 +36,9 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-16 | scene-center modes | `data/SceneCenter.h`, `DatasetCommon.cpp:523-545` | camera/point statistics | translation | `none/point-median/camera-median/camera-focus/point-mean/camera-mean`, `auto` resolves | P3-F05 unit tests | `spirula-core` | 已完成 |
 | C-DATA-17 | seed point cloud PLY | `NerfstudioParser.cpp:235-276` | PLY | points + RGB | requires x/y/z + RGB, ascii/BE; double coordinates | `fixtures/splats/points.ply` + P3-F05 | `spirula-io` | 未开始 |
 | C-DATA-18 | splat PLY read/write | `checkpoint/SplatPly.cpp` | PLY | splat scene | property order/raw meaning; ASCII read, binary LE write | `fixtures/splats/tiny_splat.ply` + P3-F06 | `spirula-io` | 已完成 |
-| C-DATA-19 | checkpoint read | `engine/EngineCheckpoint.cpp`, `core/CheckpointIO.h` | `state.tar` + `.npy` | state blocks | ustar + NPY v1-v3; `state.json` fields and `format_version` 1 | `fixtures/checkpoints` + P3-F07 | `spirula-io` | 未开始 |
+| C-DATA-19 | checkpoint read | `engine/EngineCheckpoint.cpp`, `core/CheckpointIO.h` | `state.tar` + `.npy` | state blocks | ustar + NPY v1-v3; `state.json` fields and `format_version` 1 | `fixtures/checkpoints` + P3-F07 | `spirula-io` | 已完成 |
 | C-DATA-20 | checkpoint write | `EngineCheckpoint.cpp:354-390` | state blocks | `step-%09d.ckpt` | same layout; rewrite adds atomic replacement and completion marker | P5-F05 fault injection + P5-F07 new-process resume | `spirula-io` | 未开始 |
-| C-DATA-21 | resume prerequisites | `checkpoint/Resume.cpp:78-140` | run dir/checkpoint | config + step | classify model-only/full resume; full state/dataset/plan required; retain scene_center legacy rule | P3-F07/P5-F05 | `spirula-io` | 未开始 |
+| C-DATA-21 | resume prerequisites | `checkpoint/Resume.cpp:78-140` | run dir/checkpoint | config + step | classify model-only/full resume; full state/dataset/plan required; retain scene_center legacy rule | P3-F07/P5-F05 | `spirula-io` | 已完成 |
 | C-DATA-22 | config read/write | `config/TrainConfig.h`, `config/TrainConfigJson.h` | flat JSON | typed config | flat flag keys, unknown ignored, missing defaults, no version today | P1-F02 + `fixtures/config` | `spirula-core` | 已完成 |
 | C-DATA-23 | atomic persistence | `core/AtomicFile.h:15-23` | bytes | file replace | temp + rename; reference checkpoints are not atomic | P1-F05 (crash/corrupt tests) | `spirula-io` | 已完成 |
 | C-DATA-24 | mesh export formats | `mesh/MeshExport.h` | mesh | PLY/OBJ/glTF/GLB/STL | format set and color modes; no overwrite of input | P7-F04 round trip | `spirula-io` | 未开始 |
@@ -144,8 +144,9 @@ refer to [fixtures.md](fixtures.md).
   categories, retryability, context keys, CLI text and exit codes. Other
   implementations and pending portions are recorded below.
 - `C-DATA-22` is implemented in `spirula-core` (P1-F02): the 251-field
-  config table, `schema_version` 1, and legacy reads. `C-X-03` stays
-  `进行中` because checkpoint `format_version` validation is still P3-F07.
+  config table, `schema_version` 1, and legacy reads. `C-X-03` remains
+  `进行中` for the remaining versioned writers; P3-F07 validates checkpoint
+  `format_version` on legacy reads.
 - `C-APP-02` has the core token and progress/terminal payloads (P1-F03),
   application channels (P1-F07), and CLI SIGINT (P1-F09). Actual training
   checkpoints and complete UI integration remain P5-F06/P6-F01, so the row

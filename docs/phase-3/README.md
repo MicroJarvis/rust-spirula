@@ -8,7 +8,8 @@
 | P3-F04 Nerfstudio/Metashape | [nerfstudio-metashape.md](nerfstudio-metashape.md) | READY |
 | P3-F05 scene transform / center / region | [scene-transform-region.md](scene-transform-region.md) | 已完成 |
 | P3-F06 splat scene format | [splat-format.md](splat-format.md) | 已完成 |
-| P3-F07 checkpoint metadata / P3-F08 bounded cache | (not started) | 未开始 |
+| P3-F07 checkpoint metadata | [checkpoint-metadata.md](checkpoint-metadata.md) | 已完成 |
+| P3-F08 bounded cache | (not started) | 当前 |
 
 P3-F01 delivered C-DATA-11..14 (code tip `37b7a73…`; READY
 `/tmp/spirula-p3-f01-review/REVIEW-37b7a73.md`; landed on main). Orthographic
@@ -60,3 +61,9 @@ P3-F06 (splat scene format).
 [splat-format.md](splat-format.md). The implementation is intentionally limited
 to the reference degree-0 Gaussian PLY property identity. The next plan current
 is P3-F07.
+
+**P3-F07 已完成** in worktree `codex/p3-f07`; see
+[checkpoint-metadata.md](checkpoint-metadata.md). The reader validates the legacy
+ustar/NPY/state schema, classifies model-only versus full-resume metadata, and
+reports stable incomplete/corrupt/unsupported errors. New generation writers and
+new-process restore remain P5-F05/P5-F07. The next plan current is P3-F08.
