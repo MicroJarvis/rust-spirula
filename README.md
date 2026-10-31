@@ -31,7 +31,7 @@ and bounded training data loading; see
 [docs/phase-3/README.md](docs/phase-3/README.md)) are complete; P5-F08
 validated executable TrainPlan and capability checks are complete (see
 [docs/phase-5/train-plan.md](docs/phase-5/train-plan.md)); the current feature
-is **P4-F05**. Phase 2 exit is not closed
+is **P4-F06**. Phase 2 exit is not closed
 (surface present still unverified) — **P2-F08** owns that remaining condition
 and is the only unstarted Phase 2 ID
 ([docs/phase-2/gpu-surface-present.md](docs/phase-2/gpu-surface-present.md)).
@@ -77,7 +77,7 @@ control history, and fake probe worker; it depends only on `spirula-core`.
 P1-F08 adds versioned performance reports and the `spirula-perf-sample`
 binary in `spirula-core`/`spirula-io`. `spirula-cli` is the P1-F09 process
 adapter (help/capabilities, fake probe, SIGINT, optional disk diagnostics);
-real train/preview stay later features. Plan current work is **P4-F05** in
+real train/preview stay later features. Plan current work is **P4-F06** in
 [docs/project-plan.md](docs/project-plan.md). GPU diagnose (enumerate,
 `--device`, `--resources`, or `--compute`) and smoke (`spirula-gpu-smoke`;
 not application/train/UI readiness; surface remains honest unsupported / not a
@@ -100,4 +100,7 @@ records real headless GPU projection, inclusive scan, preflighted pair emission,
 C++ fixture parity and resource evidence. P4-F04 is complete:
 [stable GPU radix and conic coverage](docs/phase-4/sort-raster.md), including
 487500-pair GPU projection→sorting→coverage parity and resource evidence.
-P4-F05 now owns color/alpha/depth compositing; P4-F06 then connects preview output.
+P4-F05 is complete: [GPU compositing and ray depths](docs/phase-4/compositing-depth.md)
+adds front-to-back RGB/alpha, expected and median depth, explicit GPU clears,
+independent goldens and resource/failure proof. P4-F06 now connects readback,
+image packaging and real application/CLI preview output.

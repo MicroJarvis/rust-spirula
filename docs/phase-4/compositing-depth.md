@@ -1,7 +1,6 @@
 # P4-F05: compositing and depth
 
-Status: **进行中** (implementation in worktree; not closed, not advanced in
-`project-plan.md`). Owner: `spirula-render`; opaque compute binding/dispatch is
+Status: **已完成** (reviewed and merged; current feature is P4-F06). Owner: `spirula-render`; opaque compute binding/dispatch is
 `spirula-gpu`. Full image file / CLI preview stays P4-F06. Training forward
 saved state stays P4-F07. VJP stays P4-F08+.
 
@@ -264,5 +263,7 @@ to multiple unrelated codes to keep tests green.
 Focused render compositing tests + full render suite +
 `SPIRULA_REQUIRE_RENDER_GPU=1 cargo run -p spirula-xtask -- verify` +
 `git diff --check`. Document measured adapter, tolerances, accounted peaks
-and any honest gaps. Do not mark P4-F05 / appearance / CLI preview complete
-in `project-plan.md` until independent review and merge closure.
+and any honest gaps. P4-F05 independently reviewed and merged (`74c537e` / `9ea81be`); GPU-required
+verify passed 8/8 (29.1 s). Detailed 54-test counts, measured stage timings,
+resource bounds and exclusions are recorded in the [phase README](README.md).
+Appearance, CLI preview and training remain separate pending capabilities.

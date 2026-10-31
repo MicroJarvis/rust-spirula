@@ -6,8 +6,8 @@
 | P4-F02 | splat 上传与资源绑定 | [splat-buffer.md](splat-buffer.md) | 已完成 |
 | P4-F03 | 投影与 tile/bin 构建 | [projection-tiles.md](projection-tiles.md) | 已完成 |
 | P4-F04 | 排序与光栅化 | [sort-raster.md](sort-raster.md) | 已完成 |
-| P4-F05 | 合成与深度 | [compositing-depth.md](compositing-depth.md) | 当前 |
-| P4-F06 | readback 与预览输出 | (not started) | 未开始 |
+| P4-F05 | 合成与深度 | [compositing-depth.md](compositing-depth.md) | 已完成 |
+| P4-F06 | readback 与预览输出 | (not started) | 当前 |
 | P4-F07 | 训练前向状态与索引契约 | (not started) | 未开始 |
 | P4-F08 | 光栅化与合成反向传播 | (not started) | 未开始 |
 | P4-F09 | 投影与 SH 反向传播 | (not started) | 未开始 |
@@ -42,18 +42,33 @@ GPU 审核 4/4、排序/覆盖/失败路径 6/6。GPU F03→F04 的 800×600、6
 16575104 B，accounted 峰值 32373472 B（上界 32375968 B），返回后 current
 与 retained submissions 均为零。此为 buffers+staging 记账，非设备整体显存。
 完成状态与上述文档同步后，同一 GPU 必需 verify 复核 **8/8（22.0 s）**。
-当前功能为 P4-F05：合成与深度；预览接入仍属 P4-F06。
+当前功能为 P4-F06：readback 与预览输出。
 
-P4-F05 实现中（**未合入 / 未推进计划状态**）。契约
-[compositing-depth.md](compositing-depth.md)：SH0=`max(C0·dc+0.5,0)`；
-median 在 early-out 前、strict `next_T<0.5`、virtual z0；expected=
-`depth_acc/max(1-T,1e-10)`（无 weight==0 清零）；公开 API 仅
-`RenderRequest` 串联；prepared 私有；`GpuCompositor::compose_empty` 真实
-WGSL 写清每个像素；颜色表 `with_capacity(N)` 精确容量。独立 review
-`tests/p4_f05_review.rs` **10/10**（含背景预检、compose_empty OOM/timeout
-retry、10000 culled P0、入口已知不可能 GPU 预算拒绝）；focused
-`tests/p4_f05_compositing.rs` 含 800×600/65/487500 F03→F05 压力（含 alpha）、
-`dispatch_compositing` 族准入，以及 `compose_empty` OOM/timeout
-retain→wait→release。Metal/Apple M5 Max 实测 ledger 峰值
-**46448480 B**（bound 46452544 B ≈ 44.30 MiB），返回后 current/retained/
-pending 为 0。待主线程审核与 GPU verify 证据后再关闭。
+P4-F05 已完成并合入 main：代码 tip `74c537e5d97c150979cf681e480de58777cbea8d`，
+合并提交 `9ea81be6d95e28a0944964fcbc7c4bc65e814026`。契约
+[compositing-depth.md](compositing-depth.md) 固定 SH0 下限 clamp、front-to-back
+RGB/alpha/T、expected ray depth、early-out 前的 median log-T 插值，以及真实
+GPU 空图/未覆盖像素写入。公开 `RenderRequest` 入口串联 F03→F04→F05，prepared
+输入保持私有；已知 GPU 预算下界在投影分配前检查，颜色表精确容量与跨阶段
+host 预算有回归证据。CLI/图像文件、训练状态和 VJP 仍属后续功能。
+
+2026-10-31 独立审核通过；`SPIRULA_REQUIRE_RENDER_GPU=1 cargo run -p
+spirula-xtask -- verify` **8/8（29.1 s）**。render 测试 **54/54**：16 unit、
+3 reference、8 F03、4 F04 独立审核、6 F04、7 F05 focused、10 F05 独立审核。
+独立解析 TSV 含 12 行 golden；17×9 全图末像素有非零贡献；还验证 10000
+culled sources/P=0、已知不可能预算在 GPU 分配前拒绝、F05 自身 OOM/timeout
+保留→等待→回收→成功重试，以及 family/layout/version/entry/range/alias/
+cross-context/reopen 等拒绝路径。
+
+800×600、65 sources、487500 pairs 的完整 GPU 链与 CPU f64 参考相比，样本
+最大绝对误差 `5.00991022445163e-7`（含 alpha），验收容限 `2e-4`。实际
+accounted 峰值 **46448480 B（44.30 MiB）**，上界 **46452544 B**；host
+payload 上界 **89137168 B**。返回后 current/retained/pending 均为零。
+一次 focused 测量：CPU 1.575464250 s，GPU 完整调用 570.072125 ms，F05
+encode 84.343500 ms、submit/wait/map 2.943166 ms。Metal / Apple M5 Max，
+新 context 首次合成调用，driver/pipeline cache 温度未知；这是 wall-clock
+样本与 buffers/staging 记账，非正式性能保证、GPU timestamp、VRAM 或 RSS。
+early-out 限制实际累积层数，F03/F04 仍处理全部交点。
+
+完成状态、capability matrix 与唯一当前功能同步后，同一 GPU 必需 verify
+复核 **8/8（24.5 s）**。P4-F06 接下来实现 readback 图像封装与共享 CLI 预览。
