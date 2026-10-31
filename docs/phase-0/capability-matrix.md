@@ -50,8 +50,8 @@ refer to [fixtures.md](fixtures.md).
 
 | ID | capability | reference | input | output | compatibility assumption | verification (target) | owner | state |
 |---|---|---|---|---|---|---|---|---|
-| C-REN-01 | scene/primitive representation | `primitives/Primitive.cuh`, `engine/Engine.h` | splats | device arrays | means/quats wxyz/log scales/logit opacity/DC/SH | P4-F01 `RenderRequest` and CPU projection tests; GPU arrays remain P4-F02 | `spirula-render` | 已完成 |
-| C-REN-02 | camera parameter binding | `engine/Engine.h:75-84` | camera + view matrices | GPU-independent camera request | intrinsics fx/fy/cx/cy; value-parameterized model/tier | P4-F01 `PinholeCamera` request/coordinate tests; GPU uniforms remain P4-F02 | `spirula-render` | 已完成 |
+| C-REN-01 | scene/primitive representation | `primitives/Primitive.cuh`, `engine/Engine.h` | splats | device arrays | means/quats wxyz/log scales/logit opacity/DC/SH | P4-F01 `RenderRequest` and CPU projection tests; GPU arrays remain P4-F02 | `spirula-render` | 进行中 |
+| C-REN-02 | camera parameter binding | `engine/Engine.h:75-84` | camera + view matrices | GPU uniforms | intrinsics fx/fy/cx/cy; value-parameterized model/tier | P4-F01 `PinholeCamera` request/coordinate tests; GPU uniforms remain P4-F02 | `spirula-render` | 进行中 |
 | C-REN-03 | projection forward | `kernels/projection/*`, `EngineForward.cpp:160-330` | camera + splats | screen splats | 3dgs/mip/3dgut; packed/unpacked | P4-F03 CPU/GPU parity | `spirula-render` | 未开始 |
 | C-REN-04 | tile intersection and binning | `kernels/tile/IntersectTile.cu:420-580` | screen splats | (tile, splat) counts | 8x8 tiles, macro tile 8-128, int32 coarsening | P4-F03 tolerance fixture | `spirula-render` | 未开始 |
 | C-REN-05 | depth-key sort | `IntersectTile.cu:517-548` | tile/splat pairs | sorted pairs + offsets | `(tile_id << 32) \| depth`, deterministic ordering | P4-F04 determinism test | `spirula-render` | 未开始 |
