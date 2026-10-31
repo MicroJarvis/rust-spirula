@@ -42,7 +42,7 @@ refer to [fixtures.md](fixtures.md).
 | C-DATA-22 | config read/write | `config/TrainConfig.h`, `config/TrainConfigJson.h` | flat JSON | typed config | flat flag keys, unknown ignored, missing defaults, no version today | P1-F02 + `fixtures/config` | `spirula-core` | 已完成 |
 | C-DATA-23 | atomic persistence | `core/AtomicFile.h:15-23` | bytes | file replace | temp + rename; reference checkpoints are not atomic | P1-F05 (crash/corrupt tests) | `spirula-io` | 已完成 |
 | C-DATA-24 | mesh export formats | `mesh/MeshExport.h` | mesh | PLY/OBJ/glTF/GLB/STL | format set and color modes; no overwrite of input | P7-F04 round trip | `spirula-io` | 未开始 |
-| C-DATA-25 | bounded training batch loader | `data/DataManager.cpp`; Brush `brush-dataset/scene_loader.rs` as secondary design reference | images + sampling state | ordered batches/cache | no new runtime dependency; bounded decode/prefetch/cache bytes | P3-F08 budget/cancel/order tests | `spirula-io` | 未开始 |
+| C-DATA-25 | bounded training batch loader | `data/DataManager.cpp`; Brush `brush-dataset/scene_loader.rs` as secondary design reference | images + sampling state | ordered batches/cache | no new runtime dependency; bounded decode/prefetch/cache bytes | P3-F08 `BoundedDatasetLoader` + `bounded_loader` tests; metrics and sampler JSON state | `spirula-io` | 已完成 |
 | C-DATA-26 | edited splat view and chunked export | `checkpoint/SplatPly.cpp`; OOOSplat export view as secondary design reference | selection/transform + model | PLY chunks | preserve reference coordinates/raw attributes; explicit compression memory limits | P7-F07 independent readback | `spirula-io` | 未开始 |
 
 ## Rendering and GPU

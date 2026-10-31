@@ -12,6 +12,7 @@
 //! metadata on [`ParsedDataset`]. Checkpoint bundle schema stays in P5-F05.
 
 pub mod atomic;
+pub mod bounded_loader;
 pub mod camera_catalog;
 pub mod cancel_checkpoint;
 pub mod checkpoint;
@@ -35,6 +36,9 @@ pub mod scene_apply;
 pub mod scene_transform;
 pub mod temp_harness;
 
+pub use bounded_loader::{
+    BoundedDatasetLoader, BoundedLoaderConfig, LoadedRgbFrame, LoaderMetrics, SamplerState,
+};
 pub use camera_catalog::{CameraCatalogEntry, parse_catalog_bytes, roundtrip_entry};
 pub use cancel_checkpoint::{CANCEL_CHECK_INTERVAL, CANCEL_WORK_CHUNK, CancelCheckpoint};
 pub use checkpoint::{
