@@ -1,10 +1,14 @@
 # P4-F03: Gaussian projection and tile intersections
 
-Status: **当前**, implementation and complete verify gate passed; awaiting
-independent review before the completion/merge transition.
-Owner: `spirula-render`; GPU resource/bind/dispatch implementation stays in
-`spirula-gpu`. No sorting, rasterization, compositing, image preview, SH>0,
-mip/3dgut, antialias compensation, or distorted camera execution is claimed.
+Status: **已完成** (merged). Owner: `spirula-render`; GPU resource/bind/dispatch
+implementation stays in `spirula-gpu`. Sorting/raster coverage is P4-F04; no
+compositing, image preview, SH>0, mip/3dgut, antialias compensation, or
+distorted camera execution is claimed here.
+
+**Compatibility:** `TileBins` is now contract **v2** (P4-F04): adds
+`projection_alpha_cutoff`. Empty bins may use `0.0`; non-empty bins reject a
+zero cutoff. v1 was a non-persistent internal buffer without that field and is
+typed-rejected by P4-F04 consumers. See [sort-raster.md](sort-raster.md).
 
 ## Recorded reference and deliberate differences
 

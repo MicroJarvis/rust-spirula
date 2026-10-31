@@ -254,3 +254,9 @@ opaque v1 three-buffer pipeline dispatch and resource validation. No public
 wgpu boundary changes. CPU f64 reference, f32 GPU, capability rejection,
 checked count preflight, explicit readback and scoped byte accounting remain
 mandatory; source-major output is sorted only in P4-F04.
+
+P4-F04's [sort/raster contract](phase-4/sort-raster.md) reuses that private
+three-buffer ABI for the `sort-raster` family (`keys` /
+`histogram`/`prefix`/`scatter` / `ranges` / `raster`). `TileBins` v2 carries
+`projection_alpha_cutoff`; raster cutoff below it is rejected. GPU performs
+sixteen 4-bit stable LSD rounds and conic coverage; compositing stays P4-F05.

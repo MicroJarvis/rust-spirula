@@ -443,9 +443,12 @@ errors include the label and operation (`create`, `upload`, `dispatch`,
 ### 6.4 Shader and pipeline contract
 
 - GPU boundary proofs are WGSL under `crates/spirula-gpu/shaders/<name>.wgsl`;
-  P4-F03 render algorithms live under `crates/spirula-render/shaders/<name>.wgsl`
-  ([projection/tile contract](../phase-4/projection-tiles.md)); compilation,
-  pipeline cache, opaque bindings and dispatch remain in `spirula-gpu`;
+  P4-F03/P4-F04 render algorithms live under
+  `crates/spirula-render/shaders/<name>.wgsl`
+  ([projection/tile](../phase-4/projection-tiles.md),
+  [sort/raster](../phase-4/sort-raster.md)); compilation, pipeline cache,
+  opaque bindings and dispatch remain in `spirula-gpu`. Admitted render
+  families reuse the private v1 three-buffer ABI without exposing `wgpu*`;
 - each file starts with `// spirula-shader: <name> version: <n>`;
 - entry points and bind group layout are declared in a companion contract (the
   render interface), not discovered by string convention at runtime;
